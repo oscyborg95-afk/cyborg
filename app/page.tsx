@@ -16,6 +16,7 @@ import type {
 } from "@/lib/types";
 import { Froggy, type FroggyMood } from "./components/froggy";
 import { Button, Card, Confetti } from "./components/ui";
+import { CityPicker } from "./components/city-picker";
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WA_WORKER_URL || "http://localhost:3001";
 
@@ -36,6 +37,7 @@ interface Draft {
   phone_2: string;
   parsed_address: string;
   city: string;
+  city_id: string; // courier city id when picked from the list, "" otherwise
   district: string;
   product_id: string;
   item_name: string;
@@ -326,6 +328,7 @@ export default function Workspace() {
         phone_2: data.phone_2 || "",
         parsed_address: data.address,
         city: data.city ?? "",
+        city_id: "",
         district: data.district,
         product_id: "",
         item_name: "",
@@ -690,11 +693,14 @@ export default function Workspace() {
                 <div className="grid grid-cols-2 gap-2">
                   <label className="block font-display text-xs font-bold text-ink-soft">
                     City / Town
-                    <input
+                    <CityPicker
                       className={inputCls}
                       value={draft.city}
-                      onChange={(e) => setDraftField("city", e.target.value)}
-                      placeholder="e.g. Nugegoda"
+                      onChange={(city, cityId) =>
+                        setDraft((d) =>
+                          d ? { ...d, city, city_id: cityId != null ? String(cityId) : "" } : d
+                        )
+                      }
                     />
                   </label>
                   <label className="block font-display text-xs font-bold text-ink-soft">

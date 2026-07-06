@@ -6,6 +6,7 @@ import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
 import type { Order, OrderStatus, Product, ShippingManifest } from "@/lib/types";
 import { Froggy } from "../components/froggy";
 import { Button, Card } from "../components/ui";
+import { CityPicker } from "../components/city-picker";
 
 // Manual fallback flow: paste → parse → verify → save → book → copy.
 // The realtime workspace at / replaces this for day-to-day work, but this page
@@ -16,6 +17,7 @@ interface ReviewForm {
   phone_number: string;
   phone_2: string;
   parsed_address: string;
+  city: string;
   district: string;
   product_id: string;
   item_name: string;
@@ -115,6 +117,7 @@ export default function OrdersPage() {
         phone_number: data.phone,
         phone_2: data.phone_2 || "",
         parsed_address: data.address,
+        city: data.city ?? "",
         district: data.district,
         product_id: "",
         item_name: "",
@@ -304,6 +307,14 @@ export default function OrdersPage() {
                 className={inputCls}
                 value={form.parsed_address}
                 onChange={(e) => setField("parsed_address", e.target.value)}
+              />
+            </label>
+            <label className="font-display text-xs font-bold text-ink-soft">
+              City / Town
+              <CityPicker
+                className={inputCls}
+                value={form.city}
+                onChange={(city) => setForm((f) => (f ? { ...f, city } : f))}
               />
             </label>
             <label className="font-display text-xs font-bold text-ink-soft">

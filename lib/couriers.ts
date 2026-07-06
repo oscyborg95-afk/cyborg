@@ -27,11 +27,18 @@ const ITEM_DESCRIPTION = process.env.COURIER_ITEM_DESCRIPTION || "Merchandise";
 
 const isConfigured = Boolean(COURIER_EMAIL && COURIER_PASSWORD);
 
-// Cache the auth token and the city name→id map across hot reloads / requests.
+// Cache the auth token, the raw city list, and the city name→id map across hot
+// reloads / requests.
 const g = globalThis as unknown as {
   __txToken?: string | null;
   __txCities?: Map<string, number>;
+  __txCityList?: Array<{ id: number; text: string }>;
 };
+
+/** Whether real courier credentials are set (vs. mock booking). */
+export function isCourierConfigured(): boolean {
+  return isConfigured;
+}
 
 async function login(): Promise<string> {
   const res = await fetch(`${API_BASE}/login/client`, {
@@ -59,9 +66,9 @@ function normCity(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-/** Fetch and cache Trans Express's city list, returning a normalised-name → id map. */
-async function getCityMap(token: string): Promise<Map<string, number>> {
-  if (g.__txCities) return g.__txCities;
+/** Fetch and cache Trans Express's full city list ({ id, text }). */
+async function fetchCityList(token: string): Promise<Array<{ id: number; text: string }>> {
+  if (g.__txCityList) return g.__txCityList;
   const res = await fetch(`${API_BASE}/cities`, {
     headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
   });
@@ -69,13 +76,34 @@ async function getCityMap(token: string): Promise<Map<string, number>> {
     throw new Error(`Trans Express /cities failed (${res.status})`);
   }
   const cities = (await res.json()) as Array<{ id: number; text: string }>;
+  g.__txCityList = cities;
+  return cities;
+}
+
+/** Fetch and cache Trans Express's city list, returning a normalised-name → id map. */
+async function getCityMap(token: string): Promise<Map<string, number>> {
+  if (g.__txCities) return g.__txCities;
+  const cities = await fetchCityList(token);
   const map = new Map<string, number>();
   for (const c of cities) map.set(normCity(c.text), c.id);
   g.__txCities = map;
   return map;
 }
 
-export async function bookCourierOrder(order: Order): Promise<BookingResult> {
+/**
+ * The courier's canonical city list for the UI picker. Returns [] when the
+ * courier isn't configured (the caller substitutes a fallback list).
+ */
+export async function listCourierCities(): Promise<Array<{ id: number; text: string }>> {
+  if (!isConfigured) return [];
+  const token = await getToken();
+  return fetchCityList(token);
+}
+
+export async function bookCourierOrder(
+  order: Order,
+  cityIdOverride?: number | null
+): Promise<BookingResult> {
   if (!isConfigured) {
     return mockBooking();
   }
@@ -83,10 +111,13 @@ export async function bookCourierOrder(order: Order): Promise<BookingResult> {
   const doBook = async (): Promise<Response> => {
     const token = await getToken();
 
-    // Prefer booking with a resolved city_id (most reliable routing); fall back
-    // to the "without-city" endpoint which lets Trans Express match by name.
+    // Prefer an explicit city_id picked in the UI (exact match). Otherwise
+    // resolve it from the city name, and finally fall back to the "without-city"
+    // endpoint which lets Trans Express match by name.
     const cityMap = await getCityMap(token).catch(() => null);
-    const cityId = order.city ? cityMap?.get(normCity(order.city)) : undefined;
+    const cityId =
+      (cityIdOverride && cityIdOverride > 0 ? cityIdOverride : undefined) ??
+      (order.city ? cityMap?.get(normCity(order.city)) : undefined);
 
     const base = {
       order_no: order.id,

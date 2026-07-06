@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
     raw_address = "",
     parsed_address,
     city = "",
+    city_id = "",
     district,
     product_id = null,
     item_name = "",
@@ -52,7 +53,8 @@ export async function POST(req: NextRequest) {
       total_cod: Math.max(0, productPrice + shippingFee - discountValue),
     });
 
-    const booking = await bookCourierOrder({ ...order });
+    const cityId = Number(city_id) || null; // "" / 0 / NaN → resolve by name instead
+    const booking = await bookCourierOrder({ ...order }, cityId);
     const manifest = await createManifest({
       order_id: order.id,
       courier_name: booking.courier_name,
