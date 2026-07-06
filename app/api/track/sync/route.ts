@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import {
+  addTrackingEvent,
+  getLatestTrackingEvent,
   listManifests,
   listOrders,
   updateManifestCheckpoint,
@@ -29,6 +31,12 @@ export async function POST() {
       try {
         const result = await getTrackingStatus(manifest.tracking_id, manifest.created_at);
         await updateManifestCheckpoint(manifest.id, result.checkpoint);
+        // Append a timeline event only when the checkpoint actually changed,
+        // so repeated syncs don't spam duplicate rows.
+        const last = await getLatestTrackingEvent(order.id);
+        if (!last || last.checkpoint !== result.checkpoint) {
+          await addTrackingEvent(order.id, result.checkpoint, result.outcome);
+        }
         if (result.outcome === "delivered") {
           await updateOrderStatus(order.id, "delivered");
           delivered++;

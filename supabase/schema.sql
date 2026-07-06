@@ -41,6 +41,16 @@ create table if not exists shipping_manifests (
   created_at      timestamptz not null default now()
 );
 
+-- Per-order courier tracking timeline: one row per status change observed.
+create table if not exists tracking_events (
+  id         uuid primary key default gen_random_uuid(),
+  order_id   uuid not null references orders(id) on delete cascade,
+  checkpoint varchar not null,
+  outcome    varchar not null default 'in_transit', -- booked | in_transit | delivered | returned
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_tracking_events_order on tracking_events(order_id, created_at);
+
 -- Cyborg OS: per-customer chat state machine (drives the dynamic action bar).
 create table if not exists chat_states (
   phone_number varchar primary key,

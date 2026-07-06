@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import type { Metrics } from "@/lib/metrics";
 import type { BusinessSettings, Product } from "@/lib/types";
 import { Froggy, type FroggyMood } from "../components/froggy";
@@ -380,6 +380,7 @@ export default function QuestPage() {
 function ProductsCard({ products, onChanged }: { products: Product[]; onChanged: () => void }) {
   const [draft, setDraft] = useState({ name: "", price: "", unit_cost: "", stock_units: "" });
   const [busy, setBusy] = useState(false);
+  const [receivingId, setReceivingId] = useState<string | null>(null);
 
   async function add() {
     if (!draft.name.trim()) return;
@@ -422,7 +423,8 @@ function ProductsCard({ products, onChanged }: { products: Product[]; onChanged:
       <h2 className="mb-1 font-display text-lg font-extrabold text-ink">📦 Products &amp; stock</h2>
       <p className="mb-4 font-display text-xs font-bold text-ink-soft">
         Tap-to-fill presets in the dispatch form. Stock moves itself: −1 when an order books,
-        +1 when a courier return comes back.
+        +1 when a courier return comes back. Use <strong>＋ Buy new stock</strong> when you
+        restock — it blends the new cost into a weighted-average unit cost.
       </p>
 
       {products.length > 0 && (
@@ -435,8 +437,8 @@ function ProductsCard({ products, onChanged }: { products: Product[]; onChanged:
             <span />
           </div>
           {products.map((p) => (
+            <Fragment key={p.id}>
             <div
-              key={p.id}
               className="grid grid-cols-2 items-center gap-2 rounded-xl bg-cream/70 p-2 sm:grid-cols-[1fr_90px_90px_90px_70px]"
             >
               <input
@@ -488,13 +490,32 @@ function ProductsCard({ products, onChanged }: { products: Product[]; onChanged:
                   +
                 </button>
               </div>
-              <button
-                onClick={() => remove(p.id, p.name)}
-                className="justify-self-end rounded-lg px-2 py-1 font-display text-xs font-bold text-ink-soft hover:bg-flame-tint hover:text-[#c04545]"
-              >
-                Delete
-              </button>
+              <div className="flex justify-end gap-1">
+                <button
+                  onClick={() => setReceivingId(receivingId === p.id ? null : p.id)}
+                  className="rounded-lg px-2 py-1 font-display text-xs font-bold text-frog-dark hover:bg-pond"
+                  title="Buy new stock (updates average cost)"
+                >
+                  {receivingId === p.id ? "Cancel" : "＋ Buy"}
+                </button>
+                <button
+                  onClick={() => remove(p.id, p.name)}
+                  className="rounded-lg px-2 py-1 font-display text-xs font-bold text-ink-soft hover:bg-flame-tint hover:text-[#c04545]"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
+            {receivingId === p.id && (
+              <ReceiveRow
+                product={p}
+                onDone={() => {
+                  setReceivingId(null);
+                  onChanged();
+                }}
+              />
+            )}
+            </Fragment>
           ))}
         </div>
       )}
@@ -541,6 +562,78 @@ function ProductsCard({ products, onChanged }: { products: Product[]; onChanged:
         </Button>
       </div>
     </Card>
+  );
+}
+
+// Buy-new-stock panel: enter quantity + this purchase's unit cost, preview the
+// resulting weighted-average cost, then commit.
+function ReceiveRow({ product, onDone }: { product: Product; onDone: () => void }) {
+  const [qty, setQty] = useState("");
+  const [cost, setCost] = useState(product.unit_cost ? String(product.unit_cost) : "");
+  const [busy, setBusy] = useState(false);
+
+  const q = Number(qty || 0);
+  const c = Number(cost || 0);
+  const newStock = product.stock_units + (q > 0 ? q : 0);
+  const newAvg =
+    newStock > 0 ? (product.stock_units * product.unit_cost + q * c) / newStock : c;
+
+  async function confirm() {
+    if (q <= 0) return;
+    setBusy(true);
+    await fetch(`/api/products/${product.id}/receive`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quantity: q, unit_cost: c }),
+    });
+    setBusy(false);
+    onDone();
+  }
+
+  const field =
+    "w-24 rounded-lg border-2 border-cardline bg-white px-2 py-1.5 font-display text-sm font-bold text-ink outline-none focus:border-frog";
+
+  return (
+    <div className="mb-2 rounded-xl border-2 border-frog/40 bg-pond/40 p-3">
+      <p className="mb-2 font-display text-xs font-extrabold text-ink">
+        📥 Buy new stock — {product.name}
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="font-display text-xs font-bold text-ink-soft">
+          Quantity
+          <input
+            type="number"
+            className={`${field} mt-1`}
+            value={qty}
+            onChange={(e) => setQty(e.target.value)}
+            placeholder="e.g. 50"
+            autoFocus
+          />
+        </label>
+        <label className="font-display text-xs font-bold text-ink-soft">
+          Cost per unit (Rs.)
+          <input
+            type="number"
+            step="0.01"
+            className={`${field} mt-1`}
+            value={cost}
+            onChange={(e) => setCost(e.target.value)}
+          />
+        </label>
+        <Button tone="frog" onClick={confirm} disabled={busy || q <= 0}>
+          {busy ? "Adding…" : "Add stock"}
+        </Button>
+      </div>
+      {q > 0 && (
+        <p className="mt-2 font-display text-xs font-bold text-ink-soft">
+          → New stock: <span className="text-ink">{newStock}</span> units · New avg cost:{" "}
+          <span className="text-ink">Rs. {newAvg.toFixed(2)}</span>
+          {Math.abs(c - product.unit_cost) > 0.001 && (
+            <span> (was Rs. {product.unit_cost.toFixed(2)})</span>
+          )}
+        </p>
+      )}
+    </div>
   );
 }
 

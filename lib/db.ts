@@ -10,6 +10,7 @@ import type {
   OrderStatus,
   Product,
   ShippingManifest,
+  TrackingEvent,
 } from "./types";
 
 // Data layer. Connects directly to Postgres (Supabase) when DATABASE_URL is set,
@@ -35,6 +36,7 @@ const g = globalThis as unknown as {
   __cyborgChatStates?: Map<string, ChatState>;
   __cyborgSettings?: BusinessSettings;
   __cyborgProducts?: Map<string, Product>;
+  __cyborgTrackingEvents?: TrackingEvent[];
 };
 
 let pool: Pool | null = null;
@@ -50,6 +52,7 @@ const memOrders = (g.__cyborgOrders ??= new Map<string, Order>());
 const memManifests = (g.__cyborgManifests ??= new Map<string, ShippingManifest>());
 const memChatStates = (g.__cyborgChatStates ??= new Map<string, ChatState>());
 const memProducts = (g.__cyborgProducts ??= new Map<string, Product>());
+const memTrackingEvents = (g.__cyborgTrackingEvents ??= []);
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   bank_cash: 0,
@@ -266,6 +269,112 @@ export async function adjustProductStock(id: string, delta: number): Promise<voi
   if (product) {
     memProducts.set(id, { ...product, stock_units: Math.max(0, product.stock_units + delta) });
   }
+}
+
+// Buying new stock: add `quantity` units bought at `unitCost` each, and roll the
+// product's unit_cost to the new weighted average. This keeps the net-worth
+// stock valuation honest when the cost price changes between purchases.
+//   new_cost = (old_stock*old_cost + qty*buy_cost) / (old_stock + qty)
+export async function receiveProductStock(
+  id: string,
+  quantity: number,
+  unitCost: number
+): Promise<Product | null> {
+  if (pool) {
+    // Both SET expressions read the pre-update column values, so this is a
+    // correct single-statement weighted average with no read-then-write race.
+    const { rows } = await pool.query(
+      `update products set
+         unit_cost = case when (stock_units + $2) > 0
+           then (stock_units * unit_cost + $2 * $3) / (stock_units + $2)
+           else $3 end,
+         stock_units = stock_units + $2
+       where id = $1
+       returning *`,
+      [id, quantity, unitCost]
+    );
+    return (rows[0] as Product) ?? null;
+  }
+  const product = memProducts.get(id);
+  if (!product) return null;
+  const newStock = product.stock_units + quantity;
+  const newCost =
+    newStock > 0
+      ? (product.stock_units * product.unit_cost + quantity * unitCost) / newStock
+      : unitCost;
+  const next = { ...product, stock_units: newStock, unit_cost: newCost };
+  memProducts.set(id, next);
+  return next;
+}
+
+// --- Tracking events (per-order courier timeline) ---------------------------
+
+// Postgres "undefined_table" — the tracking_events migration hasn't been run
+// yet. The timeline is additive, so degrade gracefully rather than 500 / break
+// a booking until the operator applies the migration.
+function isUndefinedTable(err: unknown): boolean {
+  return (
+    typeof err === "object" && err !== null && (err as { code?: string }).code === "42P01"
+  );
+}
+
+export async function addTrackingEvent(
+  order_id: string,
+  checkpoint: string,
+  outcome: string
+): Promise<void> {
+  if (pool) {
+    try {
+      await pool.query(
+        "insert into tracking_events (order_id, checkpoint, outcome) values ($1,$2,$3)",
+        [order_id, checkpoint, outcome]
+      );
+    } catch (err) {
+      if (!isUndefinedTable(err)) throw err; // never fail a booking over a timeline row
+    }
+    return;
+  }
+  memTrackingEvents.push({
+    id: randomUUID(),
+    order_id,
+    checkpoint,
+    outcome,
+    created_at: new Date().toISOString(),
+  });
+}
+
+export async function listTrackingEvents(): Promise<TrackingEvent[]> {
+  if (pool) {
+    try {
+      const { rows } = await pool.query(
+        "select * from tracking_events order by created_at asc limit 2000"
+      );
+      return rows as TrackingEvent[];
+    } catch (err) {
+      if (isUndefinedTable(err)) return [];
+      throw err;
+    }
+  }
+  return [...memTrackingEvents].sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+export async function getLatestTrackingEvent(order_id: string): Promise<TrackingEvent | null> {
+  if (pool) {
+    try {
+      const { rows } = await pool.query(
+        "select * from tracking_events where order_id = $1 order by created_at desc limit 1",
+        [order_id]
+      );
+      return (rows[0] as TrackingEvent) ?? null;
+    } catch (err) {
+      if (isUndefinedTable(err)) return null;
+      throw err;
+    }
+  }
+  const evs = memTrackingEvents
+    .filter((e) => e.order_id === order_id)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  return evs[0] ?? null;
 }
 
 // --- Chat states (Cyborg OS) -----------------------------------------------

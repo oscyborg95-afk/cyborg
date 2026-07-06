@@ -1,9 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
-import type { Order, OrderStatus, Product, ShippingManifest } from "@/lib/types";
+import { templates } from "@/lib/templates";
+import type {
+  Order,
+  OrderStatus,
+  Product,
+  ShippingManifest,
+  TrackingEvent,
+} from "@/lib/types";
 import { Froggy } from "../components/froggy";
 import { Button, Card } from "../components/ui";
 import { CityPicker } from "../components/city-picker";
@@ -37,12 +44,24 @@ const inputCls =
   "mt-1 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog";
 
 function confirmationBlock(order: Order, manifest?: ShippingManifest): string {
-  const tracking = manifest ? `Tracking අංකය: ${manifest.tracking_id}.\n` : "";
-  return (
-    `Daily Cart එකෙන්! 🚚\n\n` +
-    `ඔබගේ ඇණවුම සාර්ථකව තහවුරු කළා. ${tracking}` +
-    `ලැබීමට ඇති මුදල: රු. ${order.total_cod}`
-  );
+  return templates.shippedConfirmation(order.total_cod, manifest?.tracking_id);
+}
+
+// Visual style for each timeline outcome.
+const OUTCOME_STYLE: Record<string, { dot: string; label: string; emoji: string }> = {
+  booked: { dot: "bg-sky", label: "Booked", emoji: "📦" },
+  in_transit: { dot: "bg-gold", label: "In transit", emoji: "🚚" },
+  delivered: { dot: "bg-frog", label: "Delivered", emoji: "✅" },
+  returned: { dot: "bg-flame", label: "Returned", emoji: "↩️" },
+};
+
+function fmtDateTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 export default function OrdersPage() {
@@ -52,6 +71,9 @@ export default function OrdersPage() {
   const [saving, setSaving] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [manifests, setManifests] = useState<ShippingManifest[]>([]);
+  const [events, setEvents] = useState<TrackingEvent[]>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showManual, setShowManual] = useState(false);
   const [usingSupabase, setUsingSupabase] = useState(true);
   const [bookingId, setBookingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -69,6 +91,7 @@ export default function OrdersPage() {
     if (ordersRes.ok) {
       setOrders(data.orders);
       setManifests(data.manifests);
+      setEvents(data.events ?? []);
       setUsingSupabase(data.usingSupabase);
     }
     const productsData = await productsRes.json();
@@ -152,6 +175,7 @@ export default function OrdersPage() {
       if (!res.ok) throw new Error(data.error);
       setForm(null);
       setRawText("");
+      setShowManual(false);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
@@ -217,12 +241,24 @@ export default function OrdersPage() {
       <header className="flex flex-wrap items-center gap-3">
         <Froggy mood={orders.length > 0 ? "happy" : "idle"} size={56} />
         <div>
-          <h1 className="font-display text-2xl font-extrabold text-ink">Manual orders</h1>
+          <h1 className="font-display text-2xl font-extrabold text-ink">Orders &amp; tracking</h1>
           <p className="font-display text-sm font-bold text-ink-soft">
-            Paste → parse → verify → book → copy confirmation
+            Every order, its courier status, and the full delivery timeline
           </p>
         </div>
         <div className="ml-auto flex gap-2">
+          <Button
+            tone={showManual ? "ghost" : "gold"}
+            onClick={() => {
+              setShowManual((v) => !v);
+              if (showManual) {
+                setForm(null);
+                setRawText("");
+              }
+            }}
+          >
+            {showManual ? "✕ Close" : "＋ Add manual order"}
+          </Button>
           <Button tone="grape" onClick={syncTracking} disabled={syncing}>
             {syncing ? "📡 Checking courier…" : "📡 Sync tracking"}
           </Button>
@@ -253,10 +289,16 @@ export default function OrdersPage() {
         </p>
       )}
 
+      {showManual && (
+        <>
       <Card className="p-5">
         <h2 className="mb-2 font-display text-lg font-extrabold text-ink">
-          1 · Paste raw WhatsApp text
+          Paste raw text
         </h2>
+        <p className="mb-2 font-display text-xs font-bold text-ink-soft">
+          For orders that didn&apos;t arrive on WhatsApp (a phone call, Instagram, a walk-in).
+          WhatsApp chats parse automatically in the workspace — you don&apos;t need this for those.
+        </p>
         <textarea
           className="h-32 w-full rounded-xl border-2 border-cardline bg-cream/60 p-3 text-sm font-semibold text-ink outline-none focus:border-frog"
           placeholder="Paste the customer's address message here…"
@@ -417,9 +459,11 @@ export default function OrdersPage() {
           </Button>
         </Card>
       )}
+        </>
+      )}
 
       <Card className="p-5">
-        <h2 className="mb-3 font-display text-lg font-extrabold text-ink">3 · Orders</h2>
+        <h2 className="mb-3 font-display text-lg font-extrabold text-ink">Orders</h2>
         {orders.length === 0 ? (
           <div className="flex flex-col items-center gap-2 p-6 text-center">
             <Froggy mood="sleepy" size={72} />
@@ -441,79 +485,109 @@ export default function OrdersPage() {
               <tbody>
                 {orders.map((order) => {
                   const manifest = manifests.find((m) => m.order_id === order.id);
+                  const orderEvents = events
+                    .filter((e) => e.order_id === order.id)
+                    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+                  const latest = orderEvents[orderEvents.length - 1];
+                  const latestStyle = latest ? OUTCOME_STYLE[latest.outcome] : null;
+                  const expanded = expandedId === order.id;
+                  const trackable = Boolean(manifest || orderEvents.length);
                   return (
-                    <tr key={order.id} className="border-b border-cardline/60 align-top">
-                      <td className="py-2.5 pr-3">
-                        <div className="font-display font-bold text-ink">
-                          {order.customer_name}
-                        </div>
-                        <div className="text-xs font-semibold text-ink-soft">
-                          {[order.phone_number, order.phone_2].filter(Boolean).join(" / ")}
-                        </div>
-                      </td>
-                      <td className="py-2.5 pr-3 font-semibold text-ink">{order.district}</td>
-                      <td className="py-2.5 pr-3 font-display font-bold text-ink">
-                        Rs. {order.total_cod}
-                      </td>
-                      <td className="py-2.5 pr-3">
-                        <select
-                          className={
-                            "rounded-full border-0 px-2 py-1 font-display text-xs font-extrabold outline-none " +
-                            STATUS_STYLE[order.order_status]
-                          }
-                          value={order.order_status}
-                          onChange={(e) =>
-                            handleStatusChange(order.id, e.target.value as OrderStatus)
-                          }
-                        >
-                          <option value="pending">pending</option>
-                          <option value="booked">booked</option>
-                          <option value="delivered">delivered</option>
-                          <option value="returned">returned</option>
-                        </select>
-                      </td>
-                      <td className="py-2.5 pr-3">
-                        {manifest ? (
-                          <>
-                            <div className="font-mono text-xs font-bold text-ink">
-                              {manifest.tracking_id}
-                            </div>
-                            {manifest.pdf_label_url && (
-                              <a
-                                href={manifest.pdf_label_url}
-                                target="_blank"
-                                className="text-xs font-bold text-sky-dark underline"
+                    <Fragment key={order.id}>
+                      <tr className="border-b border-cardline/60 align-top">
+                        <td className="py-2.5 pr-3">
+                          <div className="font-display font-bold text-ink">
+                            {order.customer_name}
+                          </div>
+                          <div className="text-xs font-semibold text-ink-soft">
+                            {[order.phone_number, order.phone_2].filter(Boolean).join(" / ")}
+                          </div>
+                        </td>
+                        <td className="py-2.5 pr-3 font-semibold text-ink">{order.district}</td>
+                        <td className="py-2.5 pr-3 font-display font-bold text-ink">
+                          Rs. {order.total_cod}
+                        </td>
+                        <td className="py-2.5 pr-3">
+                          <select
+                            className={
+                              "rounded-full border-0 px-2 py-1 font-display text-xs font-extrabold outline-none " +
+                              STATUS_STYLE[order.order_status]
+                            }
+                            value={order.order_status}
+                            onChange={(e) =>
+                              handleStatusChange(order.id, e.target.value as OrderStatus)
+                            }
+                          >
+                            <option value="pending">pending</option>
+                            <option value="booked">booked</option>
+                            <option value="delivered">delivered</option>
+                            <option value="returned">returned</option>
+                          </select>
+                        </td>
+                        <td className="py-2.5 pr-3">
+                          {manifest ? (
+                            <>
+                              <div className="font-mono text-xs font-bold text-ink">
+                                {manifest.tracking_id}
+                              </div>
+                              {latestStyle && (
+                                <div className="mt-0.5 font-display text-xs font-bold text-ink-soft">
+                                  {latestStyle.emoji} {latest.checkpoint}
+                                </div>
+                              )}
+                              {manifest.pdf_label_url && (
+                                <a
+                                  href={manifest.pdf_label_url}
+                                  target="_blank"
+                                  className="text-xs font-bold text-sky-dark underline"
+                                >
+                                  Label PDF
+                                </a>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-ink-soft">—</span>
+                          )}
+                        </td>
+                        <td className="py-2.5">
+                          <div className="flex flex-wrap gap-2">
+                            {order.order_status === "pending" && (
+                              <Button
+                                tone="frog"
+                                onClick={() => handleBook(order.id)}
+                                disabled={bookingId === order.id}
+                                className="!px-3 !py-1.5 !text-xs"
                               >
-                                Label PDF
-                              </a>
+                                {bookingId === order.id ? "Booking…" : "🚀 Book"}
+                              </Button>
                             )}
-                          </>
-                        ) : (
-                          <span className="text-ink-soft">—</span>
-                        )}
-                      </td>
-                      <td className="py-2.5">
-                        <div className="flex gap-2">
-                          {order.order_status === "pending" && (
+                            {trackable && (
+                              <Button
+                                tone="ghost"
+                                onClick={() => setExpandedId(expanded ? null : order.id)}
+                                className="!px-3 !py-1.5 !text-xs"
+                              >
+                                {expanded ? "Hide timeline ▲" : "🧭 Timeline ▾"}
+                              </Button>
+                            )}
                             <Button
-                              tone="frog"
-                              onClick={() => handleBook(order.id)}
-                              disabled={bookingId === order.id}
+                              tone="ghost"
+                              onClick={() => handleCopy(order)}
                               className="!px-3 !py-1.5 !text-xs"
                             >
-                              {bookingId === order.id ? "Booking…" : "🚀 Book"}
+                              {copiedId === order.id ? "Copied ✓" : "Copy confirm"}
                             </Button>
-                          )}
-                          <Button
-                            tone="ghost"
-                            onClick={() => handleCopy(order)}
-                            className="!px-3 !py-1.5 !text-xs"
-                          >
-                            {copiedId === order.id ? "Copied ✓" : "Copy confirm"}
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
+                          </div>
+                        </td>
+                      </tr>
+                      {expanded && (
+                        <tr className="border-b border-cardline/60 bg-cream/40">
+                          <td colSpan={6} className="px-4 py-4">
+                            <Timeline events={orderEvents} manifest={manifest} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -522,5 +596,66 @@ export default function OrdersPage() {
         )}
       </Card>
     </main>
+  );
+}
+
+function Timeline({
+  events,
+  manifest,
+}: {
+  events: TrackingEvent[];
+  manifest?: ShippingManifest;
+}) {
+  // Orders booked before this feature have no events — fall back to the
+  // manifest's single last checkpoint so there's always something to show.
+  const items: TrackingEvent[] =
+    events.length > 0
+      ? events
+      : manifest
+        ? [
+            {
+              id: manifest.id,
+              order_id: manifest.order_id,
+              checkpoint: manifest.last_checkpoint || "Booked with courier",
+              outcome: "booked",
+              created_at: manifest.created_at,
+            },
+          ]
+        : [];
+
+  if (items.length === 0) {
+    return (
+      <p className="font-display text-sm font-bold text-ink-soft">No tracking updates yet.</p>
+    );
+  }
+
+  return (
+    <ol className="relative ml-2 border-l-2 border-cardline">
+      {items.map((ev, i) => {
+        const style = OUTCOME_STYLE[ev.outcome] ?? OUTCOME_STYLE.in_transit;
+        const isLast = i === items.length - 1;
+        return (
+          <li key={ev.id} className="relative mb-4 pl-5 last:mb-0">
+            <span
+              className={`absolute -left-[7px] top-1 h-3 w-3 rounded-full ${style.dot} ring-2 ring-white`}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-display text-sm font-extrabold text-ink">
+                {style.emoji} {style.label}
+              </span>
+              {isLast && (
+                <span className="rounded-full bg-pond px-2 py-0.5 font-display text-[10px] font-extrabold text-frog-dark">
+                  LATEST
+                </span>
+              )}
+            </div>
+            <p className="font-display text-xs font-semibold text-ink-soft">{ev.checkpoint}</p>
+            <p className="font-display text-[11px] font-bold text-ink-soft">
+              {fmtDateTime(ev.created_at)}
+            </p>
+          </li>
+        );
+      })}
+    </ol>
   );
 }

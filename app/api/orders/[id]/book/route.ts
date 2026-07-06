@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createManifest, getOrder, updateOrderStatus } from "@/lib/db";
+import { addTrackingEvent, createManifest, getOrder, updateOrderStatus } from "@/lib/db";
 import { bookCourierOrder } from "@/lib/couriers";
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -23,6 +23,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       last_checkpoint: "booked",
     });
     await updateOrderStatus(order.id, "booked");
+    await addTrackingEvent(order.id, `Booked with ${booking.courier_name}`, "booked");
     return NextResponse.json({ manifest });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Booking failed";

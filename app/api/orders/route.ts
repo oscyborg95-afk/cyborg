@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createOrder, listManifests, listOrders, usingSupabase } from "@/lib/db";
+import {
+  createOrder,
+  listManifests,
+  listOrders,
+  listTrackingEvents,
+  usingSupabase,
+} from "@/lib/db";
 import type { NewOrder } from "@/lib/types";
 
 export async function GET() {
   try {
-    const [orders, manifests] = await Promise.all([listOrders(), listManifests()]);
-    return NextResponse.json({ orders, manifests, usingSupabase });
+    const [orders, manifests, events] = await Promise.all([
+      listOrders(),
+      listManifests(),
+      listTrackingEvents(),
+    ]);
+    return NextResponse.json({ orders, manifests, events, usingSupabase });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load orders";
     return NextResponse.json({ error: message }, { status: 500 });

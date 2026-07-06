@@ -29,6 +29,16 @@ export interface ShippingManifest {
   created_at: string;
 }
 
+// One courier status change, appended as tracking progresses. Builds the
+// per-order timeline shown on the Orders page.
+export interface TrackingEvent {
+  id: string;
+  order_id: string;
+  checkpoint: string; // human-readable status line from the courier
+  outcome: string; // booked | in_transit | delivered | returned
+  created_at: string;
+}
+
 export interface ParsedAddress {
   name: string;
   phone: string;

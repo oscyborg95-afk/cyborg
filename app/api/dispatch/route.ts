@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createOrder, createManifest, updateOrderStatus, upsertChatState } from "@/lib/db";
+import {
+  addTrackingEvent,
+  createOrder,
+  createManifest,
+  updateOrderStatus,
+  upsertChatState,
+} from "@/lib/db";
 import { bookCourierOrder } from "@/lib/couriers";
 
 // The one-click "Book & Print Waybill" action:
@@ -63,6 +69,7 @@ export async function POST(req: NextRequest) {
       last_checkpoint: "booked",
     });
     await updateOrderStatus(order.id, "booked");
+    await addTrackingEvent(order.id, `Booked with ${booking.courier_name}`, "booked");
     await upsertChatState(phone_number, chat_id, "SHIPPED", customer_name);
 
     return NextResponse.json({ order, manifest });

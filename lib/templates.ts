@@ -8,8 +8,17 @@ export const templates = {
   codConfirm: (totalCod: number) =>
     `ඔබගේ order එක confirm කරන්නම්ද? 📦\n\nගෙදරටම delivery — ලැබෙනකොට ගෙවන්න (COD).\nමුළු මුදල: රු. ${totalCod}\n\nOK කියලා reply කරන්න ✅`,
 
-  shippedConfirmation: (totalCod: number, trackingId: string) =>
-    `Daily Cart එකෙන්! 🚚\n\nඔබගේ ඇණවුම සාර්ථකව තහවුරු කළා. Tracking අංකය: ${trackingId}.\nලැබීමට ඇති මුදල: රු. ${totalCod}`,
+  // Sent right after dispatch. Friendly + professional, and clearly flagged as
+  // an automated system message. trackingId is optional (omitted before booking).
+  shippedConfirmation: (totalCod: number, trackingId?: string) =>
+    `🌿 *Daily Cart*\n\n` +
+    `ආයුබෝවන්! 🙏 ඔබගේ ඇණවුම සාර්ථකව තහවුරු කර, delivery සඳහා යොමු කර ඇත. ✅\n\n` +
+    (trackingId ? `📦 Tracking අංකය: *${trackingId}*\n` : "") +
+    `💰 ලැබීමේදී ගෙවීමට ඇති මුදල (COD): *රු. ${totalCod}*\n` +
+    `🚚 සාමාන්‍යයෙන් වැඩ කරන දින 1–3ක් ඇතුළත ඔබ වෙත ලැබෙනු ඇත.\n\n` +
+    `ඔබගේ ඇණවුමට බොහෝම ස්තූතියි! 💚 ඕනෑම ගැටලුවක් ඇත්නම් මෙම chat එකට reply කරන්න.\n\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `ⓘ මෙය Daily Cart පද්ධතියෙන් ස්වයංක්‍රීයව (automatically) ජනනය කරන ලද පණිවිඩයකි.`,
 
   trackingAlert: (trackingId: string) =>
     `ඔබේ පැකේජය courier වෙත භාර දුන්නා 📦\nTracking අංකය: ${trackingId}\nදවස් 1–2ක් ඇතුළත ලැබෙයි!`,
