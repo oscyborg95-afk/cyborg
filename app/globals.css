@@ -1,26 +1,321 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ============================================================
+   Froggy × Duolingo design system
+   Warm, rounded, chunky, playful. Bright by default.
+   ============================================================ */
+
+@theme {
+  /* Surfaces */
+  --color-cream: #fbf7ef; /* app background – warm paper */
+  --color-pond: #eef8e1; /* soft green tint for accents */
+  --color-sky-tint: #e8f6ff;
+  --color-grape-tint: #f4ebff;
+  --color-flame-tint: #fff2e0;
+
+  /* Ink */
+  --color-ink: #3f3a34;
+  --color-ink-soft: #8a8178;
+  --color-cardline: #e9e2d6;
+
+  /* The three froggy characters + play accents */
+  --color-frog: #58cc02; /* Steve – green (primary / success) */
+  --color-frog-dark: #48a600;
+  --color-sky: #1cb0f6; /* Christus – blue */
+  --color-sky-dark: #1490cf;
+  --color-grape: #a560e8; /* Nicoletta – purple */
+  --color-grape-dark: #8a44cf;
+  --color-flame: #ff9600; /* streak fire */
+  --color-flame-dark: #e07d00;
+  --color-gold: #ffc800; /* trophies / level */
+  --color-gold-dark: #e0ab00;
+
+  --font-display: var(--font-baloo), system-ui, sans-serif;
+  --font-body: var(--font-nunito), system-ui, sans-serif;
+
+  --animate-bob: bob 2.8s ease-in-out infinite;
+  --animate-bob-slow: bob 4s ease-in-out infinite;
+  --animate-pop: pop 0.35s cubic-bezier(0.18, 0.89, 0.32, 1.28) both;
+  --animate-flicker: flicker 1.6s ease-in-out infinite;
+  --animate-shimmer: shimmer 2.2s linear infinite;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@keyframes bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-7px) rotate(-1.5deg);
   }
 }
 
+@keyframes pop {
+  0% {
+    transform: scale(0.85);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes flicker {
+  0%,
+  100% {
+    transform: scale(1) rotate(-2deg);
+  }
+  50% {
+    transform: scale(1.12) rotate(2deg);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes confetti-fall {
+  0% {
+    transform: translateY(-10vh) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(110vh) rotate(720deg);
+    opacity: 0;
+  }
+}
+
+@keyframes count-glow {
+  0%,
+  100% {
+    text-shadow: 0 0 0 transparent;
+  }
+  50% {
+    text-shadow: 0 0 24px rgba(255, 200, 0, 0.55);
+  }
+}
+
+html {
+  height: 100%;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  height: 100%;
+  background-color: var(--color-cream);
+  background-image: radial-gradient(
+      circle at 12% 18%,
+      rgba(88, 204, 2, 0.07),
+      transparent 42%
+    ),
+    radial-gradient(circle at 88% 8%, rgba(28, 176, 246, 0.07), transparent 40%),
+    radial-gradient(circle at 78% 92%, rgba(165, 96, 232, 0.06), transparent 45%);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+}
+
+/* Chunky Duolingo-style pressable button. Tone sets bg + darker bottom edge. */
+.btn3d {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 1rem;
+  border-bottom-width: 4px;
+  border-bottom-style: solid;
+  padding: 0.7rem 1.25rem;
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  transition: transform 0.06s ease, filter 0.15s ease, box-shadow 0.15s ease;
+  cursor: pointer;
+  user-select: none;
+}
+.btn3d:hover {
+  filter: brightness(1.04);
+}
+.btn3d:active {
+  transform: translateY(3px);
+  border-bottom-width: 1px;
+}
+.btn3d:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Card with a soft bottom lip for depth. */
+.card3d {
+  background: #ffffff;
+  border: 2px solid var(--color-cardline);
+  border-bottom-width: 5px;
+  border-radius: 1.25rem;
+}
+
+/* ============================================================
+   Invoice sheets — 8-up on A4 (2 cols × 4 rows), print-exact.
+   ============================================================ */
+
+.invoice-sheet {
+  width: 210mm;
+  height: 297mm;
+  padding: 5mm;
+  background: #ffffff;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  box-shadow: 0 2px 14px rgba(63, 58, 52, 0.12);
+}
+
+.invoice-cell {
+  border: 0.4mm dashed #b8b0a2; /* cut lines */
+  padding: 3.5mm 4mm;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: #111;
+  font-family: var(--font-body);
+  font-size: 8pt;
+  line-height: 1.25;
+}
+.invoice-cell-empty {
+  border-style: dotted;
+  opacity: 0.35;
+}
+
+.inv-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 3mm;
+}
+.inv-biz {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 10.5pt;
+}
+.inv-small {
+  font-size: 7pt;
+  color: #444;
+}
+.inv-date {
+  text-align: right;
+  font-size: 7pt;
+  color: #444;
+  white-space: nowrap;
+}
+.inv-rule {
+  border-top: 0.3mm solid #111;
+  margin: 1.6mm 0;
+}
+.inv-to {
+  font-size: 6.5pt;
+  letter-spacing: 0.12em;
+  color: #666;
+  font-weight: 700;
+}
+.inv-cust {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 11pt;
+}
+.inv-addr {
+  font-size: 8.5pt;
+}
+.inv-phone {
+  font-size: 9pt;
+  font-weight: 700;
+}
+.inv-money {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 3mm;
+  margin-top: auto;
+}
+.inv-item {
+  font-size: 8pt;
+  font-weight: 700;
+  max-width: 40mm;
+}
+.inv-table {
+  font-size: 7.5pt;
+  border-collapse: collapse;
+}
+.inv-table td {
+  padding: 0 0 0.4mm 0;
+}
+.inv-table td:last-child {
+  text-align: right;
+  padding-left: 4mm;
+}
+.inv-total td {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 10pt;
+  border-top: 0.3mm solid #111;
+  padding-top: 0.8mm;
+}
+.inv-barcode {
+  margin-top: 1.6mm;
+  text-align: center;
+}
+.inv-barcode-svg {
+  width: 52mm;
+  height: 9mm;
+  display: inline-block;
+}
+.inv-tracking {
+  font-family: var(--font-mono, monospace);
+  font-size: 8pt;
+  letter-spacing: 0.08em;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  html,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  body {
+    display: block !important;
+  }
+  nav,
+  .print-hide {
+    display: none !important;
+  }
+  /* The layout's scroll wrapper must not clip pages. */
+  body > div {
+    overflow: visible !important;
+    height: auto !important;
+  }
+  .print-area {
+    gap: 0 !important;
+    padding: 0 !important;
+  }
+  .invoice-sheet {
+    box-shadow: none;
+    break-after: page;
+  }
+}
+
+.confetti-piece {
+  position: fixed;
+  top: 0;
+  width: 10px;
+  height: 14px;
+  border-radius: 3px;
+  animation: confetti-fall linear forwards;
+  z-index: 60;
+  pointer-events: none;
 }

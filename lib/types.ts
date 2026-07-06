@@ -1,0 +1,100 @@
+export type OrderStatus = "pending" | "booked" | "delivered" | "returned";
+
+export interface Order {
+  id: string;
+  customer_name: string;
+  phone_number: string;
+  phone_2: string; // second contact number, "" when the customer gave only one
+  raw_address: string;
+  parsed_address: string;
+  city: string;
+  district: string;
+  product_id: string | null;
+  item_name: string;
+  product_price: number;
+  shipping_fee: number;
+  discount: number;
+  total_cod: number;
+  order_status: OrderStatus;
+  created_at: string;
+}
+
+export interface ShippingManifest {
+  id: string;
+  order_id: string;
+  courier_name: string;
+  tracking_id: string;
+  pdf_label_url: string | null;
+  last_checkpoint: string | null;
+  created_at: string;
+}
+
+export interface ParsedAddress {
+  name: string;
+  phone: string;
+  phone_2: string; // "" when only one number was given
+  address: string;
+  city: string;
+  district: string;
+}
+
+export type NewOrder = Omit<Order, "id" | "created_at" | "order_status">;
+
+// A sellable product preset. stock_units tracks physical units in the shed:
+// booking an order takes one out, a courier return puts one back.
+export interface Product {
+  id: string;
+  name: string;
+  price: number; // default selling price (Rs.)
+  unit_cost: number; // what one unit cost you (Rs.) — feeds net-worth stock value
+  stock_units: number;
+  created_at: string;
+}
+
+export type NewProduct = Omit<Product, "id" | "created_at">;
+
+export const CHAT_STATES = [
+  "NEW",
+  "AWAITING_ADDRESS",
+  "AWAITING_CONFIRMATION",
+  "CONFIRMED",
+  "SHIPPED",
+] as const;
+
+export type ChatStateValue = (typeof CHAT_STATES)[number];
+
+export interface ChatState {
+  phone_number: string;
+  chat_id: string;
+  display_name: string | null;
+  state: ChatStateValue;
+  updated_at: string;
+}
+
+export interface BusinessSettings {
+  bank_cash: number;
+  stock_units: number;
+  stock_unit_cost: number;
+  // Printed on invoices.
+  business_name: string;
+  business_address: string;
+  business_phone_1: string;
+  business_phone_2: string;
+}
+
+export interface WaChat {
+  id: string;
+  name: string;
+  lastMessage: string;
+  timestamp: number;
+  unreadCount: number;
+}
+
+export interface WaMessage {
+  id: string;
+  chatId: string;
+  body: string;
+  fromMe: boolean;
+  timestamp: number;
+  senderName: string;
+}

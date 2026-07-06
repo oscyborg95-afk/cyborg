@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cyborg-v1",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "wa-worker-mock",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "mock", "--prefix", "worker"],
+      "port": 3001
+    }
+  ]
+}
