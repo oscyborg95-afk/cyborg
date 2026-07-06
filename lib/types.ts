@@ -1,5 +1,14 @@
 export type OrderStatus = "pending" | "booked" | "delivered" | "returned";
 
+// One line of a multi-product order. `product_id` links back to stock when the
+// line came from a preset chip; free-typed lines carry null.
+export interface OrderItem {
+  product_id: string | null;
+  name: string;
+  qty: number;
+  price: number; // per unit (Rs.)
+}
+
 export interface Order {
   id: string;
   customer_name: string;
@@ -8,9 +17,11 @@ export interface Order {
   raw_address: string;
   parsed_address: string;
   city: string;
+  city_id: number | null; // exact courier city id picked in the UI; null → resolve by name
   district: string;
   product_id: string | null;
   item_name: string;
+  items: OrderItem[] | null; // line items; null/[] = legacy single-item order
   product_price: number;
   shipping_fee: number;
   discount: number;
@@ -81,6 +92,17 @@ export interface ChatState {
   updated_at: string;
 }
 
+// Editable WhatsApp message templates. Keys match lib/templates.ts defaults;
+// a missing key means "use the built-in default".
+export type TemplateKey =
+  | "askAddress"
+  | "codConfirm"
+  | "shippedConfirmation"
+  | "trackingAlert"
+  | "delayBonus";
+
+export type MessageTemplates = Partial<Record<TemplateKey, string>>;
+
 export interface BusinessSettings {
   bank_cash: number;
   stock_units: number;
@@ -90,6 +112,8 @@ export interface BusinessSettings {
   business_address: string;
   business_phone_1: string;
   business_phone_2: string;
+  // Operator-customized WhatsApp templates ({{placeholders}} substituted at send).
+  templates: MessageTemplates;
 }
 
 export interface WaChat {

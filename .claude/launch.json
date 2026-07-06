@@ -4,7 +4,13 @@
     {
       "name": "cyborg-v1",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": ["run", "dev:web"],
+      "port": 3000
+    },
+    {
+      "name": "web-memory",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["DATABASE_URL=", "npx", "next", "dev"],
       "port": 3000
     },
     {

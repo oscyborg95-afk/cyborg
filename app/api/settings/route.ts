@@ -1,5 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/db";
+import { DEFAULT_TEMPLATES } from "@/lib/templates";
+import type { MessageTemplates, TemplateKey } from "@/lib/types";
+
+// Keep only known template keys with non-empty string values; an override
+// identical to the default is dropped so the row stays minimal.
+function sanitizeTemplates(raw: unknown): MessageTemplates {
+  const out: MessageTemplates = {};
+  if (typeof raw !== "object" || raw === null) return out;
+  for (const key of Object.keys(DEFAULT_TEMPLATES) as TemplateKey[]) {
+    const v = (raw as Record<string, unknown>)[key];
+    if (typeof v === "string" && v.trim() && v !== DEFAULT_TEMPLATES[key]) {
+      out[key] = v;
+    }
+  }
+  return out;
+}
 
 export async function GET() {
   try {
@@ -20,6 +36,7 @@ export async function POST(req: NextRequest) {
     business_address: String(body.business_address ?? ""),
     business_phone_1: String(body.business_phone_1 ?? ""),
     business_phone_2: String(body.business_phone_2 ?? ""),
+    templates: sanitizeTemplates(body.templates),
   };
   if ([settings.bank_cash, settings.stock_units, settings.stock_unit_cost].some(Number.isNaN)) {
     return NextResponse.json({ error: "All settings must be numbers" }, { status: 400 });

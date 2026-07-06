@@ -3,9 +3,12 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
-import { templates } from "@/lib/templates";
+import { makeTemplates } from "@/lib/templates";
+import { itemsSubtotal } from "@/lib/items";
 import type {
+  MessageTemplates,
   Order,
+  OrderItem,
   OrderStatus,
   Product,
   ShippingManifest,
@@ -14,6 +17,7 @@ import type {
 import { Froggy } from "../components/froggy";
 import { Button, Card } from "../components/ui";
 import { CityPicker } from "../components/city-picker";
+import { ItemsEditor } from "../components/items-editor";
 
 // Manual fallback flow: paste → parse → verify → save → book → copy.
 // The realtime workspace at / replaces this for day-to-day work, but this page
@@ -25,10 +29,9 @@ interface ReviewForm {
   phone_2: string;
   parsed_address: string;
   city: string;
+  city_id: number | null; // exact courier city id from the picker; null → resolve by name
   district: string;
-  product_id: string;
-  item_name: string;
-  product_price: string;
+  items: OrderItem[]; // multi-product cart — subtotal feeds the COD total
   shipping_fee: string;
   discount: string;
 }
@@ -43,8 +46,12 @@ const STATUS_STYLE: Record<OrderStatus, string> = {
 const inputCls =
   "mt-1 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog";
 
-function confirmationBlock(order: Order, manifest?: ShippingManifest): string {
-  return templates.shippedConfirmation(order.total_cod, manifest?.tracking_id);
+function confirmationBlock(
+  order: Order,
+  manifest?: ShippingManifest,
+  overrides: MessageTemplates = {}
+): string {
+  return makeTemplates(overrides).shippedConfirmation(order.total_cod, manifest?.tracking_id);
 }
 
 // Visual style for each timeline outcome.
@@ -81,11 +88,13 @@ export default function OrdersPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
+  const [msgTemplates, setMsgTemplates] = useState<MessageTemplates>({});
 
   const refresh = useCallback(async () => {
-    const [ordersRes, productsRes] = await Promise.all([
+    const [ordersRes, productsRes, settingsRes] = await Promise.all([
       fetch("/api/orders"),
       fetch("/api/products"),
+      fetch("/api/settings"),
     ]);
     const data = await ordersRes.json();
     if (ordersRes.ok) {
@@ -96,6 +105,8 @@ export default function OrdersPage() {
     }
     const productsData = await productsRes.json();
     if (productsRes.ok) setProducts(productsData.products);
+    const settingsData = await settingsRes.json();
+    if (settingsRes.ok) setMsgTemplates(settingsData.settings?.templates ?? {});
   }, []);
 
   const syncTracking = useCallback(async () => {
@@ -141,10 +152,9 @@ export default function OrdersPage() {
         phone_2: data.phone_2 || "",
         parsed_address: data.address,
         city: data.city ?? "",
+        city_id: null, // parser returns a name only; operator picks the exact city
         district: data.district,
-        product_id: "",
-        item_name: "",
-        product_price: "",
+        items: [],
         shipping_fee: String(data.shipping_fee),
         discount: "",
       });
@@ -166,7 +176,6 @@ export default function OrdersPage() {
         body: JSON.stringify({
           ...form,
           raw_address: rawText,
-          product_price: Number(form.product_price || 0),
           shipping_fee: Number(form.shipping_fee || 0),
           discount: Number(form.discount || 0),
         }),
@@ -213,12 +222,12 @@ export default function OrdersPage() {
 
   async function handleCopy(order: Order) {
     const manifest = manifests.find((m) => m.order_id === order.id);
-    await navigator.clipboard.writeText(confirmationBlock(order, manifest));
+    await navigator.clipboard.writeText(confirmationBlock(order, manifest, msgTemplates));
     setCopiedId(order.id);
     setTimeout(() => setCopiedId(null), 1500);
   }
 
-  const setField = (field: keyof ReviewForm, value: string) => {
+  const setField = (field: Exclude<keyof ReviewForm, "items" | "city_id">, value: string) => {
     setForm((f) => {
       if (!f) return f;
       const next = { ...f, [field]: value };
@@ -230,9 +239,7 @@ export default function OrdersPage() {
   const totalCod = form
     ? Math.max(
         0,
-        Number(form.product_price || 0) +
-          Number(form.shipping_fee || 0) -
-          Number(form.discount || 0)
+        itemsSubtotal(form.items) + Number(form.shipping_fee || 0) - Number(form.discount || 0)
       )
     : 0;
 
@@ -356,7 +363,9 @@ export default function OrdersPage() {
               <CityPicker
                 className={inputCls}
                 value={form.city}
-                onChange={(city) => setForm((f) => (f ? { ...f, city } : f))}
+                onChange={(city, cityId) =>
+                  setForm((f) => (f ? { ...f, city, city_id: cityId } : f))
+                }
               />
             </label>
             <label className="font-display text-xs font-bold text-ink-soft">
@@ -371,67 +380,13 @@ export default function OrdersPage() {
                 ))}
               </select>
             </label>
-            {products.length > 0 && (
-              <div className="sm:col-span-2">
-                <p className="mb-1 font-display text-xs font-bold text-ink-soft">
-                  Product (tap to fill)
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {products.map((p) => {
-                    const active = form.product_id === p.id;
-                    const out = p.stock_units <= 0;
-                    return (
-                      <button
-                        key={p.id}
-                        onClick={() =>
-                          setForm((f) =>
-                            f
-                              ? {
-                                  ...f,
-                                  product_id: p.id,
-                                  item_name: p.name,
-                                  product_price: String(p.price),
-                                }
-                              : f
-                          )
-                        }
-                        className={
-                          "rounded-full px-2.5 py-1 font-display text-xs font-bold transition " +
-                          (active
-                            ? "bg-frog text-white"
-                            : "bg-[#f2ede3] text-ink hover:bg-pond hover:text-frog-dark")
-                        }
-                      >
-                        {p.name} · Rs. {p.price}{" "}
-                        <span className={out ? "text-[#c04545]" : active ? "text-white/80" : "text-ink-soft"}>
-                          ({out ? "out of stock!" : `${p.stock_units} left`})
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            <label className="font-display text-xs font-bold text-ink-soft">
-              Item name (prints on the invoice)
-              <input
-                className={inputCls}
-                value={form.item_name}
-                onChange={(e) =>
-                  setForm((f) => (f ? { ...f, item_name: e.target.value, product_id: "" } : f))
-                }
-                placeholder="e.g. Posture corrector"
+            <div className="sm:col-span-2">
+              <ItemsEditor
+                products={products}
+                items={form.items}
+                onChange={(items) => setForm((f) => (f ? { ...f, items } : f))}
               />
-            </label>
-            <label className="font-display text-xs font-bold text-ink-soft">
-              Product price (Rs.)
-              <input
-                type="number"
-                className={inputCls}
-                value={form.product_price}
-                onChange={(e) => setField("product_price", e.target.value)}
-              />
-            </label>
+            </div>
             <label className="font-display text-xs font-bold text-ink-soft">
               Shipping (Rs.)
               <input

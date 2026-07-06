@@ -2,9 +2,21 @@
 
 import { Fragment, useCallback, useEffect, useState } from "react";
 import type { Metrics } from "@/lib/metrics";
-import type { BusinessSettings, Product } from "@/lib/types";
+import type { BusinessSettings, Product, TemplateKey } from "@/lib/types";
+import { DEFAULT_TEMPLATES, TEMPLATE_META } from "@/lib/templates";
 import { Froggy, type FroggyMood } from "../components/froggy";
-import { Button, Card, Confetti, CountUp, Flame, ProgressBar, ProgressRing } from "../components/ui";
+import {
+  ActivityChart,
+  Button,
+  Card,
+  Confetti,
+  CountUp,
+  Flame,
+  ProgressBar,
+  ProgressRing,
+} from "../components/ui";
+import { Coach, useColomboCountdown, type CoachLine } from "../components/coach";
+import { BadgeQueue, LevelUpOverlay, useCelebrations } from "../components/celebrations";
 
 const rs = (n: number) => `Rs. ${Math.round(n).toLocaleString("en-LK")}`;
 
@@ -14,6 +26,8 @@ export default function QuestPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [saving, setSaving] = useState(false);
   const [celebrate, setCelebrate] = useState(false);
+  const { levelUp, newBadges, dismissLevelUp, dismissBadges } = useCelebrations(metrics);
+  const countdown = useColomboCountdown();
 
   const load = useCallback(async () => {
     const [metricsRes, productsRes] = await Promise.all([
@@ -42,6 +56,19 @@ export default function QuestPage() {
     }
   }, [metrics]);
 
+  // ALL-CLEAR moment: confetti the first time today's quest board is swept.
+  useEffect(() => {
+    if (!metrics || !metrics.quests.every((q) => q.done)) return;
+    const today = metrics.days[metrics.days.length - 1]?.key ?? "";
+    try {
+      if (localStorage.getItem("dc:questsClearDay") === today) return;
+      localStorage.setItem("dc:questsClearDay", today);
+    } catch {}
+    setCelebrate(true);
+    const t = setTimeout(() => setCelebrate(false), 3600);
+    return () => clearTimeout(t);
+  }, [metrics]);
+
   async function saveSettings() {
     if (!settings) return;
     setSaving(true);
@@ -67,10 +94,58 @@ export default function QuestPage() {
   const remaining = Math.max(0, metrics.levelTarget - metrics.delivered);
   const streak = metrics.dispatchStreakDays;
   const heroMood: FroggyMood = levelComplete ? "celebrate" : streak > 0 ? "happy" : "idle";
+  const allQuestsDone = metrics.quests.every((q) => q.done);
+
+  // Cash's board-side commentary — urgency first, then hype.
+  const coachLines: CoachLine[] = [];
+  if (metrics.streakAtRisk) {
+    coachLines.push({
+      text: `🚨 RED ALERT! Your ${streak}-day streak burns out in ${countdown.label}. One dispatch. That's all it takes.`,
+      mood: "idle",
+    });
+  }
+  if (allQuestsDone) {
+    coachLines.push({
+      text: "🏆 Every quest CLEARED. Absolute legend behaviour. See you at midnight for a fresh board!",
+      mood: "celebrate",
+    });
+  } else {
+    const next = metrics.quests.find((q) => !q.done);
+    if (next) {
+      coachLines.push({
+        text: `⚔️ Next up: “${next.label}” — ${next.target - next.progress} to go. I believe in you. Mostly.`,
+        mood: "happy",
+      });
+    }
+  }
+  if (!levelComplete && remaining <= 5) {
+    coachLines.push({
+      text: `👑 ${remaining} ${remaining === 1 ? "delivery" : "deliveries"} from Level ${metrics.level + 1}. I'm already practising my celebration dance.`,
+      mood: "happy",
+    });
+  }
+  if (metrics.bestStreakDays > 0 && streak < metrics.bestStreakDays) {
+    coachLines.push({
+      text: `📈 Record streak: ${metrics.bestStreakDays} days. Current: ${streak}. You gonna let past-you win?`,
+      mood: "idle",
+    });
+  }
+  if (coachLines.length === 0) {
+    coachLines.push({ text: "Ship one parcel and the whole board lights up. Let's gooo! 🐸", mood: "happy" });
+  }
 
   return (
     <main className="mx-auto max-w-5xl space-y-5 p-5 sm:p-6">
       <Confetti run={celebrate} />
+      {levelUp !== null && <LevelUpOverlay level={levelUp} onClose={dismissLevelUp} />}
+      {levelUp === null && newBadges.length > 0 && (
+        <BadgeQueue badges={newBadges} onDone={dismissBadges} />
+      )}
+
+      {/* ── CASH THE COACH ────────────────────────────────────────── */}
+      <Card className="p-4">
+        <Coach lines={coachLines} size={72} />
+      </Card>
 
       {/* ── HERO: level ring + mascot ─────────────────────────────── */}
       <Card
@@ -215,19 +290,35 @@ export default function QuestPage() {
                 );
               })}
             </div>
-            <p className="font-display text-xs font-bold text-ink-soft">
-              {metrics.streakAtRisk
-                ? "⚠️ At risk! Ship one order before midnight to save it."
-                : streak > 0
+            {metrics.streakAtRisk ? (
+              <p className="danger-pulse rounded-xl border-2 border-flame bg-flame-tint px-3 py-1.5 font-display text-xs font-extrabold text-flame-dark">
+                ⚠️ At risk! Ship one order in the next ⏰ {countdown.label} to save it!
+              </p>
+            ) : (
+              <p className="font-display text-xs font-bold text-ink-soft">
+                {streak > 0
                   ? "Safe for today — see you tomorrow. 😌"
                   : "Dispatch an order today to start a streak."}
-            </p>
+              </p>
+            )}
             <p className="font-display text-xs font-bold text-ink-soft">
               Record streak: <span className="text-flame-dark">{metrics.bestStreakDays} days</span>
               {" · "}Best day: <span className="text-flame-dark">{metrics.bestDay} parcels</span>
             </p>
           </div>
         </div>
+      </Card>
+
+      {/* ── 14-DAY ACTIVITY CHART ─────────────────────────────────── */}
+      <Card className="p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="font-display text-lg font-extrabold text-ink">📊 Last 14 days</h2>
+          <span className="font-display text-xs font-bold text-ink-soft">
+            {metrics.days.reduce((s, d) => s + d.dispatched, 0)} dispatched ·{" "}
+            {metrics.days.reduce((s, d) => s + d.delivered, 0)} delivered
+          </span>
+        </div>
+        <ActivityChart days={metrics.days} goal={metrics.dailyGoal} />
       </Card>
 
       {/* ── STAT TILES ────────────────────────────────────────────── */}
@@ -371,6 +462,77 @@ export default function QuestPage() {
         </div>
         <Button tone="frog" onClick={saveSettings} disabled={saving} className="mt-5">
           {saving ? "Saving…" : "Save & recalculate"}
+        </Button>
+      </Card>
+
+      {/* ── WHATSAPP MESSAGE TEMPLATES ────────────────────────────── */}
+      <Card className="p-6">
+        <h2 className="mb-1 font-display text-lg font-extrabold text-ink">
+          💬 WhatsApp message templates
+        </h2>
+        <p className="mb-4 font-display text-xs font-bold text-ink-soft">
+          These are the exact texts the action buttons send. Placeholders like{" "}
+          <code className="rounded bg-cream px-1">{"{{total}}"}</code> and{" "}
+          <code className="rounded bg-cream px-1">{"{{tracking}}"}</code> are filled in
+          automatically — a line with a missing placeholder is dropped from the message.
+        </p>
+        <div className="space-y-4">
+          {(Object.keys(TEMPLATE_META) as TemplateKey[]).map((key) => {
+            const meta = TEMPLATE_META[key];
+            const overridden = Boolean(settings.templates?.[key]);
+            return (
+              <div key={key} className="rounded-xl border-2 border-cardline bg-cream/50 p-3">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <p className="font-display text-sm font-extrabold text-ink">
+                    {meta.label}
+                    {overridden && (
+                      <span className="ml-2 rounded-full bg-grape-tint px-2 py-0.5 font-display text-[10px] font-extrabold text-grape-dark">
+                        customized
+                      </span>
+                    )}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    {meta.placeholders.map((ph) => (
+                      <code
+                        key={ph}
+                        className="rounded-md bg-white px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-dark"
+                      >
+                        {ph}
+                      </code>
+                    ))}
+                    {overridden && (
+                      <button
+                        onClick={() =>
+                          setSettings({
+                            ...settings,
+                            templates: { ...settings.templates, [key]: undefined },
+                          })
+                        }
+                        className="rounded-lg px-2 py-0.5 font-display text-xs font-bold text-flame-dark hover:bg-flame-tint"
+                      >
+                        ↺ Reset
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <p className="mb-2 font-display text-[11px] font-bold text-ink-soft">{meta.hint}</p>
+                <textarea
+                  rows={key === "shippedConfirmation" ? 7 : 4}
+                  className="w-full rounded-xl border-2 border-cardline bg-white px-3 py-2 text-sm font-semibold text-ink outline-none focus:border-frog"
+                  value={settings.templates?.[key] ?? DEFAULT_TEMPLATES[key]}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      templates: { ...settings.templates, [key]: e.target.value },
+                    })
+                  }
+                />
+              </div>
+            );
+          })}
+        </div>
+        <Button tone="frog" onClick={saveSettings} disabled={saving} className="mt-4">
+          {saving ? "Saving…" : "💾 Save templates"}
         </Button>
       </Card>
     </main>

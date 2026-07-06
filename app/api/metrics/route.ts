@@ -1,17 +1,24 @@
 import { NextResponse } from "next/server";
-import { getSettings, listManifests, listOrders, listProducts } from "@/lib/db";
+import {
+  getSettings,
+  listManifests,
+  listOrders,
+  listProducts,
+  listTrackingEvents,
+} from "@/lib/db";
 import { computeMetrics } from "@/lib/metrics";
 
 export async function GET() {
   try {
-    const [orders, manifests, settings, products] = await Promise.all([
+    const [orders, manifests, settings, products, events] = await Promise.all([
       listOrders(),
       listManifests(),
       getSettings(),
       listProducts(),
+      listTrackingEvents(),
     ]);
     return NextResponse.json({
-      metrics: computeMetrics(orders, manifests, settings, products),
+      metrics: computeMetrics(orders, manifests, settings, products, events),
       settings,
     });
   } catch (err) {

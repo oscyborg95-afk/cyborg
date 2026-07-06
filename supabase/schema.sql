@@ -10,8 +10,10 @@ create table if not exists orders (
   raw_address    text not null,
   parsed_address text not null,
   city           varchar not null default '',
+  city_id        int,
   district       varchar not null,
   item_name      varchar not null default '',
+  items          jsonb, -- [{product_id,name,qty,price}] for multi-product orders
   product_price  numeric not null default 0,
   shipping_fee   numeric not null default 0,
   discount       numeric not null default 0,
@@ -69,7 +71,8 @@ create table if not exists business_settings (
   business_name    varchar not null default '',
   business_address varchar not null default '',
   business_phone_1 varchar not null default '',
-  business_phone_2 varchar not null default ''
+  business_phone_2 varchar not null default '',
+  templates        jsonb not null default '{}'::jsonb -- WhatsApp template overrides
 );
 insert into business_settings (id) values (1) on conflict do nothing;
 
@@ -79,6 +82,9 @@ alter table orders add column if not exists item_name varchar not null default '
 alter table orders add column if not exists discount numeric not null default 0;
 alter table orders add column if not exists product_id uuid references products(id) on delete set null;
 alter table orders add column if not exists phone_2 varchar not null default '';
+alter table orders add column if not exists city_id int;
+alter table orders add column if not exists items jsonb;
+alter table business_settings add column if not exists templates jsonb not null default '{}'::jsonb;
 alter table business_settings add column if not exists business_name varchar not null default '';
 alter table business_settings add column if not exists business_address varchar not null default '';
 alter table business_settings add column if not exists business_phone_1 varchar not null default '';

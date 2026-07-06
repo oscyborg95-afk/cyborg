@@ -1,28 +1,96 @@
-// Outbound message templates for the dynamic action bar.
-// Edit freely — these are plain functions returning the exact text sent to the customer.
+// Outbound WhatsApp message templates.
+//
+// Each template is a plain string with {{placeholders}}. The operator can
+// override any of them from the Quest page (stored in business_settings.templates);
+// a missing override falls back to the defaults below.
+//
+// Rendering rules:
+//   {{total}}    → COD amount (Rs., digits only)
+//   {{tracking}} → courier tracking id
+// A line whose placeholders are ALL unresolved is dropped entirely, so e.g.
+// the tracking line disappears cleanly when there is no tracking id yet.
 
-export const templates = {
-  askAddress: () =>
-    `ස්තූතියි! 🙏 Order එක process කරන්න මේ විස්තර එවන්න:\n\n1. නම\n2. Address එක (district එකත් එක්ක)\n3. Phone number`,
+import type { MessageTemplates, TemplateKey } from "./types";
 
-  codConfirm: (totalCod: number) =>
-    `ඔබගේ order එක confirm කරන්නම්ද? 📦\n\nගෙදරටම delivery — ලැබෙනකොට ගෙවන්න (COD).\nමුළු මුදල: රු. ${totalCod}\n\nOK කියලා reply කරන්න ✅`,
+export const TEMPLATE_META: Record<
+  TemplateKey,
+  { label: string; hint: string; placeholders: string[] }
+> = {
+  askAddress: {
+    label: "📍 Ask for address",
+    hint: "Sent when you tap “Ask for address” in the chat action bar.",
+    placeholders: [],
+  },
+  codConfirm: {
+    label: "💰 COD confirmation",
+    hint: "Asks the customer to confirm the order total before booking.",
+    placeholders: ["{{total}}"],
+  },
+  shippedConfirmation: {
+    label: "🚚 Shipped confirmation",
+    hint: "Drafted after every dispatch — you review it before sending.",
+    placeholders: ["{{total}}", "{{tracking}}"],
+  },
+  trackingAlert: {
+    label: "📦 Tracking alert",
+    hint: "Quick tracking-number nudge for SHIPPED customers.",
+    placeholders: ["{{tracking}}"],
+  },
+  delayBonus: {
+    label: "🎁 Delay apology bonus",
+    hint: "Apology + discount offer for delayed deliveries.",
+    placeholders: [],
+  },
+};
 
-  // Sent right after dispatch. Friendly + professional, and clearly flagged as
-  // an automated system message. trackingId is optional (omitted before booking).
-  shippedConfirmation: (totalCod: number, trackingId?: string) =>
+export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
+  askAddress: `ස්තූතියි! 🙏 Order එක process කරන්න මේ විස්තර එවන්න:\n\n1. නම\n2. Address එක (district එකත් එක්ක)\n3. Phone number`,
+
+  codConfirm: `ඔබගේ order එක confirm කරන්නම්ද? 📦\n\nගෙදරටම delivery — ලැබෙනකොට ගෙවන්න (COD).\nමුළු මුදල: රු. {{total}}\n\nOK කියලා reply කරන්න ✅`,
+
+  shippedConfirmation:
     `🌿 *Daily Cart*\n\n` +
     `ආයුබෝවන්! 🙏 ඔබගේ ඇණවුම සාර්ථකව තහවුරු කර, delivery සඳහා යොමු කර ඇත. ✅\n\n` +
-    (trackingId ? `📦 Tracking අංකය: *${trackingId}*\n` : "") +
-    `💰 ලැබීමේදී ගෙවීමට ඇති මුදල (COD): *රු. ${totalCod}*\n` +
+    `📦 Tracking අංකය: *{{tracking}}*\n` +
+    `💰 ලැබීමේදී ගෙවීමට ඇති මුදල (COD): *රු. {{total}}*\n` +
     `🚚 සාමාන්‍යයෙන් වැඩ කරන දින 1–3ක් ඇතුළත ඔබ වෙත ලැබෙනු ඇත.\n\n` +
     `ඔබගේ ඇණවුමට බොහෝම ස්තූතියි! 💚 ඕනෑම ගැටලුවක් ඇත්නම් මෙම chat එකට reply කරන්න.\n\n` +
     `━━━━━━━━━━━━━━\n` +
     `ⓘ මෙය Daily Cart පද්ධතියෙන් ස්වයංක්‍රීයව (automatically) ජනනය කරන ලද පණිවිඩයකි.`,
 
-  trackingAlert: (trackingId: string) =>
-    `ඔබේ පැකේජය courier වෙත භාර දුන්නා 📦\nTracking අංකය: ${trackingId}\nදවස් 1–2ක් ඇතුළත ලැබෙයි!`,
+  trackingAlert: `ඔබේ පැකේජය courier වෙත භාර දුන්නා 📦\nTracking අංකය: {{tracking}}\nදවස් 1–2ක් ඇතුළත ලැබෙයි!`,
 
-  delayBonus: () =>
-    `Delivery එක ටිකක් delay වුණා, සමාවෙන්න 🙏\nඒ වෙනුවෙන් ඔබේ ඊළඟ order එකට 10% discount එකක් දෙනවා! 🎁`,
+  delayBonus: `Delivery එක ටිකක් delay වුණා, සමාවෙන්න 🙏\nඒ වෙනුවෙන් ඔබේ ඊළඟ order එකට 10% discount එකක් දෙනවා! 🎁`,
 };
+
+type Vars = { total?: number; tracking?: string };
+
+// Substitute {{placeholders}}, then drop any line that still contains an
+// unresolved one (e.g. no tracking id yet → no tracking line).
+export function renderTemplate(source: string, vars: Vars): string {
+  const substituted = source
+    .replaceAll("{{total}}", vars.total !== undefined ? String(vars.total) : "{{total}}")
+    .replaceAll("{{tracking}}", vars.tracking ? vars.tracking : "{{tracking}}");
+  return substituted
+    .split("\n")
+    .filter((line) => !/\{\{(total|tracking)\}\}/.test(line))
+    .join("\n");
+}
+
+// Build the callable template set, with operator overrides layered over the
+// defaults. Call with no argument for pure defaults (offline fallback).
+export function makeTemplates(overrides: MessageTemplates = {}) {
+  const src = (key: TemplateKey) => overrides[key]?.trim() || DEFAULT_TEMPLATES[key];
+  return {
+    askAddress: () => renderTemplate(src("askAddress"), {}),
+    codConfirm: (totalCod: number) => renderTemplate(src("codConfirm"), { total: totalCod }),
+    shippedConfirmation: (totalCod: number, trackingId?: string) =>
+      renderTemplate(src("shippedConfirmation"), { total: totalCod, tracking: trackingId }),
+    trackingAlert: (trackingId: string) =>
+      renderTemplate(src("trackingAlert"), { tracking: trackingId }),
+    delayBonus: () => renderTemplate(src("delayBonus"), {}),
+  };
+}
+
+// Default-only instance, kept for call sites that haven't loaded settings yet.
+export const templates = makeTemplates();

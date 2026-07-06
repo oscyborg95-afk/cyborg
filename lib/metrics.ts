@@ -1,4 +1,10 @@
-import type { BusinessSettings, Order, Product, ShippingManifest } from "./types";
+import type {
+  BusinessSettings,
+  Order,
+  Product,
+  ShippingManifest,
+  TrackingEvent,
+} from "./types";
 
 // Level thresholds by cumulative DELIVERED orders. Level N is complete at LEVELS[N].
 export const LEVELS = [10, 50, 150, 400, 1000];
@@ -20,6 +26,15 @@ export interface Badge {
   name: string;
   desc: string;
   earned: boolean;
+}
+
+// One bar of the activity chart: everything that happened on one Colombo day.
+export interface DayStat {
+  key: string; // YYYY-MM-DD in Asia/Colombo
+  label: string; // short weekday label, e.g. "Mon"
+  dispatched: number;
+  delivered: number;
+  returned: number;
 }
 
 export interface Metrics {
@@ -45,20 +60,48 @@ export interface Metrics {
   };
   quests: Quest[];
   badges: Badge[];
+  days: DayStat[]; // last 14 Colombo days, oldest first — feeds the Quest chart
 }
 
-// Calendar day in LOCAL time (the operator ships on Sri Lanka time, not UTC).
+// The operator ships on Sri Lanka time. Bucketing an instant by the server's
+// local calendar (UTC in most containers) would roll the "day" over at 5:30 AM
+// Colombo, silently resetting streaks and daily quests. Format every instant in
+// Asia/Colombo so day boundaries always land at local midnight.
+const colomboParts = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Colombo",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
 function dayKey(date: Date): string {
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${date.getFullYear()}-${m}-${d}`;
+  const parts = colomboParts.formatToParts(date);
+  const get = (t: string) => parts.find((p) => p.type === t)!.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
 }
+
+// Civil-day arithmetic on a "YYYY-MM-DD" key. Steps through a UTC container so
+// it never depends on the server's timezone (Sri Lanka has no DST, so a calendar
+// day is exactly 24h and this stays aligned with the Colombo keys above).
+function addDays(key: string, n: number): string {
+  const [y, mo, d] = key.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${dt.getUTCFullYear()}-${mm}-${dd}`;
+}
+
+const colomboWeekday = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Colombo",
+  weekday: "short",
+});
 
 export function computeMetrics(
   orders: Order[],
   manifests: ShippingManifest[],
   settings: BusinessSettings,
-  products: Product[] = []
+  products: Product[] = [],
+  events: TrackingEvent[] = []
 ): Metrics {
   const delivered = orders.filter((o) => o.order_status === "delivered").length;
   const totalPackages = orders.filter((o) => o.order_status !== "pending").length;
@@ -91,27 +134,22 @@ export function computeMetrics(
 
   // Dispatch streak: consecutive calendar days with ≥1 booking, ending today or yesterday.
   let streak = 0;
-  const cursor = new Date();
-  if (!perDay.has(dayKey(cursor))) {
-    cursor.setDate(cursor.getDate() - 1); // today hasn't broken the streak yet
-  }
-  while (perDay.has(dayKey(cursor))) {
+  let cursor = perDay.has(today) ? today : addDays(today, -1); // today hasn't broken the streak yet
+  while (perDay.has(cursor)) {
     streak++;
-    cursor.setDate(cursor.getDate() - 1);
+    cursor = addDays(cursor, -1);
   }
   const streakAtRisk = streak > 0 && shippedToday === 0;
 
   // Longest streak ever: walk each streak-start day forward.
   let bestStreak = streak;
   for (const key of perDay.keys()) {
-    const [y, mo, d] = key.split("-").map(Number);
-    const prev = new Date(y, mo - 1, d - 1);
-    if (perDay.has(dayKey(prev))) continue; // not a streak start
+    if (perDay.has(addDays(key, -1))) continue; // not a streak start
     let len = 0;
-    const walk = new Date(y, mo - 1, d);
-    while (perDay.has(dayKey(walk))) {
+    let walk = key;
+    while (perDay.has(walk)) {
       len++;
-      walk.setDate(walk.getDate() + 1);
+      walk = addDays(walk, 1);
     }
     if (len > bestStreak) bestStreak = len;
   }
@@ -127,10 +165,10 @@ export function computeMetrics(
   // Adaptive daily goal: ~25% above the last 7 days' average (excluding today,
   // so shipping more never moves today's goalposts). Floor 2, cap 15.
   let last7 = 0;
-  const w = new Date();
+  let w = today;
   for (let i = 1; i <= 7; i++) {
-    w.setDate(w.getDate() - 1);
-    last7 += perDay.get(dayKey(w)) ?? 0;
+    w = addDays(w, -1);
+    last7 += perDay.get(w) ?? 0;
   }
   const dailyGoal = Math.min(15, Math.max(2, Math.ceil((last7 / 7) * 1.25)));
 
@@ -184,6 +222,32 @@ export function computeMetrics(
     { id: "millionaire", emoji: "💎", name: "Millionaire", desc: "Net worth over Rs. 1,000,000", earned: netWorth >= 1_000_000 },
   ];
 
+  // Last-14-day activity series. Dispatches come from manifests (perDay is
+  // already bucketed); delivered/returned days come from the tracking timeline,
+  // which is the only place a delivery date is recorded.
+  const deliveredPerDay = new Map<string, number>();
+  const returnedPerDay = new Map<string, number>();
+  for (const e of events) {
+    if (e.outcome !== "delivered" && e.outcome !== "returned") continue;
+    const bucket = e.outcome === "delivered" ? deliveredPerDay : returnedPerDay;
+    const key = dayKey(new Date(e.created_at));
+    bucket.set(key, (bucket.get(key) ?? 0) + 1);
+  }
+  const days: DayStat[] = [];
+  for (let i = 13; i >= 0; i--) {
+    const key = addDays(today, -i);
+    const [y, mo, d] = key.split("-").map(Number);
+    // Noon UTC on that civil date is unambiguously the same date in Colombo.
+    const label = colomboWeekday.format(new Date(Date.UTC(y, mo - 1, d, 12)));
+    days.push({
+      key,
+      label,
+      dispatched: perDay.get(key) ?? 0,
+      delivered: deliveredPerDay.get(key) ?? 0,
+      returned: returnedPerDay.get(key) ?? 0,
+    });
+  }
+
   return {
     level,
     levelTarget,
@@ -207,5 +271,6 @@ export function computeMetrics(
     },
     quests,
     badges,
+    days,
   };
 }

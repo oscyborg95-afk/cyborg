@@ -248,13 +248,27 @@ function InvoiceCell({
 
       {/* Item + money */}
       <div className="inv-money">
-        <div className="inv-item">{order.item_name || "Merchandise"}</div>
+        {(!order.items || order.items.length === 0) && (
+          <div className="inv-item">{order.item_name || "Merchandise"}</div>
+        )}
         <table className="inv-table">
           <tbody>
-            <tr>
-              <td>Item</td>
-              <td>{rs(order.product_price)}</td>
-            </tr>
+            {order.items && order.items.length > 0 ? (
+              order.items.map((item, i) => (
+                <tr key={i}>
+                  <td>
+                    {item.qty > 1 ? `${item.qty}× ` : ""}
+                    {item.name}
+                  </td>
+                  <td>{rs(item.qty * item.price)}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td>Item</td>
+                <td>{rs(order.product_price)}</td>
+              </tr>
+            )}
             <tr>
               <td>Delivery</td>
               <td>{rs(order.shipping_fee)}</td>

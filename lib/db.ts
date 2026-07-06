@@ -1,4 +1,5 @@
 import { Pool, types } from "pg";
+import type { PoolClient } from "pg";
 import { randomUUID } from "crypto";
 import type {
   BusinessSettings,
@@ -48,6 +49,32 @@ if (DATABASE_URL) {
   });
 }
 
+// Either the pool or a single checked-out client mid-transaction. Data functions
+// take an optional executor so a caller can thread several writes through one
+// BEGIN/COMMIT; default to the pool for standalone, auto-committed queries.
+type Queryable = Pick<Pool, "query">;
+
+// Run `fn` inside a single Postgres transaction. In memory-fallback mode (no
+// pool) there is nothing to transact, so it just runs the body with a null
+// executor and the data functions hit their in-memory maps as usual.
+export async function withTransaction<T>(
+  fn: (db: Queryable | null) => Promise<T>
+): Promise<T> {
+  if (!pool) return fn(null);
+  const client: PoolClient = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 const memOrders = (g.__cyborgOrders ??= new Map<string, Order>());
 const memManifests = (g.__cyborgManifests ??= new Map<string, ShippingManifest>());
 const memChatStates = (g.__cyborgChatStates ??= new Map<string, ChatState>());
@@ -62,17 +89,21 @@ const DEFAULT_SETTINGS: BusinessSettings = {
   business_address: "",
   business_phone_1: "",
   business_phone_2: "",
+  templates: {},
 };
 
 // --- Orders ------------------------------------------------------------------
 
-export async function createOrder(input: NewOrder): Promise<Order> {
-  if (pool) {
-    const { rows } = await pool.query(
+export async function createOrder(
+  input: NewOrder,
+  db: Queryable | null = pool
+): Promise<Order> {
+  if (db) {
+    const { rows } = await db.query(
       `insert into orders
-         (customer_name, phone_number, phone_2, raw_address, parsed_address, city, district,
-          product_id, item_name, product_price, shipping_fee, discount, total_cod, order_status)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending')
+         (customer_name, phone_number, phone_2, raw_address, parsed_address, city, city_id, district,
+          product_id, item_name, items, product_price, shipping_fee, discount, total_cod, order_status)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending')
        returning *`,
       [
         input.customer_name,
@@ -81,9 +112,12 @@ export async function createOrder(input: NewOrder): Promise<Order> {
         input.raw_address,
         input.parsed_address,
         input.city,
+        input.city_id,
         input.district,
         input.product_id,
         input.item_name,
+        // pg serializes arrays as Postgres arrays — jsonb needs explicit JSON.
+        input.items && input.items.length > 0 ? JSON.stringify(input.items) : null,
         input.product_price,
         input.shipping_fee,
         input.discount,
@@ -112,9 +146,12 @@ export async function listOrders(): Promise<Order[]> {
   return [...memOrders.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
-export async function getOrder(id: string): Promise<Order | null> {
-  if (pool) {
-    const { rows } = await pool.query("select * from orders where id = $1", [id]);
+export async function getOrder(
+  id: string,
+  db: Queryable | null = pool
+): Promise<Order | null> {
+  if (db) {
+    const { rows } = await db.query("select * from orders where id = $1", [id]);
     return (rows[0] as Order) ?? null;
   }
   return memOrders.get(id) ?? null;
@@ -130,31 +167,48 @@ const STOCK_OUT: Record<OrderStatus, number> = {
   returned: 0,
 };
 
-export async function updateOrderStatus(id: string, status: OrderStatus): Promise<void> {
-  const order = await getOrder(id);
+export async function updateOrderStatus(
+  id: string,
+  status: OrderStatus,
+  db: Queryable | null = pool
+): Promise<void> {
+  const order = await getOrder(id, db);
   if (!order) throw new Error("Order not found");
   const oldStatus = order.order_status;
 
-  if (pool) {
-    await pool.query("update orders set order_status = $1 where id = $2", [status, id]);
+  if (db) {
+    await db.query("update orders set order_status = $1 where id = $2", [status, id]);
   } else {
     memOrders.set(id, { ...order, order_status: status });
   }
 
-  // Keep the product's physical stock in sync with where the parcel is.
-  if (order.product_id && oldStatus !== status) {
+  // Keep the products' physical stock in sync with where the parcel is.
+  // Multi-product orders move each line item by its quantity; legacy orders
+  // fall back to the single product_id (one unit).
+  if (oldStatus !== status) {
     const delta = STOCK_OUT[oldStatus] - STOCK_OUT[status];
-    if (delta !== 0) await adjustProductStock(order.product_id, delta);
+    if (delta !== 0) {
+      if (order.items && order.items.length > 0) {
+        for (const item of order.items) {
+          if (item.product_id && item.qty > 0) {
+            await adjustProductStock(item.product_id, delta * item.qty, db);
+          }
+        }
+      } else if (order.product_id) {
+        await adjustProductStock(order.product_id, delta, db);
+      }
+    }
   }
 }
 
 // --- Shipping manifests ------------------------------------------------------
 
 export async function createManifest(
-  input: Omit<ShippingManifest, "id" | "created_at">
+  input: Omit<ShippingManifest, "id" | "created_at">,
+  db: Queryable | null = pool
 ): Promise<ShippingManifest> {
-  if (pool) {
-    const { rows } = await pool.query(
+  if (db) {
+    const { rows } = await db.query(
       `insert into shipping_manifests
          (order_id, courier_name, tracking_id, pdf_label_url, last_checkpoint)
        values ($1,$2,$3,$4,$5)
@@ -256,10 +310,14 @@ export async function deleteProduct(id: string): Promise<void> {
   memProducts.delete(id);
 }
 
-export async function adjustProductStock(id: string, delta: number): Promise<void> {
-  if (pool) {
+export async function adjustProductStock(
+  id: string,
+  delta: number,
+  db: Queryable | null = pool
+): Promise<void> {
+  if (db) {
     // Atomic: clamp at zero without a read-then-write race.
-    await pool.query(
+    await db.query(
       "update products set stock_units = greatest(0, stock_units + $1) where id = $2",
       [delta, id]
     );
@@ -321,11 +379,12 @@ function isUndefinedTable(err: unknown): boolean {
 export async function addTrackingEvent(
   order_id: string,
   checkpoint: string,
-  outcome: string
+  outcome: string,
+  db: Queryable | null = pool
 ): Promise<void> {
-  if (pool) {
+  if (db) {
     try {
-      await pool.query(
+      await db.query(
         "insert into tracking_events (order_id, checkpoint, outcome) values ($1,$2,$3)",
         [order_id, checkpoint, outcome]
       );
@@ -425,7 +484,7 @@ export async function getSettings(): Promise<BusinessSettings> {
   if (pool) {
     const { rows } = await pool.query(
       `select bank_cash, stock_units, stock_unit_cost,
-              business_name, business_address, business_phone_1, business_phone_2
+              business_name, business_address, business_phone_1, business_phone_2, templates
        from business_settings where id = 1`
     );
     return rows[0] ? { ...DEFAULT_SETTINGS, ...(rows[0] as Partial<BusinessSettings>) } : DEFAULT_SETTINGS;
@@ -438,8 +497,8 @@ export async function updateSettings(settings: BusinessSettings): Promise<Busine
     await pool.query(
       `insert into business_settings
          (id, bank_cash, stock_units, stock_unit_cost,
-          business_name, business_address, business_phone_1, business_phone_2)
-       values (1,$1,$2,$3,$4,$5,$6,$7)
+          business_name, business_address, business_phone_1, business_phone_2, templates)
+       values (1,$1,$2,$3,$4,$5,$6,$7,$8)
        on conflict (id) do update set
          bank_cash = excluded.bank_cash,
          stock_units = excluded.stock_units,
@@ -447,7 +506,8 @@ export async function updateSettings(settings: BusinessSettings): Promise<Busine
          business_name = excluded.business_name,
          business_address = excluded.business_address,
          business_phone_1 = excluded.business_phone_1,
-         business_phone_2 = excluded.business_phone_2`,
+         business_phone_2 = excluded.business_phone_2,
+         templates = excluded.templates`,
       [
         settings.bank_cash,
         settings.stock_units,
@@ -456,6 +516,7 @@ export async function updateSettings(settings: BusinessSettings): Promise<Busine
         settings.business_address,
         settings.business_phone_1,
         settings.business_phone_2,
+        JSON.stringify(settings.templates ?? {}),
       ]
     );
     return settings;

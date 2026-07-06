@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "concurrently -n web,worker -c green,cyan \"next dev\" \"npm run start --prefix worker\"",
+    "dev:mock": "concurrently -n web,worker -c green,cyan \"next dev\" \"npm run mock --prefix worker\"",
+    "dev:web": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -25,6 +27,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^10.0.3",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",

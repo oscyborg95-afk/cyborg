@@ -7,6 +7,7 @@ import {
   usingSupabase,
 } from "@/lib/db";
 import type { NewOrder } from "@/lib/types";
+import { itemsSummary, parseItems } from "@/lib/items";
 
 export async function GET() {
   try {
@@ -32,7 +33,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const productPrice = Number(body.product_price ?? 0);
+  const items = parseItems(body.items);
+  const productPrice = items
+    ? items.reduce((sum, i) => sum + i.qty * i.price, 0)
+    : Number(body.product_price ?? 0);
   const shippingFee = Number(body.shipping_fee ?? 0);
   const discount = Number(body.discount ?? 0);
 
@@ -44,9 +48,11 @@ export async function POST(req: NextRequest) {
       raw_address: body.raw_address ?? "",
       parsed_address: body.parsed_address!,
       city: body.city ?? "",
+      city_id: body.city_id ?? null,
       district: body.district!,
-      product_id: body.product_id || null,
-      item_name: body.item_name ?? "",
+      product_id: items ? (items[0]?.product_id ?? null) : body.product_id || null,
+      item_name: items ? itemsSummary(items) : (body.item_name ?? ""),
+      items,
       product_price: productPrice,
       shipping_fee: shippingFee,
       discount,

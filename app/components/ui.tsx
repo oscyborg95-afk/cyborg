@@ -182,6 +182,124 @@ export function Confetti({ count = 90, run = true }: { count?: number; run?: boo
   );
 }
 
+// ---- Activity bar chart --------------------------------------------------
+// Duolingo-style 14-day chart: chunky rounded bars that grow in on mount,
+// today highlighted, daily-goal line to beat. Pure CSS transitions, no libs.
+
+export interface ChartDay {
+  key: string;
+  label: string;
+  dispatched: number;
+  delivered: number;
+  returned: number;
+}
+
+export function ActivityChart({
+  days,
+  goal,
+  height = 148,
+}: {
+  days: ChartDay[];
+  goal: number;
+  height?: number;
+}) {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setGrown(true), 60); // let bars mount at 0 first
+    return () => clearTimeout(t);
+  }, []);
+
+  const max = Math.max(goal, ...days.map((d) => Math.max(d.dispatched, d.delivered)), 4);
+  const px = (n: number) => (grown ? Math.round((n / max) * height) : 0);
+  const today = days[days.length - 1]?.key;
+
+  return (
+    <div>
+      <div className="relative" style={{ height: height + 26 }}>
+        {/* goal line */}
+        <div
+          className="absolute inset-x-0 z-0 border-t-2 border-dashed border-gold"
+          style={{ bottom: 26 + Math.round((goal / max) * height), transition: "bottom 0.8s" }}
+        >
+          <span className="absolute -top-4 right-0 font-display text-[10px] font-extrabold text-gold-dark">
+            🎯 goal {goal}
+          </span>
+        </div>
+
+        <div className="absolute inset-0 z-10 flex items-end justify-between gap-1">
+          {days.map((d, i) => {
+            const isToday = d.key === today;
+            return (
+              <div
+                key={d.key}
+                className="flex flex-1 flex-col items-center gap-1"
+                title={`${d.key} — ${d.dispatched} dispatched, ${d.delivered} delivered${d.returned ? `, ${d.returned} returned` : ""}`}
+              >
+                <div className="flex h-full w-full items-end justify-center gap-[3px]">
+                  {/* dispatched */}
+                  <div className="flex w-1/2 max-w-4 flex-col items-center justify-end">
+                    {d.dispatched > 0 && grown && (
+                      <span className="font-display text-[10px] font-extrabold leading-none text-frog-dark">
+                        {d.dispatched}
+                      </span>
+                    )}
+                    <div
+                      className="w-full rounded-t-md rounded-b-sm"
+                      style={{
+                        height: px(d.dispatched),
+                        minHeight: d.dispatched > 0 ? 6 : 2,
+                        background: isToday ? "var(--color-gold)" : "var(--color-frog)",
+                        opacity: d.dispatched > 0 ? 1 : 0.15,
+                        transition: `height 0.7s cubic-bezier(0.22,1,0.36,1) ${i * 0.04}s`,
+                      }}
+                    />
+                  </div>
+                  {/* delivered */}
+                  <div className="flex w-1/2 max-w-4 flex-col items-center justify-end">
+                    <div
+                      className="w-full rounded-t-md rounded-b-sm"
+                      style={{
+                        height: px(d.delivered),
+                        minHeight: d.delivered > 0 ? 6 : 2,
+                        background: "var(--color-sky)",
+                        opacity: d.delivered > 0 ? 1 : 0.15,
+                        transition: `height 0.7s cubic-bezier(0.22,1,0.36,1) ${i * 0.04 + 0.1}s`,
+                      }}
+                    />
+                  </div>
+                </div>
+                <span
+                  className={
+                    "font-display text-[10px] font-extrabold " +
+                    (isToday ? "rounded-md bg-gold/25 px-1 text-gold-dark" : "text-ink-soft")
+                  }
+                >
+                  {isToday ? "Today" : d.label}
+                  {d.returned > 0 && <span title={`${d.returned} returned`}> ⚠️</span>}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-2 flex justify-center gap-4 font-display text-[11px] font-bold text-ink-soft">
+        <span>
+          <span className="mr-1 inline-block h-2.5 w-2.5 rounded-sm bg-frog align-middle" />
+          Dispatched
+        </span>
+        <span>
+          <span className="mr-1 inline-block h-2.5 w-2.5 rounded-sm bg-sky align-middle" />
+          Delivered
+        </span>
+        <span>
+          <span className="mr-1 inline-block h-2.5 w-2.5 rounded-sm bg-gold align-middle" />
+          Today
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // Animated number that counts up from 0 to `value` on mount / change.
 export function CountUp({
   value,

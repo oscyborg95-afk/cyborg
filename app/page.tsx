@@ -4,19 +4,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
 import { chatIdToPhone } from "@/lib/phone";
-import { templates } from "@/lib/templates";
+import { makeTemplates } from "@/lib/templates";
+import { itemsSubtotal } from "@/lib/items";
+import type { Metrics } from "@/lib/metrics";
 import type {
+  BusinessSettings,
   ChatState,
   ChatStateValue,
   Order,
+  OrderItem,
   Product,
   ShippingManifest,
   WaChat,
   WaMessage,
 } from "@/lib/types";
-import { Froggy, type FroggyMood } from "./components/froggy";
+import { Froggy } from "./components/froggy";
 import { Button, Card, Confetti } from "./components/ui";
 import { CityPicker } from "./components/city-picker";
+import { ItemsEditor } from "./components/items-editor";
+import { Coach, useColomboCountdown, type CoachLine } from "./components/coach";
+import { XPBurst, playChime } from "./components/celebrations";
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WA_WORKER_URL || "http://localhost:3001";
 
@@ -39,9 +46,7 @@ interface Draft {
   city: string;
   city_id: string; // courier city id when picked from the list, "" otherwise
   district: string;
-  product_id: string;
-  item_name: string;
-  product_price: string;
+  items: OrderItem[]; // multi-product cart — subtotal feeds the COD total
   shipping_fee: string;
   discount: string;
 }
@@ -71,6 +76,9 @@ export default function Workspace() {
   const [celebrate, setCelebrate] = useState(false);
   const [waReady, setWaReady] = useState<boolean | null>(null); // null = not known yet
   const [qrImage, setQrImage] = useState<string | null>(null);
+  const [settings, setSettings] = useState<BusinessSettings | null>(null);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [xpBurst, setXpBurst] = useState<{ id: number; title: string; sub?: string } | null>(null);
 
   const activeChatIdRef = useRef<string | null>(null);
   activeChatIdRef.current = activeChatId;
@@ -127,6 +135,27 @@ export default function Workspace() {
     if (res.ok) setProducts(data.products);
   }, []);
 
+  // Settings carry the operator's custom message templates; metrics feed the
+  // coach's dialogue (goal progress, streak risk). Both are decoration — the
+  // workspace keeps working if either fetch fails.
+  const loadSettings = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings");
+      const data = await res.json();
+      if (res.ok) setSettings(data.settings);
+    } catch {}
+  }, []);
+
+  const loadMetrics = useCallback(async () => {
+    try {
+      const res = await fetch("/api/metrics");
+      const data = await res.json();
+      if (res.ok) setMetrics(data.metrics);
+    } catch {}
+  }, []);
+
+  const t = makeTemplates(settings?.templates ?? {});
+
   // Straight to the worker (not proxied through Next) — same-origin CORS is
   // already open on it, and it's the only place that knows the live QR.
   const loadWaStatus = useCallback(async () => {
@@ -148,12 +177,17 @@ export default function Workspace() {
     loadOrders();
     loadProducts();
     loadWaStatus();
+    loadSettings();
+    loadMetrics();
 
     const socket: Socket = io(WORKER_URL, { transports: ["websocket", "polling"] });
     socket.on("connect", () => {
       setWorkerOffline(false);
       loadWaStatus();
     });
+    // Worker crashed or went offline: flip the UI to offline immediately instead
+    // of stranding a stale green "connected" state until the next refresh.
+    socket.on("disconnect", () => setWorkerOffline(true));
     socket.on("wa:status", ({ ready: r }: { ready: boolean }) => setWaReady(r));
     socket.on("wa:qr", ({ qr }: { qr: string }) => setQrImage(qr));
     socket.on("wa:message", (msg: WaMessage) => {
@@ -196,7 +230,7 @@ export default function Workspace() {
     return () => {
       socket.disconnect();
     };
-  }, [loadChats, loadStates, loadOrders, loadProducts, loadWaStatus]);
+  }, [loadChats, loadStates, loadOrders, loadProducts, loadWaStatus, loadSettings, loadMetrics]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -278,29 +312,27 @@ export default function Workspace() {
   const draftTotal = draft
     ? Math.max(
         0,
-        Number(draft.product_price || 0) +
-          Number(draft.shipping_fee || 0) -
-          Number(draft.discount || 0)
+        itemsSubtotal(draft.items) + Number(draft.shipping_fee || 0) - Number(draft.discount || 0)
       )
     : 0;
 
   async function quickAskAddress() {
-    await sendText(templates.askAddress());
+    await sendText(t.askAddress());
     await setChatState("AWAITING_ADDRESS");
   }
 
   async function quickCodConfirm() {
-    await sendText(templates.codConfirm(draftTotal));
+    await sendText(t.codConfirm(draftTotal));
     await setChatState("AWAITING_CONFIRMATION");
   }
 
   async function quickTrackingAlert() {
     if (!latestManifest) return;
-    await sendText(templates.trackingAlert(latestManifest.tracking_id));
+    await sendText(t.trackingAlert(latestManifest.tracking_id));
   }
 
   async function quickDelayBonus() {
-    await sendText(templates.delayBonus());
+    await sendText(t.delayBonus());
   }
 
   // --- Logistics copilot (right panel) -------------------------------------
@@ -330,9 +362,7 @@ export default function Workspace() {
         city: data.city ?? "",
         city_id: "",
         district: data.district,
-        product_id: "",
-        item_name: "",
-        product_price: "",
+        items: [],
         shipping_fee: String(data.shipping_fee),
         discount: "",
       });
@@ -357,7 +387,6 @@ export default function Workspace() {
           chat_id: activeChatId,
           ...draft,
           raw_address: messages.filter((m) => !m.fromMe).slice(-12).map((m) => m.body).join("\n"),
-          product_price: Number(draft.product_price || 0),
           shipping_fee: Number(draft.shipping_fee || 0),
           discount: Number(draft.discount || 0),
         }),
@@ -367,27 +396,38 @@ export default function Workspace() {
       if (data.manifest?.pdf_label_url) window.open(data.manifest.pdf_label_url, "_blank");
       setNotice(`Booked ✓ ${data.manifest.tracking_id}`);
       // Draft the customer confirmation but let the operator send it manually.
-      setConfirmText(
-        templates.shippedConfirmation(data.order.total_cod, data.manifest.tracking_id)
-      );
+      setConfirmText(t.shippedConfirmation(data.order.total_cod, data.manifest.tracking_id));
       setCelebrate(true);
+      playChime("win"); // user just clicked DISPATCH — gesture-safe
       setTimeout(() => setCelebrate(false), 3600);
       setDraft(null);
       await Promise.all([loadOrders(), loadStates(), loadMessages(activeChatId), loadProducts()]);
       // Update the nav chips + tell the operator where today's quest stands.
       window.dispatchEvent(new Event("metrics:refresh"));
       try {
-        const m = (await (await fetch("/api/metrics")).json()).metrics;
+        const m: Metrics = (await (await fetch("/api/metrics")).json()).metrics;
         if (m) {
+          setMetrics(m);
+          const goalDone = m.shippedToday >= m.dailyGoal;
           setNotice(
             `Booked ✓ ${data.manifest.tracking_id}` +
-              (m.shippedToday >= m.dailyGoal
+              (goalDone
                 ? ` — 🎯 DAILY GOAL COMPLETE (${m.shippedToday}/${m.dailyGoal})!`
                 : ` — 📦 ${m.shippedToday}/${m.dailyGoal} today, ${m.dailyGoal - m.shippedToday} to go!`)
           );
+          setXpBurst({
+            id: Date.now(),
+            title: `+1 📦 shipped!`,
+            sub: goalDone
+              ? m.shippedToday > m.dailyGoal
+                ? `🔥 ${m.shippedToday} today — you're on a heater!`
+                : "🎯 DAILY GOAL SMASHED!"
+              : `${m.dailyGoal - m.shippedToday} more for today's goal — keep going!`,
+          });
         }
       } catch {
         // metrics are decoration — the booking already succeeded
+        setXpBurst({ id: Date.now(), title: "+1 📦 shipped!" });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dispatch failed");
@@ -410,7 +450,7 @@ export default function Workspace() {
     }
   }
 
-  const setDraftField = (field: keyof Draft, value: string) => {
+  const setDraftField = (field: Exclude<keyof Draft, "items">, value: string) => {
     setDraft((d) => {
       if (!d) return d;
       const next = { ...d, [field]: value };
@@ -429,15 +469,56 @@ export default function Workspace() {
     return true;
   });
 
-  const copilotMood: FroggyMood = celebrate
-    ? "celebrate"
-    : parsing
-      ? "thinking"
-      : draft
-        ? "happy"
-        : activeChat
-          ? "idle"
-          : "sleepy";
+  // What Cash says in the copilot corner. Urgency first, then encouragement.
+  const countdown = useColomboCountdown();
+  const coachLines: CoachLine[] = (() => {
+    if (parsing) return [{ text: "Reading the chat… gimme a sec. 🤔", mood: "thinking" }];
+    if (celebrate) return [{ text: "GOOOAL! Parcel booked! 🎉 Send the confirmation and grab the next one!", mood: "celebrate" }];
+    const lines: CoachLine[] = [];
+    if (draft) {
+      lines.push({
+        text:
+          draft.items.length === 0
+            ? "Draft's ready! Now tap a product to add it to the parcel. 🛒"
+            : "Looking good! Check the city, then SMASH that dispatch button. 🚀",
+        mood: "happy",
+      });
+    }
+    if (metrics) {
+      if (metrics.streakAtRisk) {
+        lines.push({
+          text: `🚨 Your ${metrics.dispatchStreakDays}-day streak DIES in ${countdown.label}! One dispatch saves it. Just one!`,
+          mood: "idle",
+        });
+      }
+      if (metrics.shippedToday < metrics.dailyGoal) {
+        lines.push({
+          text: `📦 ${metrics.shippedToday}/${metrics.dailyGoal} shipped today — ${metrics.dailyGoal - metrics.shippedToday} more and the daily quest is CLEARED.`,
+          mood: metrics.shippedToday > 0 ? "happy" : "idle",
+        });
+      } else {
+        lines.push({
+          text: `🎯 Daily goal done (${metrics.shippedToday}/${metrics.dailyGoal})! Every extra parcel is bonus glory.`,
+          mood: "happy",
+        });
+      }
+      const toNext = metrics.levelTarget - metrics.delivered;
+      if (toNext > 0 && toNext <= 5) {
+        lines.push({
+          text: `👑 Only ${toNext} ${toNext === 1 ? "delivery" : "deliveries"} from Level ${metrics.level + 1}. So close I can taste the flies.`,
+          mood: "happy",
+        });
+      }
+      if (metrics.shippedToday > 0 && metrics.shippedToday >= metrics.bestDay) {
+        lines.push({
+          text: `🚀 ${metrics.shippedToday} today — this is your BEST DAY EVER. Legend.`,
+          mood: "celebrate",
+        });
+      }
+    }
+    if (!activeChat) lines.push({ text: "Pick a chat and let's ship some orders! 🐸", mood: "sleepy" });
+    return lines;
+  })();
 
   // Nothing to work with until WhatsApp is actually linked — take over the
   // screen with the QR instead of showing an empty inbox.
@@ -453,6 +534,7 @@ export default function Workspace() {
   return (
     <div className="grid h-full grid-cols-[290px_1fr_350px] divide-x-2 divide-cardline">
       <Confetti run={celebrate} />
+      <XPBurst burst={xpBurst} />
 
       {/* LEFT: inbox */}
       <aside className="flex min-h-0 flex-col bg-white/50">
@@ -611,12 +693,20 @@ export default function Workspace() {
 
       {/* RIGHT: logistics copilot */}
       <aside className="flex min-h-0 flex-col overflow-y-auto bg-white/50 p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <Froggy mood={copilotMood} size={44} bob={false} />
-          <h2 className="font-display text-sm font-extrabold uppercase tracking-wide text-ink-soft">
-            Dispatch copilot
-          </h2>
-        </div>
+        <h2 className="mb-2 font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
+          Dispatch copilot
+        </h2>
+        <Coach lines={coachLines} size={56} className="mb-3" />
+        {metrics && metrics.streakAtRisk && (
+          <div className="danger-pulse mb-3 flex items-center justify-between rounded-xl border-2 border-flame bg-flame-tint px-3 py-2">
+            <span className="font-display text-xs font-extrabold text-flame-dark">
+              🔥 {metrics.dispatchStreakDays}-day streak at risk!
+            </span>
+            <span className="rounded-lg bg-white px-2 py-0.5 font-mono text-xs font-bold text-flame-dark">
+              ⏰ {countdown.label}
+            </span>
+          </div>
+        )}
 
         {error && (
           <p className="mb-3 rounded-xl border-2 border-[#f3c1c1] bg-[#fdecec] p-2.5 font-display text-xs font-bold text-[#c04545]">
@@ -716,70 +806,12 @@ export default function Workspace() {
                     </select>
                   </label>
                 </div>
-                {products.length > 0 && (
-                  <div>
-                    <p className="mb-1 font-display text-xs font-bold text-ink-soft">
-                      Product <span className="font-normal">(tap to fill)</span>
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {products.map((p) => {
-                        const active = draft.product_id === p.id;
-                        const out = p.stock_units <= 0;
-                        return (
-                          <button
-                            key={p.id}
-                            onClick={() =>
-                              setDraft((d) =>
-                                d
-                                  ? {
-                                      ...d,
-                                      product_id: p.id,
-                                      item_name: p.name,
-                                      product_price: String(p.price),
-                                    }
-                                  : d
-                              )
-                            }
-                            className={
-                              "rounded-full px-2.5 py-1 font-display text-xs font-bold transition " +
-                              (active
-                                ? "bg-frog text-white"
-                                : "bg-[#f2ede3] text-ink hover:bg-pond hover:text-frog-dark")
-                            }
-                          >
-                            {p.name} · Rs. {p.price}{" "}
-                            <span className={out ? "text-[#c04545]" : active ? "text-white/80" : "text-ink-soft"}>
-                              ({out ? "out of stock!" : `${p.stock_units} left`})
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-                <label className="block font-display text-xs font-bold text-ink-soft">
-                  Item name <span className="font-normal">(prints on the invoice)</span>
-                  <input
-                    className={inputCls}
-                    value={draft.item_name}
-                    onChange={(e) =>
-                      setDraft((d) =>
-                        d ? { ...d, item_name: e.target.value, product_id: "" } : d
-                      )
-                    }
-                    placeholder="e.g. Posture corrector"
-                  />
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  <label className="block font-display text-xs font-bold text-ink-soft">
-                    Price (Rs.)
-                    <input
-                      type="number"
-                      className={inputCls}
-                      value={draft.product_price}
-                      onChange={(e) => setDraftField("product_price", e.target.value)}
-                    />
-                  </label>
+                <ItemsEditor
+                  products={products}
+                  items={draft.items}
+                  onChange={(items) => setDraft((d) => (d ? { ...d, items } : d))}
+                />
+                <div className="grid grid-cols-2 gap-2">
                   <label className="block font-display text-xs font-bold text-ink-soft">
                     Ship (Rs.)
                     <input

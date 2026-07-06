@@ -101,6 +101,48 @@
   }
 }
 
+/* Floating XP reward: pop in, drift up, fade away. */
+@keyframes xp-float {
+  0% {
+    transform: translateY(24px) scale(0.6);
+    opacity: 0;
+  }
+  12% {
+    transform: translateY(0) scale(1.08);
+    opacity: 1;
+  }
+  20% {
+    transform: translateY(0) scale(1);
+  }
+  75% {
+    transform: translateY(-36px) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-72px) scale(0.92);
+    opacity: 0;
+  }
+}
+
+.xp-burst {
+  animation: xp-float 2.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Urgency pulse for the streak-at-risk banner. */
+@keyframes danger-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 150, 0, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(255, 150, 0, 0);
+  }
+}
+
+.danger-pulse {
+  animation: danger-pulse 1.4s ease-out infinite;
+}
+
 html {
   height: 100%;
 }

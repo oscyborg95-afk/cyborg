@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { addTrackingEvent, createManifest, getOrder, updateOrderStatus } from "@/lib/db";
+import {
+  addTrackingEvent,
+  createManifest,
+  getOrder,
+  updateOrderStatus,
+  withTransaction,
+} from "@/lib/db";
 import { bookCourierOrder } from "@/lib/couriers";
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -14,15 +20,23 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   }
 
   try {
-    const booking = await bookCourierOrder(order);
-    const manifest = await createManifest({
-      order_id: order.id,
-      courier_name: booking.courier_name,
-      tracking_id: booking.tracking_id,
-      pdf_label_url: booking.pdf_label_url,
-      last_checkpoint: "booked",
+    // Persisted city_id → exact courier city match; null falls back to name.
+    const booking = await bookCourierOrder(order, order.city_id);
+    // Manifest, status flip, and the stock decrement must land atomically.
+    const manifest = await withTransaction(async (db) => {
+      const m = await createManifest(
+        {
+          order_id: order.id,
+          courier_name: booking.courier_name,
+          tracking_id: booking.tracking_id,
+          pdf_label_url: booking.pdf_label_url,
+          last_checkpoint: "booked",
+        },
+        db
+      );
+      await updateOrderStatus(order.id, "booked", db);
+      return m;
     });
-    await updateOrderStatus(order.id, "booked");
     await addTrackingEvent(order.id, `Booked with ${booking.courier_name}`, "booked");
     return NextResponse.json({ manifest });
   } catch (err) {
