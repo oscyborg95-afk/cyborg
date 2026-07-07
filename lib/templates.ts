@@ -41,6 +41,31 @@ export const TEMPLATE_META: Record<
     hint: "Apology + discount offer for delayed deliveries.",
     placeholders: [],
   },
+  followUpAddress: {
+    label: "🔔 Address reminder",
+    hint: "Nudge for chats stuck waiting on an address — sent from the follow-up queue.",
+    placeholders: [],
+  },
+  followUpConfirm: {
+    label: "🔔 Confirmation reminder",
+    hint: "Nudge for chats that never replied OK to the COD confirmation.",
+    placeholders: [],
+  },
+  outForDelivery: {
+    label: "🛵 Out for delivery",
+    hint: "Auto-sent when the courier marks the parcel out for delivery.",
+    placeholders: ["{{tracking}}"],
+  },
+  deliveredThanks: {
+    label: "💚 Delivered thank-you",
+    hint: "Auto-sent when the courier confirms delivery.",
+    placeholders: [],
+  },
+  returnedApology: {
+    label: "↩️ Return / redeliver offer",
+    hint: "Auto-sent when a parcel comes back — asks the customer if they want a redelivery.",
+    placeholders: [],
+  },
 };
 
 export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
@@ -61,6 +86,16 @@ export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
   trackingAlert: `ඔබේ පැකේජය courier වෙත භාර දුන්නා 📦\nTracking අංකය: {{tracking}}\nදවස් 1–2ක් ඇතුළත ලැබෙයි!`,
 
   delayBonus: `Delivery එක ටිකක් delay වුණා, සමාවෙන්න 🙏\nඒ වෙනුවෙන් ඔබේ ඊළඟ order එකට 10% discount එකක් දෙනවා! 🎁`,
+
+  followUpAddress: `පොඩි reminder එකක් 🙏 ඔබගේ order එක process කරන්න මේ විස්තර තාම බලාපොරොත්තුවෙන් ඉන්නවා:\n\n1. නම\n2. Address එක (district එකත් එක්ක)\n3. Phone number\n\nවිස්තර එවපු ගමන් delivery යවන්නම්! 🚚`,
+
+  followUpConfirm: `ඔබගේ order එක confirm කරන්න තාම බලාපොරොත්තුවෙන් ඉන්නවා 😊\nOK කියලා reply කළොත් අදම process කරන්නම් ✅\nප්‍රශ්නයක් තියෙනවා නම් මෙතනින්ම අහන්න!`,
+
+  outForDelivery: `🛵 ඔබගේ පැකේජය අද delivery සඳහා පිටත් වෙලා!\n📦 Tracking: {{tracking}}\nකරුණාකර phone එක ළඟ තියාගන්න — courier ඔබට call කරයි. 📞`,
+
+  deliveredThanks: `ඔබගේ පැකේජය ලැබුණා! 🎉\nDaily Cart එක්ක order කළාට බොහෝම ස්තූතියි 💚\nමොනවා හරි ප්‍රශ්නයක් තියෙනවා නම් මේ chat එකට reply කරන්න.`,
+
+  returnedApology: `ඔබගේ පැකේජය deliver කරන්න බැරි වුණා 😔\nතවමත් ඕන නම් නැවත යවන්න පුළුවන් — *OK* කියලා reply කරන්න, අපි redeliver කරන්නම්! 🚚`,
 };
 
 type Vars = { total?: number; tracking?: string };
@@ -89,6 +124,12 @@ export function makeTemplates(overrides: MessageTemplates = {}) {
     trackingAlert: (trackingId: string) =>
       renderTemplate(src("trackingAlert"), { tracking: trackingId }),
     delayBonus: () => renderTemplate(src("delayBonus"), {}),
+    followUpAddress: () => renderTemplate(src("followUpAddress"), {}),
+    followUpConfirm: () => renderTemplate(src("followUpConfirm"), {}),
+    outForDelivery: (trackingId: string) =>
+      renderTemplate(src("outForDelivery"), { tracking: trackingId }),
+    deliveredThanks: () => renderTemplate(src("deliveredThanks"), {}),
+    returnedApology: () => renderTemplate(src("returnedApology"), {}),
   };
 }
 

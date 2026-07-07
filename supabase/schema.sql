@@ -76,6 +76,12 @@ create table if not exists business_settings (
 );
 insert into business_settings (id) values (1) on conflict do nothing;
 
+-- Daily Meta/Facebook ad spend, entered manually — feeds the ROAS card.
+create table if not exists ad_spend (
+  day    date primary key,
+  amount numeric not null default 0
+);
+
 -- For existing databases created before these columns were added:
 alter table orders add column if not exists city varchar not null default '';
 alter table orders add column if not exists item_name varchar not null default '';
@@ -84,6 +90,7 @@ alter table orders add column if not exists product_id uuid references products(
 alter table orders add column if not exists phone_2 varchar not null default '';
 alter table orders add column if not exists city_id int;
 alter table orders add column if not exists items jsonb;
+alter table orders add column if not exists remitted_at timestamptz; -- COD payout received (cash reconciliation)
 alter table business_settings add column if not exists templates jsonb not null default '{}'::jsonb;
 alter table business_settings add column if not exists business_name varchar not null default '';
 alter table business_settings add column if not exists business_address varchar not null default '';

@@ -7,6 +7,7 @@ const TABS = [
   { href: "/", label: "Workspace", emoji: "💬" },
   { href: "/orders", label: "Orders", emoji: "📦" },
   { href: "/invoices", label: "Invoices", emoji: "🖨️" },
+  { href: "/broadcast", label: "Blast", emoji: "📣" },
   { href: "/analytics", label: "Quest", emoji: "🏆" },
 ] as const;
 

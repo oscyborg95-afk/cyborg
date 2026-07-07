@@ -27,6 +27,9 @@ export interface Order {
   discount: number;
   total_cod: number;
   order_status: OrderStatus;
+  // When the courier's COD payout for this delivered order was received.
+  // null/undefined = delivered cash still with the courier ("awaiting payout").
+  remitted_at?: string | null;
   created_at: string;
 }
 
@@ -59,7 +62,14 @@ export interface ParsedAddress {
   district: string;
 }
 
-export type NewOrder = Omit<Order, "id" | "created_at" | "order_status">;
+export type NewOrder = Omit<Order, "id" | "created_at" | "order_status" | "remitted_at">;
+
+// One day's Meta/Facebook ad spend, entered manually on the Quest page.
+// day is YYYY-MM-DD (Asia/Colombo civil date).
+export interface AdSpend {
+  day: string;
+  amount: number;
+}
 
 // A sellable product preset. stock_units tracks physical units in the shed:
 // booking an order takes one out, a courier return puts one back.
@@ -99,7 +109,12 @@ export type TemplateKey =
   | "codConfirm"
   | "shippedConfirmation"
   | "trackingAlert"
-  | "delayBonus";
+  | "delayBonus"
+  | "followUpAddress"
+  | "followUpConfirm"
+  | "outForDelivery"
+  | "deliveredThanks"
+  | "returnedApology";
 
 export type MessageTemplates = Partial<Record<TemplateKey, string>>;
 

@@ -5,6 +5,8 @@ import Link from "next/link";
 import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
 import { makeTemplates } from "@/lib/templates";
 import { itemsSubtotal } from "@/lib/items";
+import { phoneToChatId } from "@/lib/phone";
+import { customerRisk } from "@/lib/risk";
 import type {
   MessageTemplates,
   Order,
@@ -71,6 +73,56 @@ function fmtDateTime(iso: string): string {
   });
 }
 
+// Everything the accountant (i.e. you, at month end) wants, one row per order.
+function ordersToCsv(orders: Order[], manifests: ShippingManifest[]): string {
+  const manifestByOrder = new Map(manifests.map((m) => [m.order_id, m]));
+  const esc = (v: unknown) => `"${String(v ?? "").replaceAll('"', '""')}"`;
+  const header = [
+    "created_at",
+    "customer_name",
+    "phone",
+    "phone_2",
+    "address",
+    "city",
+    "district",
+    "items",
+    "product_total",
+    "shipping_fee",
+    "discount",
+    "total_cod",
+    "status",
+    "tracking_id",
+    "courier",
+    "remitted_at",
+  ];
+  const rows = orders.map((o) => {
+    const m = manifestByOrder.get(o.id);
+    return [
+      o.created_at,
+      o.customer_name,
+      o.phone_number,
+      o.phone_2,
+      o.parsed_address,
+      o.city,
+      o.district,
+      o.items && o.items.length > 0
+        ? o.items.map((i) => `${i.qty}x ${i.name} @${i.price}`).join("; ")
+        : o.item_name,
+      o.product_price,
+      o.shipping_fee,
+      o.discount,
+      o.total_cod,
+      o.order_status,
+      m?.tracking_id ?? "",
+      m?.courier_name ?? "",
+      o.remitted_at ?? "",
+    ]
+      .map(esc)
+      .join(",");
+  });
+  return [header.join(","), ...rows].join("\n");
+}
+
 export default function OrdersPage() {
   const [rawText, setRawText] = useState("");
   const [parsing, setParsing] = useState(false);
@@ -89,6 +141,10 @@ export default function OrdersPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [msgTemplates, setMsgTemplates] = useState<MessageTemplates>({});
+  const [search, setSearch] = useState("");
+  const [remitting, setRemitting] = useState(false);
+  const [redeliverSentId, setRedeliverSentId] = useState<string | null>(null);
+  const [rebookingId, setRebookingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [ordersRes, productsRes, settingsRes] = await Promise.all([
@@ -227,6 +283,89 @@ export default function OrdersPage() {
     setTimeout(() => setCopiedId(null), 1500);
   }
 
+  // --- Return workflow: apology message + one-click second attempt ----------
+
+  async function handleRedeliverOffer(order: Order) {
+    setError(null);
+    try {
+      const res = await fetch("/api/whatsapp/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chatId: phoneToChatId(order.phone_number),
+          text: makeTemplates(msgTemplates).returnedApology(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setRedeliverSentId(order.id);
+      setTimeout(() => setRedeliverSentId(null), 2500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Send failed");
+    }
+  }
+
+  async function handleRebook(order: Order) {
+    if (!confirm(`Re-book for ${order.customer_name} (Rs. ${order.total_cod})? A fresh pending order is created — book it when the customer confirms.`))
+      return;
+    setRebookingId(order.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/rebook`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Re-book failed");
+    } finally {
+      setRebookingId(null);
+    }
+  }
+
+  // --- Cash reconciliation ---------------------------------------------------
+
+  const unremitted = orders.filter((o) => o.order_status === "delivered" && !o.remitted_at);
+  const unremittedTotal = unremitted.reduce((sum, o) => sum + Number(o.total_cod), 0);
+
+  async function handleRemit() {
+    if (
+      !confirm(
+        `Mark the courier payout as received?\n\nRs. ${Math.round(unremittedTotal).toLocaleString("en-LK")} across ${unremitted.length} delivered order${unremitted.length === 1 ? "" : "s"} moves into bank cash.`
+      )
+    )
+      return;
+    setRemitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/remittance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_ids: unremitted.map((o) => o.id) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSyncNote(
+        `💵 Payout received — Rs. ${Math.round(data.total).toLocaleString("en-LK")} (${data.count} orders) added to bank cash.`
+      );
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Remittance failed");
+    } finally {
+      setRemitting(false);
+    }
+  }
+
+  function handleExportCsv() {
+    const csv = ordersToCsv(orders, manifests);
+    // BOM so Excel opens the Sinhala names correctly.
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `daily-cart-orders-${new Date().toLocaleDateString("en-CA")}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
   const setField = (field: Exclude<keyof ReviewForm, "items" | "city_id">, value: string) => {
     setForm((f) => {
       if (!f) return f;
@@ -269,11 +408,35 @@ export default function OrdersPage() {
           <Button tone="grape" onClick={syncTracking} disabled={syncing}>
             {syncing ? "📡 Checking courier…" : "📡 Sync tracking"}
           </Button>
+          <Button tone="ghost" onClick={handleExportCsv} disabled={orders.length === 0}>
+            📄 Export CSV
+          </Button>
           <Link href="/invoices">
             <Button tone="sky">🖨️ Print invoices</Button>
           </Link>
         </div>
       </header>
+
+      {unremitted.length > 0 && (
+        <Card className="!border-gold bg-gold/10 p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex-1">
+              <p className="font-display text-sm font-extrabold text-ink">
+                💵 Awaiting courier payout: Rs.{" "}
+                {Math.round(unremittedTotal).toLocaleString("en-LK")}
+              </p>
+              <p className="font-display text-xs font-bold text-ink-soft">
+                {unremitted.length} delivered order{unremitted.length === 1 ? "" : "s"} whose COD
+                the courier hasn&apos;t handed over yet. When the payout lands, mark it received —
+                the total moves into bank cash on the Quest page.
+              </p>
+            </div>
+            <Button tone="gold" onClick={handleRemit} disabled={remitting}>
+              {remitting ? "Recording…" : "✅ Payout received"}
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {syncNote && (
         <Card className="animate-pop p-3">
@@ -341,6 +504,26 @@ export default function OrdersPage() {
                 value={form.phone_number}
                 onChange={(e) => setField("phone_number", e.target.value)}
               />
+              {form.phone_number.replace(/\D/g, "").length >= 9 &&
+                (() => {
+                  const risk = customerRisk(orders, form.phone_number);
+                  return (
+                    <span
+                      className={
+                        "mt-1 inline-block rounded-full px-2 py-0.5 font-display text-[10px] font-extrabold " +
+                        (risk.tier === "risky"
+                          ? "bg-flame-tint text-flame-dark"
+                          : risk.tier === "watch"
+                            ? "bg-gold/25 text-gold-dark"
+                            : risk.tier === "good"
+                              ? "bg-pond text-frog-dark"
+                              : "bg-[#f2ede3] text-ink-soft")
+                      }
+                    >
+                      {risk.emoji} {risk.label}
+                    </span>
+                  );
+                })()}
             </label>
             <label className="font-display text-xs font-bold text-ink-soft">
               Phone 2 (optional)
@@ -418,7 +601,15 @@ export default function OrdersPage() {
       )}
 
       <Card className="p-5">
-        <h2 className="mb-3 font-display text-lg font-extrabold text-ink">Orders</h2>
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <h2 className="font-display text-lg font-extrabold text-ink">Orders</h2>
+          <input
+            className="ml-auto w-full max-w-xs rounded-xl border-2 border-cardline bg-cream/60 px-3 py-1.5 text-sm font-semibold text-ink outline-none focus:border-frog"
+            placeholder="🔎 Search name, phone, tracking…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
         {orders.length === 0 ? (
           <div className="flex flex-col items-center gap-2 p-6 text-center">
             <Froggy mood="sleepy" size={72} />
@@ -438,7 +629,26 @@ export default function OrdersPage() {
                 </tr>
               </thead>
               <tbody>
-                {orders.map((order) => {
+                {orders
+                  .filter((order) => {
+                    const q = search.trim().toLowerCase();
+                    if (!q) return true;
+                    const manifest = manifests.find((m) => m.order_id === order.id);
+                    return [
+                      order.customer_name,
+                      order.phone_number,
+                      order.phone_2,
+                      order.city,
+                      order.district,
+                      order.item_name,
+                      order.order_status,
+                      manifest?.tracking_id ?? "",
+                    ]
+                      .join(" ")
+                      .toLowerCase()
+                      .includes(q);
+                  })
+                  .map((order) => {
                   const manifest = manifests.find((m) => m.order_id === order.id);
                   const orderEvents = events
                     .filter((e) => e.order_id === order.id)
@@ -478,6 +688,11 @@ export default function OrdersPage() {
                             <option value="delivered">delivered</option>
                             <option value="returned">returned</option>
                           </select>
+                          {order.order_status === "delivered" && (
+                            <div className="mt-0.5 font-display text-[10px] font-extrabold text-ink-soft">
+                              {order.remitted_at ? "💵 paid out" : "⏳ awaiting payout"}
+                            </div>
+                          )}
                         </td>
                         <td className="py-2.5 pr-3">
                           {manifest ? (
@@ -515,6 +730,25 @@ export default function OrdersPage() {
                               >
                                 {bookingId === order.id ? "Booking…" : "🚀 Book"}
                               </Button>
+                            )}
+                            {order.order_status === "returned" && (
+                              <>
+                                <Button
+                                  tone="gold"
+                                  onClick={() => handleRedeliverOffer(order)}
+                                  className="!px-3 !py-1.5 !text-xs"
+                                >
+                                  {redeliverSentId === order.id ? "Sent ✓" : "💬 Redeliver offer"}
+                                </Button>
+                                <Button
+                                  tone="sky"
+                                  onClick={() => handleRebook(order)}
+                                  disabled={rebookingId === order.id}
+                                  className="!px-3 !py-1.5 !text-xs"
+                                >
+                                  {rebookingId === order.id ? "Cloning…" : "🔁 Re-book"}
+                                </Button>
+                              </>
                             )}
                             {trackable && (
                               <Button

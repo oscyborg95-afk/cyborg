@@ -1,8 +1,8 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState } from "react";
-import type { Metrics } from "@/lib/metrics";
-import type { BusinessSettings, Product, TemplateKey } from "@/lib/types";
+import type { Metrics, OutcomeStat } from "@/lib/metrics";
+import type { AdSpend, BusinessSettings, Product, TemplateKey } from "@/lib/types";
 import { DEFAULT_TEMPLATES, TEMPLATE_META } from "@/lib/templates";
 import { Froggy, type FroggyMood } from "../components/froggy";
 import {
@@ -386,7 +386,7 @@ export default function QuestPage() {
         <p className="mt-1 font-display text-5xl font-extrabold text-ink">
           <CountUp value={metrics.netWorth} format={rs} />
         </p>
-        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-4">
           <Breakdown label="Bank cash" color="var(--color-sky)" value={metrics.netWorthBreakdown.bankCash} total={metrics.netWorth} />
           <Breakdown
             label={`Stock (${metrics.stockUnits} units)`}
@@ -395,17 +395,44 @@ export default function QuestPage() {
             total={metrics.netWorth}
           />
           <Breakdown
-            label="Pending remittances"
+            label="Cash in flight"
             color="var(--color-flame)"
-            value={metrics.netWorthBreakdown.pendingRemittances}
+            value={metrics.netWorthBreakdown.cashInFlight}
+            total={metrics.netWorth}
+          />
+          <Breakdown
+            label={`Awaiting payout (${metrics.awaitingPayoutCount})`}
+            color="var(--color-gold)"
+            value={metrics.netWorthBreakdown.awaitingPayout}
             total={metrics.netWorth}
           />
         </div>
         <p className="mt-4 font-display text-xs font-bold text-ink-soft">
           Buying stock just moves value from cash to inventory — your high score never drops for
-          restocking. Only returns and spending outside the business can lower it.
+          restocking. Only returns and spending outside the business can lower it. &ldquo;Awaiting
+          payout&rdquo; is delivered COD the courier hasn&apos;t handed over — reconcile it on the{" "}
+          <a href="/orders" className="underline">Orders page</a> when the payout lands.
         </p>
       </Card>
+
+      {/* ── WHERE RETURNS HAPPEN ──────────────────────────────────── */}
+      {(metrics.districtStats.length > 0 || metrics.productStats.length > 0) && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ReturnRateCard
+            title="📍 By district"
+            hint="Completed journeys only (delivered + returned)."
+            stats={metrics.districtStats}
+          />
+          <ReturnRateCard
+            title="📦 By product"
+            hint="High return rate = wrong expectations in the ad, or a quality issue."
+            stats={metrics.productStats}
+          />
+        </div>
+      )}
+
+      {/* ── AD SPEND & ROAS ───────────────────────────────────────── */}
+      <AdSpendCard metrics={metrics} />
 
       {/* ── PRODUCTS & STOCK ──────────────────────────────────────── */}
       <ProductsCard products={products} onChanged={load} />
@@ -536,6 +563,193 @@ export default function QuestPage() {
         </Button>
       </Card>
     </main>
+  );
+}
+
+function ReturnRateCard({
+  title,
+  hint,
+  stats,
+}: {
+  title: string;
+  hint: string;
+  stats: OutcomeStat[];
+}) {
+  const top = stats.slice(0, 8);
+  return (
+    <Card className="p-5">
+      <h2 className="font-display text-lg font-extrabold text-ink">{title}</h2>
+      <p className="mb-3 font-display text-xs font-bold text-ink-soft">{hint}</p>
+      {top.length === 0 ? (
+        <p className="font-display text-sm font-bold text-ink-soft">
+          No completed deliveries yet.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {top.map((s) => (
+            <div key={s.name} className="flex items-center gap-3">
+              <span className="w-32 truncate font-display text-sm font-bold text-ink" title={s.name}>
+                {s.name}
+              </span>
+              <div className="h-3.5 flex-1 overflow-hidden rounded-full bg-[#f2ede3]">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${Math.max(s.returnRatePct, s.returned > 0 ? 4 : 0)}%`,
+                    background:
+                      s.returnRatePct >= 25 ? "var(--color-flame)" : "var(--color-gold)",
+                  }}
+                />
+              </div>
+              <span
+                className={
+                  "w-24 shrink-0 text-right font-display text-xs font-extrabold " +
+                  (s.returnRatePct >= 25 ? "text-flame-dark" : "text-ink-soft")
+                }
+              >
+                {s.returnRatePct}% · {s.returned}/{s.shipped} ret.
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// Manual daily ad-spend entry + delivered-revenue ROAS. Revenue counts on the
+// day the parcel is DELIVERED (when COD becomes real money), so early days of
+// a campaign will look worse than they are — parcels take 1–3 days to land.
+function AdSpendCard({ metrics }: { metrics: Metrics }) {
+  const [spend, setSpend] = useState<AdSpend[]>([]);
+  const [day, setDay] = useState(() => new Date().toLocaleDateString("en-CA"));
+  const [amount, setAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const res = await fetch("/api/adspend");
+    const data = await res.json();
+    if (res.ok) setSpend(data.spend);
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Editing an existing day pre-fills its current amount.
+  useEffect(() => {
+    const existing = spend.find((s) => s.day === day);
+    setAmount(existing ? String(existing.amount) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [day, spend.length]);
+
+  async function save() {
+    const value = Number(amount);
+    if (!Number.isFinite(value) || value < 0) return;
+    setBusy(true);
+    await fetch("/api/adspend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ day, amount: value }),
+    });
+    await load();
+    setBusy(false);
+  }
+
+  const { last7, last14 } = metrics.adPerf;
+  const roas = (w: { spend: number; revenue: number }) =>
+    w.spend > 0 ? (w.revenue / w.spend).toFixed(2) : null;
+  const cpa = (w: { spend: number; deliveredCount: number }) =>
+    w.spend > 0 && w.deliveredCount > 0 ? Math.round(w.spend / w.deliveredCount) : null;
+
+  const inputCls =
+    "mt-1 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog";
+
+  return (
+    <Card className="p-6">
+      <h2 className="mb-1 font-display text-lg font-extrabold text-ink">📣 Ad spend &amp; ROAS</h2>
+      <p className="mb-4 font-display text-xs font-bold text-ink-soft">
+        Log what you spent on Meta each day. ROAS = delivered COD revenue ÷ spend — revenue counts
+        when the parcel is <em>delivered</em>, so give fresh campaigns 2–3 days before judging.
+      </p>
+
+      <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-4">
+        <PerfTile label="Spend (7d)" value={rs(last7.spend)} />
+        <PerfTile
+          label="Delivered revenue (7d)"
+          value={rs(last7.revenue)}
+          sub={`${last7.deliveredCount} orders`}
+        />
+        <PerfTile
+          label="ROAS (7d)"
+          value={roas(last7) ? `${roas(last7)}×` : "—"}
+          highlight={last7.spend > 0 && last7.revenue >= last7.spend * 3}
+          sub={cpa(last7) ? `Rs. ${cpa(last7)!.toLocaleString("en-LK")} / delivery` : undefined}
+        />
+        <PerfTile
+          label="ROAS (14d)"
+          value={roas(last14) ? `${roas(last14)}×` : "—"}
+          sub={`${rs(last14.spend)} spent`}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="font-display text-xs font-bold text-ink-soft">
+          Day
+          <input type="date" className={inputCls} value={day} onChange={(e) => setDay(e.target.value)} />
+        </label>
+        <label className="font-display text-xs font-bold text-ink-soft">
+          Spend (Rs.)
+          <input
+            type="number"
+            className={inputCls}
+            placeholder="e.g. 2500"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
+        </label>
+        <Button tone="frog" onClick={save} disabled={busy || amount === ""}>
+          {busy ? "Saving…" : "💾 Save day"}
+        </Button>
+      </div>
+
+      {spend.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {spend.slice(0, 14).map((s) => (
+            <button
+              key={s.day}
+              onClick={() => setDay(s.day)}
+              className="rounded-full bg-cream px-2.5 py-1 font-display text-[11px] font-bold text-ink-soft transition hover:bg-pond hover:text-frog-dark"
+              title="Tap to edit"
+            >
+              {s.day.slice(5)} · {rs(s.amount)}
+            </button>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function PerfTile({
+  label,
+  value,
+  sub,
+  highlight = false,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  highlight?: boolean;
+}) {
+  return (
+    <div className={"rounded-xl p-3 " + (highlight ? "bg-pond" : "bg-cream/70")}>
+      <p className="font-display text-xs font-bold text-ink-soft">{label}</p>
+      <p className={"font-display text-xl font-extrabold " + (highlight ? "text-frog-dark" : "text-ink")}>
+        {value}
+      </p>
+      {sub && <p className="font-display text-[11px] font-bold text-ink-soft">{sub}</p>}
+    </div>
   );
 }
 

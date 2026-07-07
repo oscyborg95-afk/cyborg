@@ -15,6 +15,7 @@
 //   GET  /qr.json                    → { ready, qr } (Workspace embeds this)
 //   GET  /chats                      → [{ id, name, lastMessage, timestamp, unreadCount }]
 //   GET  /messages/:chatId           → [{ id, chatId, body, fromMe, timestamp, senderName }]
+//   GET  /media/:id                  → { mime, data } (base64) — captured voice notes/photos
 //   POST /send { chatId, text }      → { ok }
 //   POST /mock/incoming { chatId, body }   (mock mode only)
 // Socket.io events: "wa:message", "wa:status" ({ ready }), "wa:qr" ({ qr })
@@ -165,11 +166,17 @@ if (MOCK) {
 
   app.post("/send", (req, res) => {
     const { chatId, text } = req.body;
-    const chat = chats.get(chatId);
+    // Live WhatsApp JIDs end in @s.whatsapp.net; the mock seeds use @c.us.
+    // Match by phone digits so server-side sends (alerts, broadcast) work here.
+    let chat = chats.get(chatId);
+    if (!chat && chatId) {
+      const digits = String(chatId).split("@")[0];
+      chat = [...chats.values()].find((c) => c.id.split("@")[0] === digits);
+    }
     if (!chat || !text) return res.status(400).json({ error: "unknown chatId or empty text" });
     const msg = {
-      id: `${chatId}-${chat.messages.length}`,
-      chatId,
+      id: `${chat.id}-${chat.messages.length}`,
+      chatId: chat.id,
       body: text,
       fromMe: true,
       timestamp: Date.now(),
@@ -179,6 +186,9 @@ if (MOCK) {
     emitMessage(msg);
     res.json({ ok: true });
   });
+
+  // No real media in mock mode — the parse route degrades to text-only.
+  app.get("/media/:id", (_req, res) => res.status(404).json({ error: "no media in mock mode" }));
 
   app.post("/mock/incoming", (req, res) => {
     const { chatId, body } = req.body;
@@ -216,6 +226,7 @@ const {
   BufferJSON,
   DisconnectReason,
   Browsers,
+  downloadMediaMessage,
   isJidGroup,
   isJidBroadcast,
   isJidStatusBroadcast,
@@ -238,6 +249,7 @@ if (DATABASE_URL) {
 
 const memChats = new Map(); // jid -> { name, unread, lastTs, lastMessage }
 const memMessages = new Map(); // jid -> Map(id -> msg)
+const memMedia = new Map(); // msgId -> { mime, data (base64) }
 
 async function ensureTables() {
   if (!pool) return;
@@ -262,7 +274,40 @@ async function ensureTables() {
       sender  text not null default ''
     );
     create index if not exists idx_wa_messages_jid_ts on wa_messages(jid, ts);
+    create table if not exists wa_media (
+      id   text primary key,
+      mime text not null,
+      data text not null,
+      ts   bigint not null
+    );
   `);
+  // Media is only needed while an order is being parsed — prune after 14 days.
+  await pool
+    .query("delete from wa_media where ts < $1", [Date.now() - 14 * 24 * 60 * 60 * 1000])
+    .catch(() => {});
+}
+
+// --- Media (voice notes + photos, for AI address parsing) --------------------
+
+async function saveMedia(id, mime, buffer) {
+  const data = buffer.toString("base64");
+  if (pool) {
+    await pool.query(
+      `insert into wa_media (id, mime, data, ts) values ($1,$2,$3,$4)
+       on conflict (id) do nothing`,
+      [id, mime, data, Date.now()]
+    );
+    return;
+  }
+  memMedia.set(id, { mime, data });
+}
+
+async function getMedia(id) {
+  if (pool) {
+    const { rows } = await pool.query("select mime, data from wa_media where id = $1", [id]);
+    return rows[0] ?? null;
+  }
+  return memMedia.get(id) ?? null;
 }
 
 /** Store one normalized message. Returns false if we'd already seen it. */
@@ -512,12 +557,43 @@ async function connectToWhatsApp() {
       if (!msg) continue;
       try {
         const isNew = await saveMessage(msg);
-        if (isNew) emitMessage(msg);
+        if (isNew) {
+          emitMessage(msg);
+          // Voice notes and photos often ARE the address — capture the bytes
+          // so the AI parser can read them. Fire-and-forget; never blocks chat.
+          captureMedia(m, msg).catch((err) =>
+            console.error("[cyborg-wa-worker] media download failed:", err.message)
+          );
+        }
       } catch (err) {
         console.error("[cyborg-wa-worker] failed to store message:", err.message);
       }
     }
   });
+}
+
+// Sri Lankan customers frequently send the delivery address as a voice note or
+// a photo of a handwritten note. Store inbound audio/images (base64) so the
+// dashboard's "Parse from chat" can feed them to the multimodal parser.
+const MAX_MEDIA_BYTES = 6 * 1024 * 1024;
+
+async function captureMedia(rawMessage, msg) {
+  if (msg.fromMe) return;
+  const content = unwrap(rawMessage.message);
+  const media = content?.audioMessage || content?.imageMessage;
+  if (!media) return;
+  if (Number(media.fileLength || 0) > MAX_MEDIA_BYTES) return; // skip huge files
+
+  const buffer = await downloadMediaMessage(rawMessage, "buffer", {}, {
+    logger,
+    reuploadRequest: sock.updateMediaMessage,
+  });
+  if (!buffer || buffer.length > MAX_MEDIA_BYTES) return;
+  // "audio/ogg; codecs=opus" → "audio/ogg" (what the AI APIs expect).
+  const mime = (media.mimetype || (content.audioMessage ? "audio/ogg" : "image/jpeg"))
+    .split(";")[0]
+    .trim();
+  await saveMedia(msg.id, mime, buffer);
 }
 
 // --- Routes (registered up-front; they answer 503 until the session is live) --
@@ -537,6 +613,16 @@ app.get("/messages/:chatId", async (req, res) => {
     const messages = await listMessages(req.params.chatId);
     await resetUnread(req.params.chatId);
     res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/media/:id", async (req, res) => {
+  try {
+    const media = await getMedia(req.params.id);
+    if (!media) return res.status(404).json({ error: "media not captured for this message" });
+    res.json(media);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

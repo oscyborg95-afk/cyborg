@@ -20,6 +20,7 @@ const ParsedAddressSchema = z.object({
 
 const SYSTEM_PROMPT = `You are a Sri Lankan address parsing engine for a cash-on-delivery e-commerce business.
 The input is a raw message block copied from a WhatsApp chat. It may mix Sinhala, Tamil, and English, contain typos, emoji, and irrelevant chat text.
+The input may also include voice notes (transcribe them — customers often speak their address in Sinhala) and photos (often a handwritten address — read it). Combine every source into one set of delivery details, preferring the most recent/most complete information.
 
 Extract the delivery details:
 - name: the customer's name.
@@ -29,9 +30,18 @@ Extract the delivery details:
 - city: the delivery town/city used for courier routing (e.g. Nugegoda, Maharagama, Kandy). This is the local town, not the district. Correct spelling. If only a district is given, use the district's main town.
 - district: the Sri Lankan district. Infer it from the town if not stated explicitly, and correct spelling to the official district name.`;
 
-export async function parseRawAddress(rawText: string): Promise<ParsedAddress> {
-  if (process.env.GEMINI_API_KEY) return parseWithGemini(rawText);
-  if (process.env.ANTHROPIC_API_KEY) return parseWithClaude(rawText);
+// A voice note or photo pulled from the WhatsApp worker, base64-encoded.
+export interface MediaAttachment {
+  mime: string;
+  data: string;
+}
+
+export async function parseRawAddress(
+  rawText: string,
+  media: MediaAttachment[] = []
+): Promise<ParsedAddress> {
+  if (process.env.GEMINI_API_KEY) return parseWithGemini(rawText, media);
+  if (process.env.ANTHROPIC_API_KEY) return parseWithClaude(rawText, media);
   throw new Error(
     "No AI key configured. Get a free key at https://aistudio.google.com/apikey and set GEMINI_API_KEY in .env.local"
   );
@@ -41,10 +51,21 @@ export async function parseRawAddress(rawText: string): Promise<ParsedAddress> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function parseWithGemini(rawText: string): Promise<ParsedAddress> {
+async function parseWithGemini(
+  rawText: string,
+  media: MediaAttachment[]
+): Promise<ParsedAddress> {
   const requestBody = JSON.stringify({
     system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-    contents: [{ role: "user", parts: [{ text: rawText }] }],
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { text: rawText || "Extract the delivery details from the attached message(s)." },
+          ...media.map((m) => ({ inline_data: { mime_type: m.mime, data: m.data } })),
+        ],
+      },
+    ],
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -126,16 +147,36 @@ async function parseWithGemini(rawText: string): Promise<ParsedAddress> {
 
 // --- Claude (fallback if you have a key) --------------------------------------
 
-async function parseWithClaude(rawText: string): Promise<ParsedAddress> {
+async function parseWithClaude(
+  rawText: string,
+  media: MediaAttachment[]
+): Promise<ParsedAddress> {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const { zodOutputFormat } = await import("@anthropic-ai/sdk/helpers/zod");
   const client = new Anthropic();
+
+  // Claude reads images but not audio — voice notes need the Gemini path.
+  const IMAGE_MIMES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
+  type ImageMime = (typeof IMAGE_MIMES)[number];
+  const images = media.filter((m): m is MediaAttachment & { mime: ImageMime } =>
+    (IMAGE_MIMES as readonly string[]).includes(m.mime)
+  );
+  const content = [
+    {
+      type: "text" as const,
+      text: rawText || "Extract the delivery details from the attached image(s).",
+    },
+    ...images.map((m) => ({
+      type: "image" as const,
+      source: { type: "base64" as const, media_type: m.mime, data: m.data },
+    })),
+  ];
 
   const response = await client.messages.parse({
     model: "claude-haiku-4-5",
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: rawText }],
+    messages: [{ role: "user", content }],
     output_config: { format: zodOutputFormat(ParsedAddressSchema) },
   });
 

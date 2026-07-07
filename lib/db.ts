@@ -2,6 +2,7 @@ import { Pool, types } from "pg";
 import type { PoolClient } from "pg";
 import { randomUUID } from "crypto";
 import type {
+  AdSpend,
   BusinessSettings,
   ChatState,
   ChatStateValue,
@@ -25,6 +26,7 @@ types.setTypeParser(1700, (v) => (v === null ? null : parseFloat(v)));
 const toIso = (v: string | null) => (v === null ? null : new Date(v).toISOString());
 types.setTypeParser(1184, toIso); // timestamptz
 types.setTypeParser(1114, toIso); // timestamp
+types.setTypeParser(1082, (v) => v); // date -> keep as "YYYY-MM-DD" string
 
 const DATABASE_URL = process.env.DATABASE_URL;
 export const usingSupabase = Boolean(DATABASE_URL);
@@ -38,6 +40,7 @@ const g = globalThis as unknown as {
   __cyborgSettings?: BusinessSettings;
   __cyborgProducts?: Map<string, Product>;
   __cyborgTrackingEvents?: TrackingEvent[];
+  __cyborgAdSpend?: Map<string, number>;
 };
 
 let pool: Pool | null = null;
@@ -80,6 +83,7 @@ const memManifests = (g.__cyborgManifests ??= new Map<string, ShippingManifest>(
 const memChatStates = (g.__cyborgChatStates ??= new Map<string, ChatState>());
 const memProducts = (g.__cyborgProducts ??= new Map<string, Product>());
 const memTrackingEvents = (g.__cyborgTrackingEvents ??= []);
+const memAdSpend = (g.__cyborgAdSpend ??= new Map<string, number>()); // day -> Rs.
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   bank_cash: 0,
@@ -130,6 +134,7 @@ export async function createOrder(
     ...input,
     id: randomUUID(),
     order_status: "pending",
+    remitted_at: null,
     created_at: new Date().toISOString(),
   };
   memOrders.set(order.id, order);
@@ -434,6 +439,112 @@ export async function getLatestTrackingEvent(order_id: string): Promise<Tracking
     .filter((e) => e.order_id === order_id)
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
   return evs[0] ?? null;
+}
+
+// --- Cash reconciliation (courier COD remittances) ---------------------------
+
+// Postgres "undefined_column" — the remitted_at migration hasn't been run yet.
+function isUndefinedColumn(err: unknown): boolean {
+  return (
+    typeof err === "object" && err !== null && (err as { code?: string }).code === "42703"
+  );
+}
+
+/**
+ * Mark a batch of delivered orders as paid out by the courier: stamps
+ * remitted_at and moves the batch total into business_settings.bank_cash,
+ * atomically. Only delivered + not-yet-remitted orders in `ids` count.
+ */
+export async function remitOrders(ids: string[]): Promise<{ count: number; total: number }> {
+  const run = () =>
+    withTransaction(async (db) => {
+      if (db) {
+        const { rows } = await db.query(
+          `update orders set remitted_at = now()
+           where id = any($1) and order_status = 'delivered' and remitted_at is null
+           returning total_cod`,
+          [ids]
+        );
+        const total = rows.reduce((sum, r) => sum + Number(r.total_cod), 0);
+        if (rows.length > 0) {
+          await db.query(
+            "update business_settings set bank_cash = bank_cash + $1 where id = 1",
+            [total]
+          );
+        }
+        return { count: rows.length, total };
+      }
+      let total = 0;
+      let count = 0;
+      for (const id of ids) {
+        const order = memOrders.get(id);
+        if (order && order.order_status === "delivered" && !order.remitted_at) {
+          memOrders.set(id, { ...order, remitted_at: new Date().toISOString() });
+          total += Number(order.total_cod);
+          count++;
+        }
+      }
+      if (count > 0) {
+        const s = g.__cyborgSettings ?? DEFAULT_SETTINGS;
+        g.__cyborgSettings = { ...s, bank_cash: s.bank_cash + total };
+      }
+      return { count, total };
+    });
+
+  try {
+    return await run();
+  } catch (err) {
+    // Self-migrate: the column is additive and nullable, so adding it in place
+    // is safe — spares the operator a manual schema.sql run.
+    if (pool && isUndefinedColumn(err)) {
+      await pool.query("alter table orders add column if not exists remitted_at timestamptz");
+      return run();
+    }
+    throw err;
+  }
+}
+
+// --- Ad spend (manual daily entry, feeds ROAS) --------------------------------
+
+export async function listAdSpend(): Promise<AdSpend[]> {
+  if (pool) {
+    try {
+      const { rows } = await pool.query(
+        "select day, amount from ad_spend order by day desc limit 60"
+      );
+      return rows as AdSpend[];
+    } catch (err) {
+      if (isUndefinedTable(err)) return []; // migration not run yet — additive feature
+      throw err;
+    }
+  }
+  return [...memAdSpend.entries()]
+    .map(([day, amount]) => ({ day, amount }))
+    .sort((a, b) => b.day.localeCompare(a.day))
+    .slice(0, 60);
+}
+
+export async function upsertAdSpend(day: string, amount: number): Promise<void> {
+  if (pool) {
+    const write = () =>
+      pool!.query(
+        `insert into ad_spend (day, amount) values ($1, $2)
+         on conflict (day) do update set amount = excluded.amount`,
+        [day, amount]
+      );
+    try {
+      await write();
+    } catch (err) {
+      if (!isUndefinedTable(err)) throw err;
+      // Self-migrate on first use.
+      await pool.query(
+        "create table if not exists ad_spend (day date primary key, amount numeric not null default 0)"
+      );
+      await write();
+    }
+    return;
+  }
+  memAdSpend.set(day, amount);
 }
 
 // --- Chat states (Cyborg OS) -----------------------------------------------

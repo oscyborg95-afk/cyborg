@@ -179,17 +179,27 @@ export interface TrackingResult {
   checkpoint: string; // human-readable latest status line
 }
 
-// Trans Express client-portal status endpoint. If your account's API differs,
-// set COURIER_TRACKING_URL with {waybill} as a placeholder, e.g.
-//   COURIER_TRACKING_URL=https://portal.transexpress.lk/api/orders/track/{waybill}
-const TRACKING_URL =
-  process.env.COURIER_TRACKING_URL || `${API_BASE}/orders/track/{waybill}`;
+// Trans Express single-order tracking (per their API docs):
+//   POST /tracking  { waybill_id }  (Bearer token)
+//   → { data: { current_status, status_history: [{ name, remarks, added_date }, …] } }
+// status_history is newest-first. COURIER_TRACKING_URL overrides the endpoint.
+const TRACKING_URL = process.env.COURIER_TRACKING_URL || `${API_BASE}/tracking`;
+
+interface TxTrackingResponse {
+  data?: {
+    current_status?: string;
+    status_history?: Array<{ name?: string; remarks?: string; added_date?: string }>;
+  };
+}
 
 /** Map a courier status line to our order outcome. */
 function classifyStatus(text: string): TrackingResult["outcome"] {
   const t = text.toLowerCase();
   if (t.includes("deliver") && !t.includes("out for deliver")) return "delivered";
-  if (t.includes("return") || t.includes("reject") || t.includes("refus")) return "returned";
+  // Canceled parcels never leave (or come back) — either way the unit is
+  // physically back in the shed, which is what "returned" means to stock.
+  if (t.includes("return") || t.includes("reject") || t.includes("refus") || t.includes("cancel"))
+    return "returned";
   return "in_transit";
 }
 
@@ -220,8 +230,14 @@ export async function getTrackingStatus(
 
   const doTrack = async (): Promise<Response> => {
     const token = await getToken();
-    return fetch(TRACKING_URL.replace("{waybill}", encodeURIComponent(trackingId)), {
-      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+    return fetch(TRACKING_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ waybill_id: trackingId }),
     });
   };
 
@@ -231,15 +247,23 @@ export async function getTrackingStatus(
     res = await doTrack();
   }
   if (!res.ok) {
-    throw new Error(`Tracking failed for ${trackingId} (${res.status})`);
+    throw new Error(
+      `Tracking failed for ${trackingId} (${res.status}): ${(await res.text()).slice(0, 200)}`
+    );
   }
 
-  const status = extractStatus(await res.json());
+  const payload = (await res.json()) as TxTrackingResponse;
+  const latest = payload.data?.status_history?.[0] ?? null;
+  const status = payload.data?.current_status || latest?.name || extractStatus(payload);
   if (!status) {
     // Unknown response shape — leave the order alone rather than guessing.
     return { outcome: "in_transit", checkpoint: "status unavailable" };
   }
-  return { outcome: classifyStatus(status), checkpoint: status };
+  // "Out for Delivery — Handed to rider R. Perera" beats a bare status word,
+  // and a remark change re-triggers the timeline + customer alert correctly.
+  const checkpoint =
+    latest?.remarks && latest.name === status ? `${status} — ${latest.remarks}` : status;
+  return { outcome: classifyStatus(status), checkpoint };
 }
 
 // Mock tracking so the whole loop works before credentials arrive:

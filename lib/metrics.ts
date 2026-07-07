@@ -1,4 +1,5 @@
 import type {
+  AdSpend,
   BusinessSettings,
   Order,
   Product,
@@ -37,6 +38,23 @@ export interface DayStat {
   returned: number;
 }
 
+// Delivery outcomes bucketed by district or by product line — surfaces where
+// COD returns are eating the margin.
+export interface OutcomeStat {
+  name: string;
+  shipped: number; // completed journeys: delivered + returned
+  delivered: number;
+  returned: number;
+  returnRatePct: number;
+}
+
+// Ad spend vs. delivered COD revenue over a trailing window.
+export interface AdWindow {
+  spend: number;
+  revenue: number; // COD value of orders DELIVERED in the window
+  deliveredCount: number;
+}
+
 export interface Metrics {
   level: number;
   levelTarget: number;
@@ -51,16 +69,22 @@ export interface Metrics {
   dailyGoal: number; // adaptive: beats your recent average, never crushing
   bestDay: number; // most packages ever shipped in one day
   cashInFlight: number; // COD value riding with the courier right now
+  awaitingPayout: number; // COD delivered but not yet remitted by the courier
+  awaitingPayoutCount: number;
   stockUnits: number; // total physical units in the shed (products + legacy settings)
   netWorth: number;
   netWorthBreakdown: {
     bankCash: number;
     stockValue: number;
-    pendingRemittances: number;
+    cashInFlight: number;
+    awaitingPayout: number;
   };
   quests: Quest[];
   badges: Badge[];
   days: DayStat[]; // last 14 Colombo days, oldest first — feeds the Quest chart
+  districtStats: OutcomeStat[]; // sorted by volume, completed orders only
+  productStats: OutcomeStat[];
+  adPerf: { last7: AdWindow; last14: AdWindow };
 }
 
 // The operator ships on Sri Lanka time. Bucketing an instant by the server's
@@ -101,13 +125,18 @@ export function computeMetrics(
   manifests: ShippingManifest[],
   settings: BusinessSettings,
   products: Product[] = [],
-  events: TrackingEvent[] = []
+  events: TrackingEvent[] = [],
+  adSpend: AdSpend[] = []
 ): Metrics {
   const delivered = orders.filter((o) => o.order_status === "delivered").length;
   const totalPackages = orders.filter((o) => o.order_status !== "pending").length;
   const cashInFlight = orders
     .filter((o) => o.order_status === "booked")
     .reduce((sum, o) => sum + Number(o.total_cod), 0);
+  const awaitingPayoutOrders = orders.filter(
+    (o) => o.order_status === "delivered" && !o.remitted_at
+  );
+  const awaitingPayout = awaitingPayoutOrders.reduce((sum, o) => sum + Number(o.total_cod), 0);
 
   // Level: index of the first threshold not yet reached.
   let level = 1;
@@ -203,7 +232,9 @@ export function computeMetrics(
   const stockValue = settings.stock_units * settings.stock_unit_cost + productStockValue;
   const stockUnits =
     settings.stock_units + products.reduce((sum, p) => sum + p.stock_units, 0);
-  const netWorth = settings.bank_cash + stockValue + cashInFlight;
+  // Delivered-but-unremitted COD is still the business's money — it sits with
+  // the courier until the payout batch lands, so it counts toward net worth.
+  const netWorth = settings.bank_cash + stockValue + cashInFlight + awaitingPayout;
 
   const badges: Badge[] = [
     { id: "first-flight", emoji: "🐣", name: "First Flight", desc: "Dispatch your first package", earned: totalPackages >= 1 },
@@ -248,6 +279,71 @@ export function computeMetrics(
     });
   }
 
+  // --- Return-rate breakdowns (completed journeys only) ----------------------
+  // A journey is "complete" once the courier settled it: delivered or returned.
+  // Pending/booked orders are excluded so in-flight parcels don't dilute rates.
+  const districtAgg = new Map<string, { delivered: number; returned: number }>();
+  const productAgg = new Map<string, { delivered: number; returned: number }>();
+  for (const o of orders) {
+    if (o.order_status !== "delivered" && o.order_status !== "returned") continue;
+    const isReturn = o.order_status === "returned";
+
+    const district = o.district || "Unknown";
+    const d = districtAgg.get(district) ?? { delivered: 0, returned: 0 };
+    if (isReturn) d.returned++;
+    else d.delivered++;
+    districtAgg.set(district, d);
+
+    // Bucket by line item when present, else the legacy single item name.
+    const names =
+      o.items && o.items.length > 0
+        ? o.items.map((i) => i.name)
+        : [o.item_name || "Unspecified item"];
+    for (const name of new Set(names)) {
+      const p = productAgg.get(name) ?? { delivered: 0, returned: 0 };
+      if (isReturn) p.returned++;
+      else p.delivered++;
+      productAgg.set(name, p);
+    }
+  }
+  const toStats = (agg: Map<string, { delivered: number; returned: number }>): OutcomeStat[] =>
+    [...agg.entries()]
+      .map(([name, { delivered: del, returned: ret }]) => ({
+        name,
+        shipped: del + ret,
+        delivered: del,
+        returned: ret,
+        returnRatePct: Math.round((ret / Math.max(del + ret, 1)) * 100),
+      }))
+      .sort((a, b) => b.shipped - a.shipped);
+
+  // --- Ad spend vs. delivered revenue (trailing 7/14 Colombo days) -----------
+  // Revenue is attributed to the day the parcel was DELIVERED (first delivered
+  // tracking event per order) — the day the cash actually became real.
+  const codByOrder = new Map(orders.map((o) => [o.id, Number(o.total_cod)]));
+  const deliveredDayByOrder = new Map<string, string>();
+  for (const e of events) {
+    if (e.outcome === "delivered" && !deliveredDayByOrder.has(e.order_id)) {
+      deliveredDayByOrder.set(e.order_id, dayKey(new Date(e.created_at)));
+    }
+  }
+  const windowStats = (daysBack: number): AdWindow => {
+    const from = addDays(today, -(daysBack - 1)); // inclusive window ending today
+    let spend = 0;
+    for (const s of adSpend) {
+      if (s.day >= from && s.day <= today) spend += Number(s.amount);
+    }
+    let revenue = 0;
+    let deliveredCount = 0;
+    for (const [orderId, day] of deliveredDayByOrder) {
+      if (day >= from && day <= today) {
+        revenue += codByOrder.get(orderId) ?? 0;
+        deliveredCount++;
+      }
+    }
+    return { spend, revenue, deliveredCount };
+  };
+
   return {
     level,
     levelTarget,
@@ -262,15 +358,21 @@ export function computeMetrics(
     dailyGoal,
     bestDay,
     cashInFlight,
+    awaitingPayout,
+    awaitingPayoutCount: awaitingPayoutOrders.length,
     stockUnits,
     netWorth,
     netWorthBreakdown: {
       bankCash: settings.bank_cash,
       stockValue,
-      pendingRemittances: cashInFlight,
+      cashInFlight,
+      awaitingPayout,
     },
     quests,
     badges,
     days,
+    districtStats: toStats(districtAgg),
+    productStats: toStats(productAgg),
+    adPerf: { last7: windowStats(7), last14: windowStats(14) },
   };
 }

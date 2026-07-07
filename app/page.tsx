@@ -6,6 +6,7 @@ import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
 import { chatIdToPhone } from "@/lib/phone";
 import { makeTemplates } from "@/lib/templates";
 import { itemsSubtotal } from "@/lib/items";
+import { customerRisk } from "@/lib/risk";
 import type { Metrics } from "@/lib/metrics";
 import type {
   BusinessSettings,
@@ -27,8 +28,25 @@ import { XPBurst, playChime } from "./components/celebrations";
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WA_WORKER_URL || "http://localhost:3001";
 
-const FILTERS = ["All", "Unreplied", "Awaiting Address", "Shipped"] as const;
+const FILTERS = ["All", "Unreplied", "Follow-up", "Awaiting Address", "Shipped"] as const;
 type Filter = (typeof FILTERS)[number];
+
+// A chat is "stale" when the customer went quiet mid-funnel: waiting on an
+// address or an OK for longer than this. Stale chats are recoverable money —
+// they get a queue and a one-tap nudge.
+const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+
+function isStaleState(s: ChatState | undefined, now: number): boolean {
+  return (
+    !!s &&
+    (s.state === "AWAITING_ADDRESS" || s.state === "AWAITING_CONFIRMATION") &&
+    now - new Date(s.updated_at).getTime() > STALE_AFTER_MS
+  );
+}
+
+function hoursStuck(s: ChatState, now: number): number {
+  return Math.floor((now - new Date(s.updated_at).getTime()) / 3_600_000);
+}
 
 const STATE_BADGES: Record<ChatStateValue, { label: string; className: string }> = {
   NEW: { label: "NEW", className: "bg-[#f2ede3] text-ink-soft" },
@@ -56,10 +74,13 @@ const inputCls =
 
 export default function Workspace() {
   const [chats, setChats] = useState<WaChat[]>([]);
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [activeChatId, setActiveChatId] = useState<null | string>(null);
   const [messages, setMessages] = useState<WaMessage[]>([]);
   const [input, setInput] = useState("");
   const [filter, setFilter] = useState<Filter>("All");
+  const [query, setQuery] = useState("");
+  // Re-render clock for staleness (a chat can go stale while the tab sits open).
+  const [now, setNow] = useState(() => Date.now());
   const [states, setStates] = useState<Record<string, ChatState>>({});
   const [orders, setOrders] = useState<Order[]>([]);
   const [manifests, setManifests] = useState<ShippingManifest[]>([]);
@@ -84,11 +105,13 @@ export default function Workspace() {
   activeChatIdRef.current = activeChatId;
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const prevWaReadyRef = useRef<boolean | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
   const activePhone = activeChatId ? chatIdToPhone(activeChatId) : null;
   const activeState: ChatStateValue = (activePhone && states[activePhone]?.state) || "NEW";
   const activeOrders = orders.filter((o) => o.phone_number === activePhone);
+  const activeRisk = activePhone ? customerRisk(orders, activePhone) : null;
   const latestManifest = manifests
     .filter((m) => activeOrders.some((o) => o.id === m.order_id))
     .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
@@ -236,6 +259,28 @@ export default function Workspace() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Background courier sync every 10 minutes: statuses roll forward (and the
+  // customers get their auto-alerts) without anyone opening the Orders page.
+  // The minute tick keeps the stale-chat queue honest while the tab sits open.
+  useEffect(() => {
+    const sync = setInterval(() => {
+      fetch("/api/track/sync", { method: "POST" })
+        .then((res) => {
+          if (res.ok) {
+            loadOrders();
+            loadStates();
+            loadMetrics();
+          }
+        })
+        .catch(() => {});
+    }, 10 * 60 * 1000);
+    const clock = setInterval(() => setNow(Date.now()), 60_000);
+    return () => {
+      clearInterval(sync);
+      clearInterval(clock);
+    };
+  }, [loadOrders, loadStates, loadMetrics]);
+
   // A little celebration the moment WhatsApp goes from "scan me" to linked.
   useEffect(() => {
     if (prevWaReadyRef.current === false && waReady === true) {
@@ -335,6 +380,18 @@ export default function Workspace() {
     await sendText(t.delayBonus());
   }
 
+  // Follow-up nudges: re-upserting the same state stamps updated_at, so the
+  // chat leaves the stale queue and re-enters it if the customer stays quiet.
+  async function quickFollowUpAddress() {
+    await sendText(t.followUpAddress());
+    await setChatState("AWAITING_ADDRESS");
+  }
+
+  async function quickFollowUpConfirm() {
+    await sendText(t.followUpConfirm());
+    await setChatState("AWAITING_CONFIRMATION");
+  }
+
   // --- Logistics copilot (right panel) -------------------------------------
 
   async function parseFromChat() {
@@ -342,15 +399,18 @@ export default function Workspace() {
     setParsing(true);
     setError(null);
     try {
-      const customerLines = messages
-        .filter((m) => !m.fromMe)
-        .slice(-12)
-        .map((m) => m.body)
-        .join("\n");
+      const customerMsgs = messages.filter((m) => !m.fromMe).slice(-12);
+      const customerLines = customerMsgs.map((m) => m.body).join("\n");
+      // Voice notes and photos ride along — the worker captured their bytes,
+      // and the parser transcribes/reads them alongside the text.
+      const mediaIds = customerMsgs
+        .filter((m) => m.body === "[voice note]" || m.body === "[photo]")
+        .slice(-3)
+        .map((m) => m.id);
       const res = await fetch("/api/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw_text: customerLines }),
+        body: JSON.stringify({ raw_text: customerLines, media_ids: mediaIds }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -459,14 +519,57 @@ export default function Workspace() {
     });
   };
 
-  // --- Filters --------------------------------------------------------------
+  // --- Filters + search ------------------------------------------------------
 
+  const staleCount = chats.filter((c) => isStaleState(states[chatIdToPhone(c.id)], now)).length;
+
+  const q = query.trim().toLowerCase();
   const visibleChats = chats.filter((c) => {
-    const state = states[chatIdToPhone(c.id)]?.state;
-    if (filter === "Unreplied") return c.unreadCount > 0;
-    if (filter === "Awaiting Address") return state === "AWAITING_ADDRESS";
-    if (filter === "Shipped") return state === "SHIPPED";
+    const phone = chatIdToPhone(c.id);
+    const chatState = states[phone];
+    if (filter === "Unreplied" && c.unreadCount === 0) return false;
+    if (filter === "Follow-up" && !isStaleState(chatState, now)) return false;
+    if (filter === "Awaiting Address" && chatState?.state !== "AWAITING_ADDRESS") return false;
+    if (filter === "Shipped" && chatState?.state !== "SHIPPED") return false;
+    if (
+      q &&
+      !c.name.toLowerCase().includes(q) &&
+      !phone.includes(q) &&
+      !c.lastMessage.toLowerCase().includes(q)
+    )
+      return false;
     return true;
+  });
+
+  // --- Keyboard triage: j/k walk the inbox, "/" jumps to search --------------
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        !!target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+      if (e.key === "/" && !typing) {
+        e.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+      if (e.key === "Escape" && target === searchRef.current) {
+        searchRef.current?.blur();
+        return;
+      }
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key !== "j" && e.key !== "k") return;
+      if (visibleChats.length === 0) return;
+      e.preventDefault();
+      const idx = visibleChats.findIndex((c) => c.id === activeChatIdRef.current);
+      const next =
+        e.key === "j"
+          ? visibleChats[Math.min(idx + 1, visibleChats.length - 1)]
+          : visibleChats[Math.max(idx - 1, 0)];
+      if (next && next.id !== activeChatIdRef.current) selectChat(next.id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   });
 
   // What Cash says in the copilot corner. Urgency first, then encouragement.
@@ -538,22 +641,40 @@ export default function Workspace() {
 
       {/* LEFT: inbox */}
       <aside className="flex min-h-0 flex-col bg-white/50">
-        <div className="flex flex-wrap gap-1 border-b-2 border-cardline p-2">
-          {FILTERS.map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={
-                "rounded-full px-2.5 py-1 font-display text-xs font-bold transition " +
-                (filter === f
-                  ? "bg-frog text-white"
-                  : "bg-[#f2ede3] text-ink-soft hover:bg-pond hover:text-frog-dark")
-              }
-            >
-              {f}
-            </button>
-          ))}
+        <div className="border-b-2 border-cardline p-2">
+          <input
+            ref={searchRef}
+            className="mb-1.5 w-full rounded-xl border-2 border-cardline bg-white px-3 py-1.5 text-xs font-semibold text-ink outline-none focus:border-frog"
+            placeholder="🔎 Search name, phone, message…  ( / )"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="flex flex-wrap gap-1">
+            {FILTERS.map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={
+                  "rounded-full px-2.5 py-1 font-display text-xs font-bold transition " +
+                  (filter === f
+                    ? "bg-frog text-white"
+                    : "bg-[#f2ede3] text-ink-soft hover:bg-pond hover:text-frog-dark")
+                }
+              >
+                {f === "Follow-up" && staleCount > 0 ? `🔔 Follow-up (${staleCount})` : f}
+              </button>
+            ))}
+          </div>
         </div>
+        {staleCount > 0 && filter !== "Follow-up" && (
+          <button
+            onClick={() => setFilter("Follow-up")}
+            className="border-b-2 border-cardline bg-gold/20 px-3 py-2 text-left font-display text-xs font-extrabold text-gold-dark transition hover:bg-gold/30"
+          >
+            🔔 {staleCount} chat{staleCount === 1 ? "" : "s"} stuck mid-order — tap to review
+            &amp; nudge
+          </button>
+        )}
         {workerOffline && (
           <div className="border-b-2 border-cardline bg-flame-tint p-3 font-display text-xs font-bold text-flame-dark">
             📵 WhatsApp worker offline. Start it:
@@ -565,8 +686,10 @@ export default function Workspace() {
         )}
         <div className="min-h-0 flex-1 overflow-y-auto">
           {visibleChats.map((chat) => {
-            const state = states[chatIdToPhone(chat.id)]?.state ?? "NEW";
+            const chatState = states[chatIdToPhone(chat.id)];
+            const state = chatState?.state ?? "NEW";
             const badge = STATE_BADGES[state];
+            const stale = isStaleState(chatState, now);
             return (
               <button
                 key={chat.id}
@@ -592,6 +715,11 @@ export default function Workspace() {
                 <p className="mt-0.5 truncate text-xs font-semibold text-ink-soft">
                   {chat.lastMessage}
                 </p>
+                {stale && chatState && (
+                  <p className="mt-0.5 font-display text-[10px] font-extrabold text-gold-dark">
+                    ⏰ stuck {hoursStuck(chatState, now)}h — send a nudge
+                  </p>
+                )}
               </button>
             );
           })}
@@ -653,6 +781,16 @@ export default function Workspace() {
               <Button tone="ghost" onClick={quickAskAddress} className="!px-3 !py-2 !text-xs">
                 📍 Ask for address
               </Button>
+              {activeState === "AWAITING_ADDRESS" && (
+                <Button tone="gold" onClick={quickFollowUpAddress} className="!px-3 !py-2 !text-xs">
+                  🔔 Remind: address
+                </Button>
+              )}
+              {activeState === "AWAITING_CONFIRMATION" && (
+                <Button tone="gold" onClick={quickFollowUpConfirm} className="!px-3 !py-2 !text-xs">
+                  🔔 Remind: confirm
+                </Button>
+              )}
               {draftTotal > 0 && (
                 <Button tone="gold" onClick={quickCodConfirm} className="!px-3 !py-2 !text-xs">
                   💰 Send Rs. {draftTotal} COD confirm
@@ -752,6 +890,25 @@ export default function Workspace() {
 
         {activeChat ? (
           <>
+            {activeRisk && activeRisk.tier !== "new" && (
+              <div
+                className={
+                  "mb-3 rounded-xl border-2 p-2.5 " +
+                  (activeRisk.tier === "risky"
+                    ? "border-flame bg-flame-tint"
+                    : activeRisk.tier === "watch"
+                      ? "border-gold bg-gold/15"
+                      : "border-frog bg-pond")
+                }
+              >
+                <p className="font-display text-xs font-extrabold text-ink">
+                  {activeRisk.emoji} {activeRisk.label}
+                </p>
+                <p className="mt-0.5 font-display text-[11px] font-bold text-ink-soft">
+                  {activeRisk.hint}
+                </p>
+              </div>
+            )}
             <Button
               tone="grape"
               onClick={parseFromChat}

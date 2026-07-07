@@ -8,9 +8,11 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 
 | Route | What it is |
 |---|---|
-| `/` | **Three-panel workspace** — inbox with triage filters, live chat with a state-aware quick-action bar, and the logistics copilot (parse from chat → dispatch → auto-message the customer) |
-| `/orders` | Manual fallback flow (paste → parse → book → copy) + order status bookkeeping |
-| `/analytics` | High-score board — levels, dispatch streak, cash in flight, business net worth |
+| `/` | **Three-panel workspace** — searchable inbox (`/` to search, `j`/`k` to move) with triage filters and a follow-up queue for chats stuck mid-order, live chat with a state-aware quick-action bar, and the logistics copilot (parse from chat → COD risk check → dispatch → auto-message the customer) |
+| `/orders` | Manual fallback flow (paste → parse → book → copy), order status bookkeeping, cash reconciliation (courier payouts → bank cash), returned-order redelivery flow, CSV export |
+| `/broadcast` | Rate-limited WhatsApp blast to past customers (launches/restocks) |
+| `/analytics` | High-score board — levels, dispatch streak, net worth — plus return rates by district/product and an ad-spend/ROAS tracker |
+| `/login` | Operator login (only when `APP_PASSWORD` is set) |
 
 ## Setup
 
@@ -40,9 +42,17 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 
 | Piece | Where |
 |---|---|
-| Headless WhatsApp worker (Baileys, mock + live modes, Postgres-backed session) | `worker/index.js` |
+| Headless WhatsApp worker (Baileys, mock + live modes, Postgres-backed session, voice-note/photo capture) | `worker/index.js` |
 | Worker proxy + send API | `lib/wa.ts`, `app/api/whatsapp/*` |
-| AI parsing engine (Gemini free tier, structured JSON; Claude fallback) | `lib/parse.ts`, `app/api/parse/route.ts` |
+| AI parsing engine (Gemini free tier, structured JSON; Claude fallback) — reads chat text **and** voice notes / address photos | `lib/parse.ts`, `app/api/parse/route.ts` |
+| COD risk scoring (per-phone delivery history) | `lib/risk.ts` |
+| Follow-up queue (stale AWAITING_* chats → one-tap Sinhala nudge) | `app/page.tsx`, templates `followUpAddress` / `followUpConfirm` |
+| Proactive tracking alerts (out-for-delivery / delivered / returned auto-messages) | `app/api/track/sync/route.ts` |
+| Cash reconciliation (courier payout batches → bank cash) | `app/api/remittance/route.ts`, Orders page |
+| Return workflow (redeliver offer + one-click re-book) | `app/api/orders/[id]/rebook/route.ts` |
+| Ad spend + ROAS (manual daily entry, delivered-revenue attribution) | `app/api/adspend/route.ts`, Quest page |
+| Broadcast (rate-limited, past customers only) | `app/broadcast/page.tsx` |
+| Operator auth gate (`APP_PASSWORD`) | `proxy.ts`, `lib/auth.ts`, `app/login` |
 | One-click dispatch (book + track + auto-message + state) | `app/api/dispatch/route.ts` |
 | Chat state machine (drives the dynamic action bar) | `lib/db.ts`, `app/api/chat-state/route.ts` |
 | Message templates (Sinhala) | `lib/templates.ts` |
@@ -59,9 +69,13 @@ parsing, one-click courier dispatch, and a gamified high-score board.
    the LLM and the form fills itself.
 3. Set the product price → **DISPATCH**. One click: books the courier, stores the
    tracking ID, marks the chat SHIPPED, and auto-sends the Sinhala confirmation.
-4. Tracking syncs itself: opening `/orders` (or clicking **Sync tracking**) pulls the
-   courier status of every parcel in flight — `delivered` feeds the level counter on
-   `/analytics`, and a courier return puts the unit back into product stock automatically.
+4. Tracking syncs itself: the workspace re-checks every parcel in flight every 10
+   minutes (and `/orders` on every visit) — `delivered` feeds the level counter on
+   `/analytics`, a courier return puts the unit back into product stock automatically,
+   and the customer is auto-messaged on out-for-delivery / delivered / returned.
+   A cron can also drive it: `GET /api/track/sync`.
+5. When the courier hands over the COD payout, hit **Payout received** on `/orders` —
+   the delivered total moves into bank cash on the Quest board.
 
 ## Customizing
 

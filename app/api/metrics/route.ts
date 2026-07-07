@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   getSettings,
+  listAdSpend,
   listManifests,
   listOrders,
   listProducts,
@@ -10,15 +11,16 @@ import { computeMetrics } from "@/lib/metrics";
 
 export async function GET() {
   try {
-    const [orders, manifests, settings, products, events] = await Promise.all([
+    const [orders, manifests, settings, products, events, adSpend] = await Promise.all([
       listOrders(),
       listManifests(),
       getSettings(),
       listProducts(),
       listTrackingEvents(),
+      listAdSpend(),
     ]);
     return NextResponse.json({
-      metrics: computeMetrics(orders, manifests, settings, products, events),
+      metrics: computeMetrics(orders, manifests, settings, products, events, adSpend),
       settings,
     });
   } catch (err) {

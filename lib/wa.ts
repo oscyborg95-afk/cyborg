@@ -27,3 +27,9 @@ export function sendWhatsAppMessage(chatId: string, text: string) {
     body: JSON.stringify({ chatId, text }),
   });
 }
+
+// Captured voice-note/photo bytes for a message id (base64). 404s (not
+// captured, mock mode, pruned) surface as a thrown error — callers skip it.
+export function fetchWaMedia(id: string) {
+  return workerFetch<{ mime: string; data: string }>(`/media/${encodeURIComponent(id)}`);
+}
