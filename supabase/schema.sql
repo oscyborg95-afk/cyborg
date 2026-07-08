@@ -78,7 +78,14 @@ create table if not exists business_settings (
   business_phone_1 varchar not null default '',
   business_phone_2 varchar not null default '',
   order_prefix     varchar not null default 'DC', -- prefix for short order numbers
-  templates        jsonb not null default '{}'::jsonb -- WhatsApp template overrides
+  templates        jsonb not null default '{}'::jsonb, -- WhatsApp template overrides
+  -- What the COURIER charges you (drives the real profit numbers, separate from
+  -- the shipping_fee the customer pays). Base delivered fee + per-district
+  -- overrides (mirrors DEFAULT_SHIPPING_FEE / SHIPPING_OVERRIDES), plus the flat
+  -- fee eaten on a returned parcel (the round-trip loss).
+  courier_cost_base      numeric not null default 350,
+  courier_return_cost    numeric not null default 200,
+  courier_cost_overrides jsonb   not null default '{}'::jsonb -- { "Jaffna": 450, ... } delivered-cost overrides
 );
 insert into business_settings (id) values (1) on conflict do nothing;
 
@@ -104,6 +111,9 @@ alter table business_settings add column if not exists business_name varchar not
 alter table business_settings add column if not exists business_address varchar not null default '';
 alter table business_settings add column if not exists business_phone_1 varchar not null default '';
 alter table business_settings add column if not exists business_phone_2 varchar not null default '';
+alter table business_settings add column if not exists courier_cost_base numeric not null default 350;
+alter table business_settings add column if not exists courier_return_cost numeric not null default 200;
+alter table business_settings add column if not exists courier_cost_overrides jsonb not null default '{}'::jsonb;
 
 create index if not exists idx_orders_status on orders(order_status);
 create index if not exists idx_manifests_order on shipping_manifests(order_id);

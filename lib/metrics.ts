@@ -6,6 +6,7 @@ import type {
   ShippingManifest,
   TrackingEvent,
 } from "./types";
+import { courierCostFor } from "./districts";
 
 // Level thresholds by cumulative SHIPPED orders (anything handed to a courier).
 // Level N is complete at LEVELS[N]. Progress moves the moment you book an order,
@@ -57,6 +58,48 @@ export interface AdWindow {
   deliveredCount: number;
 }
 
+// A real profit-and-loss waterfall for one window. Revenue is delivered COD
+// (money that actually became real); every cost that ate into it is subtracted
+// to land on net profit — the number the net-worth counter can't show you.
+export interface PnlWindow {
+  label: string; // "This month" / "Last 7 days"
+  revenue: number; // delivered COD in the window
+  cogs: number; // product unit cost × qty on delivered orders
+  courierCost: number; // courier fees on delivered + returned parcels
+  adSpend: number; // ad spend logged in the window
+  netProfit: number; // revenue − cogs − courierCost − adSpend
+  marginPct: number; // netProfit / revenue (0 when no revenue)
+  deliveredCount: number;
+  returnedCount: number;
+}
+
+// The bleed a return-rate chart only hints at, priced in rupees: every returned
+// parcel this month cost the courier's round-trip fee with nothing to show.
+export interface ReturnLoss {
+  monthCount: number;
+  monthLoss: number;
+}
+
+// One product's runway: how many days of stock are left at the recent pace.
+export interface ReorderItem {
+  productId: string;
+  name: string;
+  stockUnits: number;
+  perDay: number; // units shipped / day over the last 14 days
+  coverDays: number | null; // stock ÷ perDay; null when nothing shipped lately
+  urgent: boolean; // fewer than a week of cover left
+}
+
+// Where the money is right now: in hand, floating with couriers, or tied up in
+// stock — plus what's realistically going to land once returns are netted out.
+export interface CashFlow {
+  collected: number; // bank cash in hand
+  floating: number; // COD in flight + delivered-but-unremitted
+  tiedInStock: number; // inventory value
+  expectedLanding: number; // in-flight COD discounted by the blended return rate
+  returnRatePct: number; // blended return rate used for the discount
+}
+
 export interface Metrics {
   level: number;
   levelTarget: number;
@@ -88,6 +131,11 @@ export interface Metrics {
   districtStats: OutcomeStat[]; // sorted by volume, completed orders only
   productStats: OutcomeStat[];
   adPerf: { last7: AdWindow; last14: AdWindow };
+  // --- Profit & cash-flow brain --------------------------------------------
+  pnl: { month: PnlWindow; last7: PnlWindow };
+  returnLoss: ReturnLoss;
+  reorder: ReorderItem[]; // most urgent first
+  cashFlow: CashFlow;
 }
 
 // The operator ships on Sri Lanka time. Bucketing an instant by the server's
@@ -349,6 +397,147 @@ export function computeMetrics(
     return { spend, revenue, deliveredCount };
   };
 
+  // --- Profit & cash-flow brain ----------------------------------------------
+  // COGS uses each line's product unit cost; unlinked / legacy lines fall back
+  // to the operator's declared generic unit cost so profit is never flattered
+  // by a missing link.
+  const unitCostById = new Map(products.map((p) => [p.id, Number(p.unit_cost)]));
+  const costFallback = Number(settings.stock_unit_cost) || 0;
+  const orderCogs = (o: Order): number => {
+    const lines =
+      o.items && o.items.length > 0
+        ? o.items
+        : [{ product_id: o.product_id, qty: 1, name: o.item_name, price: o.product_price }];
+    return lines.reduce((sum, l) => {
+      const unit = (l.product_id && unitCostById.get(l.product_id)) || costFallback;
+      return sum + unit * (Number(l.qty) || 0);
+    }, 0);
+  };
+
+  // Costs and revenue are booked on the day the parcel settled (delivered or
+  // returned) — the same when-cash-becomes-real timing the ROAS card uses.
+  const returnedDayByOrder = new Map<string, string>();
+  for (const e of events) {
+    if (e.outcome === "returned" && !returnedDayByOrder.has(e.order_id)) {
+      returnedDayByOrder.set(e.order_id, dayKey(new Date(e.created_at)));
+    }
+  }
+  const orderById = new Map(orders.map((o) => [o.id, o]));
+  const monthPrefix = today.slice(0, 7); // "YYYY-MM" in Colombo time
+  const from7 = addDays(today, -6);
+  const inMonth = (day: string) => day.slice(0, 7) === monthPrefix;
+  const inLast7 = (day: string) => day >= from7 && day <= today;
+
+  const pnlWindow = (label: string, inWindow: (day: string) => boolean): PnlWindow => {
+    let revenue = 0;
+    let cogs = 0;
+    let courierCost = 0;
+    let deliveredCount = 0;
+    let returnedCount = 0;
+    for (const [orderId, day] of deliveredDayByOrder) {
+      if (!inWindow(day)) continue;
+      const o = orderById.get(orderId);
+      if (!o) continue;
+      revenue += Number(o.total_cod);
+      cogs += orderCogs(o);
+      courierCost += courierCostFor(o.district, settings.courier_cost_base, settings.courier_cost_overrides);
+      deliveredCount++;
+    }
+    for (const [orderId, day] of returnedDayByOrder) {
+      if (!inWindow(day)) continue;
+      if (!orderById.has(orderId)) continue;
+      courierCost += Number(settings.courier_return_cost);
+      returnedCount++;
+    }
+    let adSpendTotal = 0;
+    for (const s of adSpend) {
+      if (inWindow(s.day)) adSpendTotal += Number(s.amount);
+    }
+    const netProfit = revenue - cogs - courierCost - adSpendTotal;
+    return {
+      label,
+      revenue,
+      cogs,
+      courierCost,
+      adSpend: adSpendTotal,
+      netProfit,
+      marginPct: revenue > 0 ? Math.round((netProfit / revenue) * 100) : 0,
+      deliveredCount,
+      returnedCount,
+    };
+  };
+  const pnl = {
+    month: pnlWindow("This month", inMonth),
+    last7: pnlWindow("Last 7 days", inLast7),
+  };
+
+  // Return loss this month — flat round-trip fee per parcel that came back.
+  let monthReturnCount = 0;
+  for (const [, day] of returnedDayByOrder) if (inMonth(day)) monthReturnCount++;
+  const returnLoss: ReturnLoss = {
+    monthCount: monthReturnCount,
+    monthLoss: monthReturnCount * Number(settings.courier_return_cost),
+  };
+
+  // Reorder radar: units shipped per product over the last 14 days sets the pace;
+  // current stock ÷ pace = days of cover left. Anything under a week is urgent.
+  const shipped14 = new Map<string, number>();
+  const since14 = addDays(today, -13);
+  for (const o of orders) {
+    if (o.order_status === "pending") continue;
+    if (dayKey(new Date(o.created_at)) < since14) continue;
+    const lines =
+      o.items && o.items.length > 0
+        ? o.items
+        : o.product_id
+          ? [{ product_id: o.product_id, qty: 1 }]
+          : [];
+    for (const l of lines) {
+      if (!l.product_id) continue;
+      shipped14.set(l.product_id, (shipped14.get(l.product_id) ?? 0) + (Number(l.qty) || 0));
+    }
+  }
+  const reorder: ReorderItem[] = products
+    .map((p) => {
+      const perDay = (shipped14.get(p.id) ?? 0) / 14;
+      const coverDays = perDay > 0 ? p.stock_units / perDay : null;
+      return {
+        productId: p.id,
+        name: p.name,
+        stockUnits: p.stock_units,
+        perDay,
+        coverDays,
+        urgent: coverDays !== null && coverDays < 7,
+      };
+    })
+    .filter((r) => r.perDay > 0 || r.stockUnits > 0)
+    .sort((a, b) => {
+      // Urgent (finite, low cover) first; idle-but-stocked products sink below.
+      const av = a.coverDays ?? Infinity;
+      const bv = b.coverDays ?? Infinity;
+      return av - bv;
+    });
+
+  // Cash-flow snapshot. Expected landing discounts in-flight COD by the blended
+  // return rate — the parcels riding right now won't all make it to the door.
+  let completedDelivered = 0;
+  let completedReturned = 0;
+  for (const o of orders) {
+    if (o.order_status === "delivered") completedDelivered++;
+    else if (o.order_status === "returned") completedReturned++;
+  }
+  const blendedReturnRate =
+    completedDelivered + completedReturned > 0
+      ? completedReturned / (completedDelivered + completedReturned)
+      : 0;
+  const cashFlow: CashFlow = {
+    collected: settings.bank_cash,
+    floating: cashInFlight + awaitingPayout,
+    tiedInStock: stockValue,
+    expectedLanding: cashInFlight * (1 - blendedReturnRate),
+    returnRatePct: Math.round(blendedReturnRate * 100),
+  };
+
   return {
     level,
     levelTarget,
@@ -380,5 +569,9 @@ export function computeMetrics(
     districtStats: toStats(districtAgg),
     productStats: toStats(productAgg),
     adPerf: { last7: windowStats(7), last14: windowStats(14) },
+    pnl,
+    returnLoss,
+    reorder,
+    cashFlow,
   };
 }

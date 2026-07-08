@@ -27,3 +27,15 @@ const SHIPPING_OVERRIDES: Partial<Record<District, number>> = {
 export function shippingFeeFor(district: string): number {
   return SHIPPING_OVERRIDES[district as District] ?? DEFAULT_SHIPPING_FEE;
 }
+
+// What the courier charges YOU to deliver to `district` — the base fee unless
+// the operator set a per-district override in Settings. This is the real cost
+// that eats into margin, not the shipping_fee the customer is billed.
+export function courierCostFor(
+  district: string,
+  base: number,
+  overrides: Partial<Record<string, number>> = {}
+): number {
+  const override = overrides[district];
+  return typeof override === "number" && Number.isFinite(override) ? override : base;
+}

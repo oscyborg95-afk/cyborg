@@ -1,8 +1,9 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState } from "react";
-import type { Metrics, OutcomeStat } from "@/lib/metrics";
+import type { CashFlow, Metrics, OutcomeStat, PnlWindow, ReorderItem } from "@/lib/metrics";
 import type { AdSpend, BusinessSettings, Product, TemplateKey } from "@/lib/types";
+import { DISTRICTS } from "@/lib/districts";
 import { DEFAULT_TEMPLATES, TEMPLATE_META } from "@/lib/templates";
 import { Froggy, type FroggyMood } from "../components/froggy";
 import {
@@ -417,6 +418,13 @@ export default function QuestPage() {
         </p>
       </Card>
 
+      {/* ── PROFIT & CASH-FLOW BRAIN ──────────────────────────────── */}
+      <ProfitCard metrics={metrics} />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <CashFlowCard cash={metrics.cashFlow} />
+        <ReorderRadar items={metrics.reorder} />
+      </div>
+
       {/* ── WHERE RETURNS HAPPEN ──────────────────────────────────── */}
       {(metrics.districtStats.length > 0 || metrics.productStats.length > 0) && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -499,6 +507,28 @@ export default function QuestPage() {
             onChange={(v) => setSettings({ ...settings, stock_unit_cost: v })}
           />
         </div>
+
+        <h2 className="mb-1 mt-6 font-display text-lg font-extrabold text-ink">
+          🚚 Courier rate card
+        </h2>
+        <p className="mb-4 font-display text-xs font-bold text-ink-soft">
+          What the courier charges <em>you</em> — this is what makes the Profit &amp; loss numbers
+          real. Set a base delivered fee, then override only the districts that cost more.
+        </p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field
+            label="Base delivered fee (Rs.)"
+            value={settings.courier_cost_base}
+            onChange={(v) => setSettings({ ...settings, courier_cost_base: v })}
+          />
+          <Field
+            label="Return fee — round-trip loss (Rs.)"
+            value={settings.courier_return_cost}
+            onChange={(v) => setSettings({ ...settings, courier_return_cost: v })}
+          />
+        </div>
+        <CourierOverridesEditor settings={settings} setSettings={setSettings} />
+
         <Button tone="frog" onClick={saveSettings} disabled={saving} className="mt-5">
           {saving ? "Saving…" : "Save & recalculate"}
         </Button>
@@ -626,6 +656,247 @@ function ReturnRateCard({
         </div>
       )}
     </Card>
+  );
+}
+
+// The profit brain's headline: a real P&L waterfall. The net-worth counter
+// treats stock as an asset and never shows a loss for spending — this does.
+// Revenue is delivered COD; every cost that ate into it is subtracted to land
+// on the number that actually tells you if the business is working.
+function ProfitCard({ metrics }: { metrics: Metrics }) {
+  const [win, setWin] = useState<"month" | "last7">("month");
+  const p: PnlWindow = win === "month" ? metrics.pnl.month : metrics.pnl.last7;
+  const profitable = p.netProfit >= 0;
+  const hasData = p.revenue > 0 || p.courierCost > 0 || p.adSpend > 0;
+  const mood: FroggyMood = !hasData ? "idle" : profitable ? "celebrate" : "thinking";
+
+  const rows: { label: string; value: number; sign: "+" | "−"; tone: string }[] = [
+    { label: `Delivered revenue · ${p.deliveredCount} orders`, value: p.revenue, sign: "+", tone: "text-frog-dark" },
+    { label: "Product cost (COGS)", value: p.cogs, sign: "−", tone: "text-ink-soft" },
+    {
+      label: `Courier fees · ${p.returnedCount} returned`,
+      value: p.courierCost,
+      sign: "−",
+      tone: "text-ink-soft",
+    },
+    { label: "Ad spend", value: p.adSpend, sign: "−", tone: "text-ink-soft" },
+  ];
+
+  return (
+    <Card className={"p-6 " + (hasData && profitable ? "!border-frog" : "")}>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-display text-lg font-extrabold text-ink">💰 Profit &amp; loss</h2>
+        <div className="flex gap-1 rounded-xl bg-cream p-1">
+          {(["month", "last7"] as const).map((k) => (
+            <button
+              key={k}
+              onClick={() => setWin(k)}
+              className={
+                "rounded-lg px-3 py-1 font-display text-xs font-extrabold transition " +
+                (win === k ? "bg-frog text-white" : "text-ink-soft hover:text-ink")
+              }
+            >
+              {k === "month" ? "This month" : "Last 7 days"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {!hasData ? (
+        <div className="flex items-center gap-3 rounded-xl bg-cream/70 p-4">
+          <Froggy mood="idle" size={54} />
+          <p className="font-display text-sm font-bold text-ink-soft">
+            No delivered orders in this window yet. Profit shows up here the moment a parcel lands.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+          <div className="flex-1 space-y-2">
+            {rows.map((r) => (
+              <div key={r.label} className="flex items-center justify-between gap-3">
+                <span className="font-display text-sm font-bold text-ink-soft">{r.label}</span>
+                <span className={"font-display text-sm font-extrabold tabular-nums " + r.tone}>
+                  {r.sign} {rs(r.value)}
+                </span>
+              </div>
+            ))}
+            <div className="mt-1 flex items-center justify-between gap-3 border-t-2 border-dashed border-cardline pt-2.5">
+              <span className="font-display text-base font-extrabold text-ink">Net profit</span>
+              <span
+                className={
+                  "font-display text-2xl font-extrabold tabular-nums " +
+                  (profitable ? "text-frog-dark" : "text-flame-dark")
+                }
+              >
+                {profitable ? "" : "−"}
+                {rs(Math.abs(p.netProfit))}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 flex-col items-center gap-1 rounded-2xl bg-pond/60 px-6 py-4 sm:w-44">
+            <Froggy mood={mood} size={56} />
+            <p className="font-display text-3xl font-extrabold leading-none text-ink">
+              {p.marginPct}%
+            </p>
+            <p className="font-display text-xs font-bold text-ink-soft">net margin</p>
+          </div>
+        </div>
+      )}
+
+      {metrics.returnLoss.monthCount > 0 && (
+        <div className="mt-4 flex items-center gap-2 rounded-xl border-2 border-flame/40 bg-flame-tint px-3 py-2">
+          <span className="text-lg">🩸</span>
+          <p className="font-display text-xs font-extrabold text-flame-dark">
+            Returns cost you {rs(metrics.returnLoss.monthLoss)} this month
+            <span className="font-bold text-ink-soft">
+              {" "}
+              · {metrics.returnLoss.monthCount} round-trips with nothing to show
+            </span>
+          </p>
+        </div>
+      )}
+      <p className="mt-3 font-display text-[11px] font-bold text-ink-soft">
+        Revenue counts when a parcel is <em>delivered</em>. COGS uses each product&apos;s unit cost;
+        courier fees come from your rate card in Settings. Set those to make these numbers real.
+      </p>
+    </Card>
+  );
+}
+
+// Where the money actually sits right now — in hand, riding with couriers, or
+// locked in inventory — and what's realistically going to land after returns.
+function CashFlowCard({ cash }: { cash: CashFlow }) {
+  const rows = [
+    { label: "💵 Collected (in hand)", value: cash.collected, tone: "text-frog-dark" },
+    { label: "🚚 Floating with couriers", value: cash.floating, tone: "text-flame-dark" },
+    { label: "📦 Tied up in stock", value: cash.tiedInStock, tone: "text-grape-dark" },
+  ];
+  return (
+    <Card className="p-5">
+      <h2 className="font-display text-lg font-extrabold text-ink">🏦 Cash flow</h2>
+      <p className="mb-3 font-display text-xs font-bold text-ink-soft">
+        Where your money is this moment.
+      </p>
+      <div className="space-y-2">
+        {rows.map((r) => (
+          <div key={r.label} className="flex items-center justify-between gap-3 rounded-xl bg-cream/70 px-3 py-2">
+            <span className="font-display text-sm font-bold text-ink">{r.label}</span>
+            <span className={"font-display text-sm font-extrabold tabular-nums " + r.tone}>
+              {rs(r.value)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 rounded-xl bg-pond/60 px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-display text-sm font-extrabold text-ink">🎯 Expected to land</span>
+          <span className="font-display text-lg font-extrabold tabular-nums text-frog-dark">
+            {rs(cash.expectedLanding)}
+          </span>
+        </div>
+        <p className="mt-0.5 font-display text-[11px] font-bold text-ink-soft">
+          In-flight COD, discounted by your {cash.returnRatePct}% return rate — what the parcels
+          riding right now should really bring in.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+// Stock runway: how many days each product lasts at the last 14 days' pace.
+// Under a week of cover is flagged red — reorder before you stock out.
+function ReorderRadar({ items }: { items: ReorderItem[] }) {
+  const cover = (r: ReorderItem) =>
+    r.coverDays === null ? "—" : r.coverDays < 1 ? "<1 day" : `${Math.round(r.coverDays)} days`;
+  return (
+    <Card className="p-5">
+      <h2 className="font-display text-lg font-extrabold text-ink">🛒 Reorder radar</h2>
+      <p className="mb-3 font-display text-xs font-bold text-ink-soft">
+        Days of stock left at your recent pace.
+      </p>
+      {items.length === 0 ? (
+        <p className="font-display text-sm font-bold text-ink-soft">
+          Add products with stock to see runway here.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {items.slice(0, 8).map((r) => (
+            <div
+              key={r.productId}
+              className={
+                "flex items-center gap-3 rounded-xl px-3 py-2 " +
+                (r.urgent ? "border-2 border-flame/50 bg-flame-tint" : "bg-cream/70")
+              }
+            >
+              <span className="min-w-0 flex-1 truncate font-display text-sm font-bold text-ink" title={r.name}>
+                {r.urgent ? "⚠️ " : ""}
+                {r.name}
+              </span>
+              <span className="shrink-0 font-display text-xs font-bold text-ink-soft">
+                {r.stockUnits} in stock
+              </span>
+              <span
+                className={
+                  "w-20 shrink-0 text-right font-display text-sm font-extrabold " +
+                  (r.urgent ? "text-flame-dark" : r.coverDays === null ? "text-ink-soft" : "text-ink")
+                }
+              >
+                {cover(r)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// Per-district courier-cost overrides. Collapsed by default; a blank field
+// means "use the base fee", a number overrides just that district.
+function CourierOverridesEditor({
+  settings,
+  setSettings,
+}: {
+  settings: BusinessSettings;
+  setSettings: (s: BusinessSettings) => void;
+}) {
+  const overrides = settings.courier_cost_overrides ?? {};
+  const count = Object.keys(overrides).length;
+
+  function setDistrict(district: string, raw: string) {
+    const next = { ...overrides };
+    const v = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(v) || v < 0) delete next[district];
+    else next[district] = v;
+    setSettings({ ...settings, courier_cost_overrides: next });
+  }
+
+  return (
+    <details className="mt-3 rounded-xl border-2 border-cardline bg-cream/50">
+      <summary className="cursor-pointer select-none px-4 py-2.5 font-display text-sm font-extrabold text-ink">
+        Per-district overrides
+        {count > 0 && (
+          <span className="ml-2 rounded-full bg-grape-tint px-2 py-0.5 font-display text-[10px] font-extrabold text-grape-dark">
+            {count} set
+          </span>
+        )}
+      </summary>
+      <div className="grid grid-cols-2 gap-2 p-3 pt-0 sm:grid-cols-3 lg:grid-cols-4">
+        {DISTRICTS.map((d) => (
+          <label key={d} className="font-display text-[11px] font-bold text-ink-soft">
+            {d}
+            <input
+              type="number"
+              placeholder={`${settings.courier_cost_base}`}
+              value={overrides[d] ?? ""}
+              onChange={(e) => setDistrict(d, e.target.value)}
+              className="mt-0.5 w-full rounded-lg border-2 border-cardline bg-white px-2 py-1.5 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+            />
+          </label>
+        ))}
+      </div>
+    </details>
   );
 }
 

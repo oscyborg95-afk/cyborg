@@ -124,6 +124,11 @@ export type TemplateKey =
 
 export type MessageTemplates = Partial<Record<TemplateKey, string>>;
 
+// What the courier charges YOU per delivered parcel, by district. A district
+// with no entry falls back to courier_cost_base. Mirrors the shipping-fee
+// override pattern in lib/districts.ts.
+export type CourierCostOverrides = Partial<Record<string, number>>;
+
 export interface BusinessSettings {
   bank_cash: number;
   stock_units: number;
@@ -137,6 +142,12 @@ export interface BusinessSettings {
   order_prefix: string;
   // Operator-customized WhatsApp templates ({{placeholders}} substituted at send).
   templates: MessageTemplates;
+  // Courier's fee to you (feeds the real profit numbers, not the customer's
+  // shipping_fee). Base delivered fee + per-district overrides, plus the flat
+  // fee lost on a returned parcel (the round-trip cost).
+  courier_cost_base: number;
+  courier_return_cost: number;
+  courier_cost_overrides: CourierCostOverrides;
 }
 
 export interface WaChat {
