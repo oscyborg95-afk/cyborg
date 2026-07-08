@@ -2,8 +2,13 @@
 
 create extension if not exists "pgcrypto";
 
+-- Short, human-friendly order numbers (DC-1001, DC-1002, …). The prefix lives in
+-- business_settings.order_prefix; this sequence supplies the running number.
+create sequence if not exists order_number_seq start 1001;
+
 create table if not exists orders (
   id             uuid primary key default gen_random_uuid(),
+  order_no       varchar, -- short reference sent to the courier, e.g. "DC-1001"
   customer_name  varchar not null,
   phone_number   varchar not null,
   phone_2        varchar not null default '',
@@ -72,6 +77,7 @@ create table if not exists business_settings (
   business_address varchar not null default '',
   business_phone_1 varchar not null default '',
   business_phone_2 varchar not null default '',
+  order_prefix     varchar not null default 'DC', -- prefix for short order numbers
   templates        jsonb not null default '{}'::jsonb -- WhatsApp template overrides
 );
 insert into business_settings (id) values (1) on conflict do nothing;
@@ -91,6 +97,8 @@ alter table orders add column if not exists phone_2 varchar not null default '';
 alter table orders add column if not exists city_id int;
 alter table orders add column if not exists items jsonb;
 alter table orders add column if not exists remitted_at timestamptz; -- COD payout received (cash reconciliation)
+alter table orders add column if not exists order_no varchar; -- short courier reference (DC-1001)
+alter table business_settings add column if not exists order_prefix varchar not null default 'DC';
 alter table business_settings add column if not exists templates jsonb not null default '{}'::jsonb;
 alter table business_settings add column if not exists business_name varchar not null default '';
 alter table business_settings add column if not exists business_address varchar not null default '';

@@ -17,6 +17,17 @@ function sanitizeTemplates(raw: unknown): MessageTemplates {
   return out;
 }
 
+// Short, tidy order-number prefix: letters/digits/dash only, upper-cased,
+// capped at 6 chars, with a sensible default so the reference is never bare.
+function sanitizePrefix(raw: unknown): string {
+  const cleaned = String(raw ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9-]/g, "")
+    .replace(/-+$/, "")
+    .slice(0, 6);
+  return cleaned || "DC";
+}
+
 export async function GET() {
   try {
     return NextResponse.json({ settings: await getSettings() });
@@ -36,6 +47,7 @@ export async function POST(req: NextRequest) {
     business_address: String(body.business_address ?? ""),
     business_phone_1: String(body.business_phone_1 ?? ""),
     business_phone_2: String(body.business_phone_2 ?? ""),
+    order_prefix: sanitizePrefix(body.order_prefix),
     templates: sanitizeTemplates(body.templates),
   };
   if ([settings.bank_cash, settings.stock_units, settings.stock_unit_cost].some(Number.isNaN)) {

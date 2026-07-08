@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOrder, updateOrderStatus } from "@/lib/db";
+import { deleteOrder, getOrder, updateOrderStatus } from "@/lib/db";
 import type { OrderStatus } from "@/lib/types";
 
 const STATUSES: OrderStatus[] = ["pending", "booked", "delivered", "returned"];
@@ -20,6 +20,21 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ ok: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Update failed";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const order = await getOrder(id);
+  if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  try {
+    // Removes the order and cascades its manifest + tracking timeline; any stock
+    // the order held (booked/delivered) is returned to the shed.
+    await deleteOrder(id);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Delete failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

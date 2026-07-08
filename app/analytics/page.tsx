@@ -91,7 +91,7 @@ export default function QuestPage() {
   }
 
   const levelComplete = metrics.levelProgressPct >= 100;
-  const remaining = Math.max(0, metrics.levelTarget - metrics.delivered);
+  const remaining = Math.max(0, metrics.levelTarget - metrics.levelCount);
   const streak = metrics.dispatchStreakDays;
   const heroMood: FroggyMood = levelComplete ? "celebrate" : streak > 0 ? "happy" : "idle";
   const allQuestsDone = metrics.quests.every((q) => q.done);
@@ -120,7 +120,7 @@ export default function QuestPage() {
   }
   if (!levelComplete && remaining <= 5) {
     coachLines.push({
-      text: `👑 ${remaining} ${remaining === 1 ? "delivery" : "deliveries"} from Level ${metrics.level + 1}. I'm already practising my celebration dance.`,
+      text: `👑 ${remaining} ${remaining === 1 ? "order" : "orders"} from Level ${metrics.level + 1}. I'm already practising my celebration dance.`,
       mood: "happy",
     });
   }
@@ -183,7 +183,7 @@ export default function QuestPage() {
                   Level {metrics.level} Operator
                 </h1>
                 <p className="font-display text-sm font-bold text-ink-soft">
-                  {metrics.delivered} / {metrics.levelTarget} orders delivered
+                  {metrics.levelCount} / {metrics.levelTarget} orders shipped
                 </p>
               </div>
             </div>
@@ -199,8 +199,10 @@ export default function QuestPage() {
                 </span>
               ) : (
                 <>
-                  <span className="text-frog-dark">{remaining} more deliveries</span> to reach Level{" "}
-                  {metrics.level + 1}.
+                  <span className="text-frog-dark">
+                    {remaining} more {remaining === 1 ? "order" : "orders"}
+                  </span>{" "}
+                  to reach Level {metrics.level + 1}.
                 </>
               )}
             </p>
@@ -464,7 +466,17 @@ export default function QuestPage() {
             value={settings.business_phone_2}
             onChange={(v) => setSettings({ ...settings, business_phone_2: v })}
           />
+          <TextField
+            label={`Order ID prefix (e.g. ${settings.order_prefix || "DC"}-1001)`}
+            value={settings.order_prefix}
+            onChange={(v) => setSettings({ ...settings, order_prefix: v })}
+          />
         </div>
+        <p className="mt-2 font-display text-xs font-bold text-ink-soft">
+          New orders get a short reference like{" "}
+          <code className="rounded bg-cream px-1">{(settings.order_prefix || "DC") + "-1001"}</code>{" "}
+          — this is the ID sent to the courier. Existing orders keep their number.
+        </p>
 
         <h2 className="mb-4 mt-6 font-display text-lg font-extrabold text-ink">
           ⚙️ High-score inputs

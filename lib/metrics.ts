@@ -7,7 +7,9 @@ import type {
   TrackingEvent,
 } from "./types";
 
-// Level thresholds by cumulative DELIVERED orders. Level N is complete at LEVELS[N].
+// Level thresholds by cumulative SHIPPED orders (anything handed to a courier).
+// Level N is complete at LEVELS[N]. Progress moves the moment you book an order,
+// not days later when it's delivered.
 export const LEVELS = [10, 50, 150, 400, 1000];
 
 // A daily quest: do the thing `target` times before midnight.
@@ -59,6 +61,7 @@ export interface Metrics {
   level: number;
   levelTarget: number;
   levelBase: number;
+  levelCount: number; // orders shipped so far — what the level is measured against
   delivered: number;
   levelProgressPct: number;
   totalPackages: number; // everything ever handed to a courier
@@ -138,19 +141,21 @@ export function computeMetrics(
   );
   const awaitingPayout = awaitingPayoutOrders.reduce((sum, o) => sum + Number(o.total_cod), 0);
 
-  // Level: index of the first threshold not yet reached.
+  // Level tracks shipped orders (everything handed to a courier), so it moves
+  // as soon as you book — not days later when the courier marks it delivered.
+  const levelCount = totalPackages;
   let level = 1;
   let levelBase = 0;
   let levelTarget = LEVELS[0];
   for (let i = 0; i < LEVELS.length; i++) {
-    if (delivered >= LEVELS[i]) {
+    if (levelCount >= LEVELS[i]) {
       level = i + 2;
       levelBase = LEVELS[i];
       levelTarget = LEVELS[i + 1] ?? LEVELS[i];
     }
   }
   const span = Math.max(levelTarget - levelBase, 1);
-  const levelProgressPct = Math.min(100, Math.round(((delivered - levelBase) / span) * 100));
+  const levelProgressPct = Math.min(100, Math.round(((levelCount - levelBase) / span) * 100));
 
   // Per-day shipment counts (local calendar days).
   const perDay = new Map<string, number>();
@@ -348,6 +353,7 @@ export function computeMetrics(
     level,
     levelTarget,
     levelBase,
+    levelCount,
     delivered,
     levelProgressPct,
     totalPackages,

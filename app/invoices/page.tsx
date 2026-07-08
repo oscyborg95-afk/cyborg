@@ -230,6 +230,12 @@ function InvoiceCell({
           {new Date(order.created_at).toLocaleDateString("en-GB")}
           <br />
           {manifest.courier_name}
+          {order.order_no && (
+            <>
+              <br />
+              {order.order_no}
+            </>
+          )}
         </div>
       </div>
 

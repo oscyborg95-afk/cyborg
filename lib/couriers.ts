@@ -120,7 +120,8 @@ export async function bookCourierOrder(
       (order.city ? cityMap?.get(normCity(order.city)) : undefined);
 
     const base = {
-      order_no: order.id,
+      // Short human reference (DC-1001); fall back to the UUID for legacy orders.
+      order_no: order.order_no || order.id,
       customer_name: order.customer_name,
       address: order.parsed_address,
       description: order.item_name || ITEM_DESCRIPTION,

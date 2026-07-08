@@ -79,6 +79,7 @@ function ordersToCsv(orders: Order[], manifests: ShippingManifest[]): string {
   const esc = (v: unknown) => `"${String(v ?? "").replaceAll('"', '""')}"`;
   const header = [
     "created_at",
+    "order_no",
     "customer_name",
     "phone",
     "phone_2",
@@ -99,6 +100,7 @@ function ordersToCsv(orders: Order[], manifests: ShippingManifest[]): string {
     const m = manifestByOrder.get(o.id);
     return [
       o.created_at,
+      o.order_no ?? "",
       o.customer_name,
       o.phone_number,
       o.phone_2,
@@ -145,6 +147,7 @@ export default function OrdersPage() {
   const [remitting, setRemitting] = useState(false);
   const [redeliverSentId, setRedeliverSentId] = useState<string | null>(null);
   const [rebookingId, setRebookingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [ordersRes, productsRes, settingsRes] = await Promise.all([
@@ -319,6 +322,33 @@ export default function OrdersPage() {
       setError(err instanceof Error ? err.message : "Re-book failed");
     } finally {
       setRebookingId(null);
+    }
+  }
+
+  async function handleDelete(order: Order) {
+    const ref = order.order_no ? `${order.order_no} — ` : "";
+    const stockNote =
+      order.order_status === "booked" || order.order_status === "delivered"
+        ? "\n\nAny stock it holds returns to the shed."
+        : "";
+    if (
+      !confirm(
+        `Delete order ${ref}${order.customer_name} (Rs. ${order.total_cod})?\n\nThis removes it permanently, along with its tracking timeline.${stockNote}`
+      )
+    )
+      return;
+    setDeletingId(order.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/orders/${order.id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      if (expandedId === order.id) setExpandedId(null);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -667,6 +697,11 @@ export default function OrdersPage() {
                           <div className="text-xs font-semibold text-ink-soft">
                             {[order.phone_number, order.phone_2].filter(Boolean).join(" / ")}
                           </div>
+                          {order.order_no && (
+                            <div className="mt-0.5 font-mono text-[11px] font-bold text-ink-soft">
+                              {order.order_no}
+                            </div>
+                          )}
                         </td>
                         <td className="py-2.5 pr-3 font-semibold text-ink">{order.district}</td>
                         <td className="py-2.5 pr-3 font-display font-bold text-ink">
@@ -766,6 +801,14 @@ export default function OrdersPage() {
                             >
                               {copiedId === order.id ? "Copied ✓" : "Copy confirm"}
                             </Button>
+                            <button
+                              onClick={() => handleDelete(order)}
+                              disabled={deletingId === order.id}
+                              title="Delete order"
+                              className="rounded-xl px-3 py-1.5 font-display text-xs font-bold text-ink-soft transition hover:bg-flame-tint hover:text-[#c04545] disabled:opacity-50"
+                            >
+                              {deletingId === order.id ? "Deleting…" : "🗑 Delete"}
+                            </button>
                           </div>
                         </td>
                       </tr>

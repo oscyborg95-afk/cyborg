@@ -11,6 +11,9 @@ export interface OrderItem {
 
 export interface Order {
   id: string;
+  // Short, human-friendly reference (e.g. "DC-1001") assigned on creation and
+  // sent to the courier instead of the raw UUID. null on legacy orders.
+  order_no?: string | null;
   customer_name: string;
   phone_number: string;
   phone_2: string; // second contact number, "" when the customer gave only one
@@ -62,7 +65,10 @@ export interface ParsedAddress {
   district: string;
 }
 
-export type NewOrder = Omit<Order, "id" | "created_at" | "order_status" | "remitted_at">;
+export type NewOrder = Omit<
+  Order,
+  "id" | "created_at" | "order_status" | "remitted_at" | "order_no"
+>;
 
 // One day's Meta/Facebook ad spend, entered manually on the Quest page.
 // day is YYYY-MM-DD (Asia/Colombo civil date).
@@ -127,6 +133,8 @@ export interface BusinessSettings {
   business_address: string;
   business_phone_1: string;
   business_phone_2: string;
+  // Prefix for the short order reference (e.g. "DC" → DC-1001) sent to the courier.
+  order_prefix: string;
   // Operator-customized WhatsApp templates ({{placeholders}} substituted at send).
   templates: MessageTemplates;
 }

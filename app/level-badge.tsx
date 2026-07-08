@@ -66,7 +66,7 @@ export function LevelBadge() {
         <span>🏆</span>
         Lv {metrics.level}
         <span className="text-ink-soft">
-          {metrics.delivered}/{metrics.levelTarget}
+          {metrics.levelCount}/{metrics.levelTarget}
         </span>
       </span>
     </div>

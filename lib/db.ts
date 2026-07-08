@@ -41,6 +41,8 @@ const g = globalThis as unknown as {
   __cyborgProducts?: Map<string, Product>;
   __cyborgTrackingEvents?: TrackingEvent[];
   __cyborgAdSpend?: Map<string, number>;
+  __cyborgOrderSeq?: number; // in-memory running number for short order refs
+  __orderNoReady?: boolean; // whether the order_no schema has been ensured
 };
 
 let pool: Pool | null = null;
@@ -93,23 +95,49 @@ const DEFAULT_SETTINGS: BusinessSettings = {
   business_address: "",
   business_phone_1: "",
   business_phone_2: "",
+  order_prefix: "DC",
   templates: {},
 };
 
 // --- Orders ------------------------------------------------------------------
+
+// Idempotently make sure the short-order-number schema exists (sequence + the
+// order_no / order_prefix columns). Runs once per process — matches the app's
+// existing self-migration pattern so a fresh DB works without a manual schema run.
+async function ensureOrderNoSchema(db: Queryable): Promise<void> {
+  if (g.__orderNoReady) return;
+  await db.query("create sequence if not exists order_number_seq start 1001");
+  await db.query("alter table orders add column if not exists order_no varchar");
+  await db.query(
+    "alter table business_settings add column if not exists order_prefix varchar not null default 'DC'"
+  );
+  g.__orderNoReady = true;
+}
+
+// Next short reference: "<prefix>-<running number>", e.g. "DC-1001". The prefix
+// comes from business_settings; the number from the atomic Postgres sequence.
+async function nextOrderNo(db: Queryable): Promise<string> {
+  const settings = await db.query("select order_prefix from business_settings where id = 1");
+  const prefix = (settings.rows[0]?.order_prefix as string) || "DC";
+  const { rows } = await db.query("select nextval('order_number_seq') as n");
+  return `${prefix}-${rows[0].n}`;
+}
 
 export async function createOrder(
   input: NewOrder,
   db: Queryable | null = pool
 ): Promise<Order> {
   if (db) {
+    await ensureOrderNoSchema(db);
+    const order_no = await nextOrderNo(db);
     const { rows } = await db.query(
       `insert into orders
-         (customer_name, phone_number, phone_2, raw_address, parsed_address, city, city_id, district,
+         (order_no, customer_name, phone_number, phone_2, raw_address, parsed_address, city, city_id, district,
           product_id, item_name, items, product_price, shipping_fee, discount, total_cod, order_status)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending')
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'pending')
        returning *`,
       [
+        order_no,
         input.customer_name,
         input.phone_number,
         input.phone_2,
@@ -130,15 +158,51 @@ export async function createOrder(
     );
     return rows[0] as Order;
   }
+  const seq = (g.__cyborgOrderSeq = (g.__cyborgOrderSeq ?? 1000) + 1);
+  const prefix = (g.__cyborgSettings ?? DEFAULT_SETTINGS).order_prefix || "DC";
   const order: Order = {
     ...input,
     id: randomUUID(),
+    order_no: `${prefix}-${seq}`,
     order_status: "pending",
     remitted_at: null,
     created_at: new Date().toISOString(),
   };
   memOrders.set(order.id, order);
   return order;
+}
+
+// Delete an order and everything that hangs off it. Manifests and tracking
+// events cascade in Postgres; the in-memory store clears them explicitly.
+// Any stock the order had "out" (booked/delivered) is returned to the shed.
+export async function deleteOrder(id: string): Promise<void> {
+  await withTransaction(async (db) => {
+    const order = await getOrder(id, db);
+    if (!order) return;
+
+    const out = STOCK_OUT[order.order_status];
+    if (out > 0) {
+      if (order.items && order.items.length > 0) {
+        for (const item of order.items) {
+          if (item.product_id && item.qty > 0) {
+            await adjustProductStock(item.product_id, out * item.qty, db);
+          }
+        }
+      } else if (order.product_id) {
+        await adjustProductStock(order.product_id, out, db);
+      }
+    }
+
+    if (db) {
+      await db.query("delete from orders where id = $1", [id]);
+      return;
+    }
+    memOrders.delete(id);
+    for (const [mid, m] of memManifests) if (m.order_id === id) memManifests.delete(mid);
+    for (let i = memTrackingEvents.length - 1; i >= 0; i--) {
+      if (memTrackingEvents[i].order_id === id) memTrackingEvents.splice(i, 1);
+    }
+  });
 }
 
 export async function listOrders(): Promise<Order[]> {
@@ -593,9 +657,11 @@ export async function upsertChatState(
 
 export async function getSettings(): Promise<BusinessSettings> {
   if (pool) {
+    await ensureOrderNoSchema(pool); // order_prefix column may be newer than the DB
     const { rows } = await pool.query(
       `select bank_cash, stock_units, stock_unit_cost,
-              business_name, business_address, business_phone_1, business_phone_2, templates
+              business_name, business_address, business_phone_1, business_phone_2,
+              order_prefix, templates
        from business_settings where id = 1`
     );
     return rows[0] ? { ...DEFAULT_SETTINGS, ...(rows[0] as Partial<BusinessSettings>) } : DEFAULT_SETTINGS;
@@ -605,11 +671,12 @@ export async function getSettings(): Promise<BusinessSettings> {
 
 export async function updateSettings(settings: BusinessSettings): Promise<BusinessSettings> {
   if (pool) {
+    await ensureOrderNoSchema(pool);
     await pool.query(
       `insert into business_settings
          (id, bank_cash, stock_units, stock_unit_cost,
-          business_name, business_address, business_phone_1, business_phone_2, templates)
-       values (1,$1,$2,$3,$4,$5,$6,$7,$8)
+          business_name, business_address, business_phone_1, business_phone_2, order_prefix, templates)
+       values (1,$1,$2,$3,$4,$5,$6,$7,$8,$9)
        on conflict (id) do update set
          bank_cash = excluded.bank_cash,
          stock_units = excluded.stock_units,
@@ -618,6 +685,7 @@ export async function updateSettings(settings: BusinessSettings): Promise<Busine
          business_address = excluded.business_address,
          business_phone_1 = excluded.business_phone_1,
          business_phone_2 = excluded.business_phone_2,
+         order_prefix = excluded.order_prefix,
          templates = excluded.templates`,
       [
         settings.bank_cash,
@@ -627,6 +695,7 @@ export async function updateSettings(settings: BusinessSettings): Promise<Busine
         settings.business_address,
         settings.business_phone_1,
         settings.business_phone_2,
+        settings.order_prefix || "DC",
         JSON.stringify(settings.templates ?? {}),
       ]
     );
