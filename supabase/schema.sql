@@ -58,6 +58,23 @@ create table if not exists tracking_events (
 );
 create index if not exists idx_tracking_events_order on tracking_events(order_id, created_at);
 
+-- Record of the automated tracking-driven customer WhatsApp alerts actually
+-- sent (out for delivery / delivered / returned), so the same alert is never
+-- sent twice and failed sends stay visible for a manual retry.
+create table if not exists customer_alerts (
+  id         uuid primary key default gen_random_uuid(),
+  order_id   uuid not null references orders(id) on delete cascade,
+  kind       varchar not null, -- out_for_delivery | delivered | returned
+  body       text not null,    -- the exact message text sent
+  status     varchar not null default 'sent', -- sent | failed
+  created_at timestamptz not null default now()
+);
+-- At most one SUCCESSFUL send per (order, kind) — makes double-sending the same
+-- alert structurally impossible; failed attempts are unconstrained (a log).
+create unique index if not exists uq_customer_alerts_sent
+  on customer_alerts(order_id, kind) where status = 'sent';
+create index if not exists idx_customer_alerts_order on customer_alerts(order_id, created_at);
+
 -- Cyborg OS: per-customer chat state machine (drives the dynamic action bar).
 create table if not exists chat_states (
   phone_number varchar primary key,

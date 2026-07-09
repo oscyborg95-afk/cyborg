@@ -1,13 +1,20 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
 import { makeTemplates } from "@/lib/templates";
 import { itemsSubtotal } from "@/lib/items";
 import { phoneToChatId } from "@/lib/phone";
-import { customerRisk } from "@/lib/risk";
+import {
+  customerRisk,
+  findDuplicates,
+  duplicateOrderIds,
+  recentOrdersForPhone,
+} from "@/lib/risk";
 import type {
+  AlertKind,
+  CustomerAlert,
   MessageTemplates,
   Order,
   OrderItem,
@@ -43,6 +50,19 @@ const STATUS_STYLE: Record<OrderStatus, string> = {
   booked: "bg-sky-tint text-sky-dark",
   delivered: "bg-pond text-frog-dark",
   returned: "bg-flame-tint text-flame-dark",
+};
+
+// Customer tracking alerts — friendly label per kind, and which order status
+// each one is naturally sent at (used to decide which send buttons to surface).
+const ALERT_LABELS: Record<AlertKind, string> = {
+  out_for_delivery: "🛵 Out for delivery",
+  delivered: "💚 Delivered thank-you",
+  returned: "↩️ Redeliver offer",
+};
+const ALERT_FOR_STATUS: Record<AlertKind, OrderStatus> = {
+  out_for_delivery: "booked",
+  delivered: "delivered",
+  returned: "returned",
 };
 
 const inputCls =
@@ -133,6 +153,8 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [manifests, setManifests] = useState<ShippingManifest[]>([]);
   const [events, setEvents] = useState<TrackingEvent[]>([]);
+  const [alerts, setAlerts] = useState<CustomerAlert[]>([]);
+  const [alertBusy, setAlertBusy] = useState<string | null>(null); // `${orderId}:${kind}`
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showManual, setShowManual] = useState(false);
   const [usingSupabase, setUsingSupabase] = useState(true);
@@ -160,6 +182,7 @@ export default function OrdersPage() {
       setOrders(data.orders);
       setManifests(data.manifests);
       setEvents(data.events ?? []);
+      setAlerts(data.alerts ?? []);
       setUsingSupabase(data.usingSupabase);
     }
     const productsData = await productsRes.json();
@@ -253,6 +276,38 @@ export default function OrdersPage() {
   }
 
   async function handleBook(orderId: string) {
+    // Last line of defence against shipping the same parcel twice: if this
+    // customer already has another recent, un-returned order, make the operator
+    // confirm before a second courier booking goes out.
+    const order = orders.find((o) => o.id === orderId);
+    if (order) {
+      const dups = findDuplicates(orders, order);
+      if (dups.length > 0) {
+        const lines = dups
+          .slice(0, 4)
+          .map((d) => {
+            const ref = d.order.order_no || d.order.id.slice(0, 8);
+            const when =
+              d.hoursApart < 1 ? "just now" : `${Math.round(d.hoursApart)}h earlier`;
+            const flags = [
+              d.alreadyShipped ? `already ${d.order.order_status}` : d.order.order_status,
+              d.sameItem ? "same item" : "different item",
+            ].join(", ");
+            return `• ${ref} — Rs. ${d.order.total_cod} (${flags}, ${when})`;
+          })
+          .join("\n");
+        const shipped = dups.some((d) => d.alreadyShipped);
+        const ok = confirm(
+          `⚠️ Possible duplicate for ${order.customer_name} (${order.phone_number}).\n\n` +
+            `This customer already has ${dups.length} recent order${dups.length > 1 ? "s" : ""}:\n${lines}\n\n` +
+            (shipped
+              ? "One of them has ALREADY shipped — booking this too means two parcels go out.\n\n"
+              : "") +
+            "Book and ship this one anyway?"
+        );
+        if (!ok) return;
+      }
+    }
     setBookingId(orderId);
     setError(null);
     try {
@@ -267,6 +322,35 @@ export default function OrdersPage() {
       setError(err instanceof Error ? err.message : "Booking failed");
     } finally {
       setBookingId(null);
+    }
+  }
+
+  // Manually (re)send a tracking alert to the customer. Confirms first if it has
+  // already been sent, so a resend is always deliberate.
+  async function handleSendAlert(order: Order, kind: AlertKind, alreadySent: boolean) {
+    const label = ALERT_LABELS[kind];
+    if (
+      alreadySent &&
+      !confirm(
+        `The "${label}" message was already sent to ${order.customer_name}.\n\nSend it again?`
+      )
+    )
+      return;
+    setAlertBusy(`${order.id}:${kind}`);
+    setError(null);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/alert`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Couldn't send the ${label} message`);
+    } finally {
+      setAlertBusy(null);
     }
   }
 
@@ -351,6 +435,10 @@ export default function OrdersPage() {
       setDeletingId(null);
     }
   }
+
+  // Orders that share a customer + a 72h window with another live order — the
+  // set the list badges as "possible duplicate".
+  const dupIds = useMemo(() => duplicateOrderIds(orders), [orders]);
 
   // --- Cash reconciliation ---------------------------------------------------
 
@@ -554,6 +642,21 @@ export default function OrdersPage() {
                     </span>
                   );
                 })()}
+              {form.phone_number.replace(/\D/g, "").length >= 9 &&
+                (() => {
+                  const recent = recentOrdersForPhone(orders, form.phone_number);
+                  if (recent.length === 0) return null;
+                  const r = recent[0];
+                  const ref = r.order_no || r.id.slice(0, 8);
+                  return (
+                    <div className="mt-1.5 rounded-lg border-2 border-flame/40 bg-flame-tint px-2.5 py-1.5 font-display text-[11px] font-bold text-flame-dark">
+                      ⚠️ This number already has {recent.length} recent order
+                      {recent.length > 1 ? "s" : ""} ({ref}
+                      {recent.length > 1 ? " +more" : ""}, {r.order_status}). Make sure this isn&rsquo;t
+                      the same order before saving.
+                    </div>
+                  );
+                })()}
             </label>
             <label className="font-display text-xs font-bold text-ink-soft">
               Phone 2 (optional)
@@ -686,7 +789,10 @@ export default function OrdersPage() {
                   const latest = orderEvents[orderEvents.length - 1];
                   const latestStyle = latest ? OUTCOME_STYLE[latest.outcome] : null;
                   const expanded = expandedId === order.id;
-                  const trackable = Boolean(manifest || orderEvents.length);
+                  const orderAlerts = alerts.filter((a) => a.order_id === order.id);
+                  // Expandable when there's a timeline OR any customer alert to
+                  // review/resend, so alert history is never stranded.
+                  const trackable = Boolean(manifest || orderEvents.length || orderAlerts.length);
                   return (
                     <Fragment key={order.id}>
                       <tr className="border-b border-cardline/60 align-top">
@@ -700,6 +806,14 @@ export default function OrdersPage() {
                           {order.order_no && (
                             <div className="mt-0.5 font-mono text-[11px] font-bold text-ink-soft">
                               {order.order_no}
+                            </div>
+                          )}
+                          {dupIds.has(order.id) && (
+                            <div
+                              className="mt-1 inline-block rounded-full bg-flame-tint px-2 py-0.5 font-display text-[10px] font-extrabold text-flame-dark"
+                              title="Another live order from this customer was raised within 72h — check it isn't the same parcel."
+                            >
+                              ⚠️ Possible duplicate
                             </div>
                           )}
                         </td>
@@ -816,6 +930,12 @@ export default function OrdersPage() {
                         <tr className="border-b border-cardline/60 bg-cream/40">
                           <td colSpan={6} className="px-4 py-4">
                             <Timeline events={orderEvents} manifest={manifest} />
+                            <AlertsPanel
+                              order={order}
+                              alerts={orderAlerts}
+                              busyKey={alertBusy}
+                              onSend={handleSendAlert}
+                            />
                           </td>
                         </tr>
                       )}
@@ -889,5 +1009,82 @@ function Timeline({
         );
       })}
     </ol>
+  );
+}
+
+function timeAgo(iso: string): string {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// Per-order panel showing whether each tracking alert reached the customer, with
+// a manual (re)send button. A kind is shown when it fits the current status or
+// has any send history, so the operator never sees "send delivered" pre-delivery.
+function AlertsPanel({
+  order,
+  alerts,
+  busyKey,
+  onSend,
+}: {
+  order: Order;
+  alerts: CustomerAlert[];
+  busyKey: string | null;
+  onSend: (order: Order, kind: AlertKind, alreadySent: boolean) => void;
+}) {
+  const kinds = (Object.keys(ALERT_LABELS) as AlertKind[]).filter(
+    (k) => ALERT_FOR_STATUS[k] === order.order_status || alerts.some((a) => a.kind === k)
+  );
+  if (kinds.length === 0) return null;
+  return (
+    <div className="mt-4 border-t-2 border-cardline/60 pt-3">
+      <h4 className="mb-2 font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
+        Customer alerts
+      </h4>
+      <div className="space-y-2">
+        {kinds.map((kind) => {
+          const forKind = alerts
+            .filter((a) => a.kind === kind)
+            .sort((a, b) => b.created_at.localeCompare(a.created_at));
+          const sent = forKind.find((a) => a.status === "sent");
+          const latest = forKind[0];
+          const busy = busyKey === `${order.id}:${kind}`;
+          return (
+            <div key={kind} className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-display text-sm font-bold text-ink">{ALERT_LABELS[kind]}</div>
+                <div className="font-display text-[11px] font-bold">
+                  {sent ? (
+                    <span className="text-frog-dark">✅ Sent {timeAgo(sent.created_at)}</span>
+                  ) : latest?.status === "failed" ? (
+                    <span className="text-flame-dark">⚠️ Send failed {timeAgo(latest.created_at)}</span>
+                  ) : (
+                    <span className="text-ink-soft">⚪ Not sent yet</span>
+                  )}
+                </div>
+              </div>
+              <Button
+                tone={sent ? "ghost" : "frog"}
+                onClick={() => onSend(order, kind, Boolean(sent))}
+                disabled={busy}
+                className="!px-3 !py-1.5 !text-xs"
+              >
+                {busy
+                  ? "Sending…"
+                  : sent
+                    ? "Resend"
+                    : latest?.status === "failed"
+                      ? "Retry"
+                      : "Send now"}
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

@@ -3,9 +3,11 @@ import type { PoolClient } from "pg";
 import { randomUUID } from "crypto";
 import type {
   AdSpend,
+  AlertKind,
   BusinessSettings,
   ChatState,
   ChatStateValue,
+  CustomerAlert,
   NewOrder,
   NewProduct,
   Order,
@@ -43,6 +45,8 @@ const g = globalThis as unknown as {
   __cyborgAdSpend?: Map<string, number>;
   __cyborgOrderSeq?: number; // in-memory running number for short order refs
   __orderNoReady?: boolean; // whether the order_no schema has been ensured
+  __cyborgAlerts?: Map<string, CustomerAlert>; // in-memory customer-alert log
+  __alertsReady?: boolean; // whether the customer_alerts table has been ensured
 };
 
 let pool: Pool | null = null;
@@ -86,6 +90,7 @@ const memChatStates = (g.__cyborgChatStates ??= new Map<string, ChatState>());
 const memProducts = (g.__cyborgProducts ??= new Map<string, Product>());
 const memTrackingEvents = (g.__cyborgTrackingEvents ??= []);
 const memAdSpend = (g.__cyborgAdSpend ??= new Map<string, number>()); // day -> Rs.
+const memAlerts = (g.__cyborgAlerts ??= new Map<string, CustomerAlert>());
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   bank_cash: 0,
@@ -538,6 +543,104 @@ export async function getLatestTrackingEvent(order_id: string): Promise<Tracking
     .filter((e) => e.order_id === order_id)
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
   return evs[0] ?? null;
+}
+
+// --- Customer alerts (tracking-driven WhatsApp messages) ---------------------
+
+// Idempotently make sure the customer_alerts table + indexes exist. Runs once
+// per process (like ensureOrderNoSchema) so this feature self-heals on a DB
+// that predates it, instead of silently swallowing "table does not exist".
+async function ensureAlertsSchema(db: Queryable): Promise<void> {
+  if (g.__alertsReady) return;
+  await db.query(
+    `create table if not exists customer_alerts (
+       id         uuid primary key default gen_random_uuid(),
+       order_id   uuid not null references orders(id) on delete cascade,
+       kind       varchar not null,
+       body       text not null,
+       status     varchar not null default 'sent',
+       created_at timestamptz not null default now()
+     )`
+  );
+  await db.query(
+    `create unique index if not exists uq_customer_alerts_sent
+       on customer_alerts(order_id, kind) where status = 'sent'`
+  );
+  await db.query(
+    "create index if not exists idx_customer_alerts_order on customer_alerts(order_id, created_at)"
+  );
+  g.__alertsReady = true;
+}
+
+export async function listCustomerAlerts(): Promise<CustomerAlert[]> {
+  if (pool) {
+    await ensureAlertsSchema(pool);
+    const { rows } = await pool.query(
+      "select * from customer_alerts order by created_at desc limit 2000"
+    );
+    return rows as CustomerAlert[];
+  }
+  return [...memAlerts.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+// Has this exact alert already been delivered for this order? The gate that
+// stops the auto-sweep (and a careless manual click) from sending it twice.
+export async function hasSentAlert(order_id: string, kind: AlertKind): Promise<boolean> {
+  if (pool) {
+    await ensureAlertsSchema(pool);
+    const { rows } = await pool.query(
+      "select 1 from customer_alerts where order_id = $1 and kind = $2 and status = 'sent' limit 1",
+      [order_id, kind]
+    );
+    return rows.length > 0;
+  }
+  return [...memAlerts.values()].some(
+    (a) => a.order_id === order_id && a.kind === kind && a.status === "sent"
+  );
+}
+
+// Record the outcome of an alert send. A 'sent' row upserts onto the single
+// allowed successful row per (order, kind) — so an intentional resend just
+// refreshes its timestamp/body rather than piling up duplicates. 'failed' rows
+// accumulate as an attempt log.
+export async function recordCustomerAlert(
+  order_id: string,
+  kind: AlertKind,
+  body: string,
+  status: "sent" | "failed"
+): Promise<CustomerAlert> {
+  if (pool) {
+    await ensureAlertsSchema(pool);
+    if (status === "sent") {
+      const { rows } = await pool.query(
+        `insert into customer_alerts (order_id, kind, body, status, created_at)
+         values ($1,$2,$3,'sent', now())
+         on conflict (order_id, kind) where status = 'sent'
+         do update set body = excluded.body, created_at = now()
+         returning *`,
+        [order_id, kind, body]
+      );
+      return rows[0] as CustomerAlert;
+    }
+    const { rows } = await pool.query(
+      `insert into customer_alerts (order_id, kind, body, status)
+       values ($1,$2,$3,'failed') returning *`,
+      [order_id, kind, body]
+    );
+    return rows[0] as CustomerAlert;
+  }
+  const record: CustomerAlert = {
+    id: randomUUID(),
+    order_id,
+    kind,
+    body,
+    status,
+    created_at: new Date().toISOString(),
+  };
+  // Mirror the DB's single-sent-row rule; keep each failure as its own log line.
+  const key = status === "sent" ? `sent:${order_id}:${kind}` : record.id;
+  memAlerts.set(key, record);
+  return record;
 }
 
 // --- Cash reconciliation (courier COD remittances) ---------------------------

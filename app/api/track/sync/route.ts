@@ -3,16 +3,18 @@ import {
   addTrackingEvent,
   getLatestTrackingEvent,
   getSettings,
+  hasSentAlert,
   listManifests,
   listOrders,
+  recordCustomerAlert,
   updateManifestCheckpoint,
   updateOrderStatus,
 } from "@/lib/db";
 import { getTrackingStatus } from "@/lib/couriers";
-import { makeTemplates } from "@/lib/templates";
+import { alertBodyFor, makeTemplates } from "@/lib/templates";
 import { phoneToChatId } from "@/lib/phone";
 import { sendWhatsAppMessage } from "@/lib/wa";
-import type { Order } from "@/lib/types";
+import type { AlertKind, Order } from "@/lib/types";
 
 // Sweep every order riding with the courier and pull its latest status.
 // delivered → order delivered (feeds levels), returned → order returned
@@ -27,17 +29,11 @@ import type { Order } from "@/lib/types";
 // POST is what the UI calls; GET does the same so a cron (Vercel cron, uptime
 // pinger, etc.) can drive the sweep in the background.
 
-type Templates = ReturnType<typeof makeTemplates>;
-
-function alertFor(
-  templates: Templates,
-  outcome: string,
-  checkpoint: string,
-  trackingId: string
-): string | null {
-  if (outcome === "delivered") return templates.deliveredThanks();
-  if (outcome === "returned") return templates.returnedApology();
-  if (/out\s*for\s*deliver/i.test(checkpoint)) return templates.outForDelivery(trackingId);
+// Which tracking alert (if any) a checkpoint change should send.
+function alertKindFor(outcome: string, checkpoint: string): AlertKind | null {
+  if (outcome === "delivered") return "delivered";
+  if (outcome === "returned") return "returned";
+  if (/out\s*for\s*deliver/i.test(checkpoint)) return "out_for_delivery";
   return null;
 }
 
@@ -60,13 +56,19 @@ async function runSync() {
   let alertsSent = 0;
   const failures: string[] = [];
 
-  const sendAlert = async (order: Order, text: string | null) => {
-    if (!text) return;
+  // Send a tracking alert at most once per (order, kind), and persist the
+  // outcome either way — a 'sent' row blocks re-sends, a 'failed' row stays
+  // visible for a manual retry instead of vanishing silently.
+  const sendAlert = async (order: Order, kind: AlertKind, trackingId: string) => {
+    if (await hasSentAlert(order.id, kind)) return;
+    const text = alertBodyFor(templates, kind, trackingId);
     try {
       await sendWhatsAppMessage(phoneToChatId(order.phone_number), text);
+      await recordCustomerAlert(order.id, kind, text, "sent");
       alertsSent++;
     } catch {
-      // Worker offline or number unreachable — alerts are best-effort.
+      // Worker offline or number unreachable — record the miss, never fail sync.
+      await recordCustomerAlert(order.id, kind, text, "failed").catch(() => {});
     }
   };
 
@@ -92,10 +94,8 @@ async function runSync() {
         inTransit++;
       }
       if (changed) {
-        await sendAlert(
-          order,
-          alertFor(templates, result.outcome, result.checkpoint, manifest.tracking_id)
-        );
+        const kind = alertKindFor(result.outcome, result.checkpoint);
+        if (kind) await sendAlert(order, kind, manifest.tracking_id);
       }
     } catch (err) {
       failures.push(

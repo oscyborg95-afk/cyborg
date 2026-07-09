@@ -56,6 +56,21 @@ export interface TrackingEvent {
   created_at: string;
 }
 
+// Automated tracking-driven customer WhatsApp alerts. One row per (order, kind)
+// that was actually sent, so the same alert is never sent twice and failures
+// stay visible. See lib/db.ts customer_alerts.
+export type AlertKind = "out_for_delivery" | "delivered" | "returned";
+export const ALERT_KINDS: AlertKind[] = ["out_for_delivery", "delivered", "returned"];
+
+export interface CustomerAlert {
+  id: string;
+  order_id: string;
+  kind: AlertKind;
+  body: string; // the exact message text sent
+  status: "sent" | "failed";
+  created_at: string;
+}
+
 export interface ParsedAddress {
   name: string;
   phone: string;

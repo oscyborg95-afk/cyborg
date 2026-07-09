@@ -10,7 +10,7 @@
 // A line whose placeholders are ALL unresolved is dropped entirely, so e.g.
 // the tracking line disappears cleanly when there is no tracking id yet.
 
-import type { MessageTemplates, TemplateKey } from "./types";
+import type { AlertKind, MessageTemplates, TemplateKey } from "./types";
 
 export const TEMPLATE_META: Record<
   TemplateKey,
@@ -131,6 +131,24 @@ export function makeTemplates(overrides: MessageTemplates = {}) {
     deliveredThanks: () => renderTemplate(src("deliveredThanks"), {}),
     returnedApology: () => renderTemplate(src("returnedApology"), {}),
   };
+}
+
+// The customer message for a given tracking alert kind. Shared by the auto
+// sweep and the manual "send alert" endpoint so both send identical text.
+// (outForDelivery drops its tracking line cleanly when no id is available.)
+export function alertBodyFor(
+  t: ReturnType<typeof makeTemplates>,
+  kind: AlertKind,
+  trackingId?: string
+): string {
+  switch (kind) {
+    case "out_for_delivery":
+      return t.outForDelivery(trackingId ?? "");
+    case "delivered":
+      return t.deliveredThanks();
+    case "returned":
+      return t.returnedApology();
+  }
 }
 
 // Default-only instance, kept for call sites that haven't loaded settings yet.
