@@ -7,11 +7,12 @@ import type {
   TrackingEvent,
 } from "./types";
 import { courierCostFor } from "./districts";
+import { phoneKey } from "./risk";
 
 // Level thresholds by cumulative SHIPPED orders (anything handed to a courier).
 // Level N is complete at LEVELS[N]. Progress moves the moment you book an order,
 // not days later when it's delivered.
-export const LEVELS = [10, 50, 150, 400, 1000];
+export const LEVELS = [10, 50, 150, 400, 1000, 2500, 6000, 15000];
 
 // A daily quest: do the thing `target` times before midnight.
 export interface Quest {
@@ -24,12 +25,16 @@ export interface Quest {
 }
 
 // A permanent achievement. Once the underlying record is set it never un-earns.
+// Count-based badges carry progress/target so the locked tile can show how
+// close the next unlock is.
 export interface Badge {
   id: string;
   emoji: string;
   name: string;
   desc: string;
   earned: boolean;
+  progress?: number;
+  target?: number;
 }
 
 // One bar of the activity chart: everything that happened on one Colombo day.
@@ -100,6 +105,52 @@ export interface CashFlow {
   returnRatePct: number; // blended return rate used for the discount
 }
 
+// One calendar month of business history — the growth report's row.
+export interface MonthStat {
+  key: string; // "YYYY-MM" in Asia/Colombo
+  label: string; // "Feb ’26"
+  shipped: number; // parcels handed to a courier that month
+  delivered: number;
+  returned: number;
+  revenue: number; // delivered COD that month
+  netProfit: number; // revenue − COGS − courier fees − ad spend
+  marginPct: number;
+  aov: number; // average delivered order value
+}
+
+// One repeat-worthy customer: everything they've actually paid for.
+export interface TopCustomer {
+  name: string;
+  phone: string;
+  orders: number; // delivered orders
+  revenue: number; // delivered COD
+}
+
+// Who keeps coming back. Repeat buyers are the cheapest revenue a COD shop
+// has — no ad spend, and they already proved they open the door.
+export interface CustomerInsights {
+  buyers: number; // unique phones with ≥1 delivered order
+  repeatBuyers: number; // ≥2 delivered orders
+  repeatRatePct: number; // repeatBuyers / buyers
+  totalRevenue: number; // lifetime delivered COD
+  repeatRevenue: number; // lifetime delivered COD from repeat buyers
+  repeatRevenuePct: number;
+  topCustomers: TopCustomer[]; // best 5 by delivered revenue
+}
+
+// How long parcels ride: dispatch day → delivered day, in civil days.
+export interface SpeedStat {
+  name: string; // district
+  avgDays: number;
+  count: number; // parcels measured
+}
+
+export interface DeliverySpeed {
+  avgDays: number | null; // null until one parcel completes the trip
+  measured: number; // parcels with both a dispatch and a delivered date
+  byDistrict: SpeedStat[]; // slowest first
+}
+
 export interface Metrics {
   level: number;
   levelTarget: number;
@@ -136,6 +187,10 @@ export interface Metrics {
   returnLoss: ReturnLoss;
   reorder: ReorderItem[]; // most urgent first
   cashFlow: CashFlow;
+  // --- Decision reports ------------------------------------------------------
+  months: MonthStat[]; // last 6 calendar months, oldest first
+  customers: CustomerInsights;
+  speed: DeliverySpeed;
 }
 
 // The operator ships on Sri Lanka time. Bucketing an instant by the server's
@@ -289,22 +344,8 @@ export function computeMetrics(
   // the courier until the payout batch lands, so it counts toward net worth.
   const netWorth = settings.bank_cash + stockValue + cashInFlight + awaitingPayout;
 
-  const badges: Badge[] = [
-    { id: "first-flight", emoji: "🐣", name: "First Flight", desc: "Dispatch your first package", earned: totalPackages >= 1 },
-    { id: "ten-pack", emoji: "📦", name: "Ten Pack", desc: "Dispatch 10 packages", earned: totalPackages >= 10 },
-    { id: "road-warrior", emoji: "🚚", name: "Road Warrior", desc: "Dispatch 50 packages", earned: totalPackages >= 50 },
-    { id: "century-club", emoji: "💯", name: "Century Club", desc: "Dispatch 100 packages", earned: totalPackages >= 100 },
-    { id: "warehouse-boss", emoji: "🏭", name: "Warehouse Boss", desc: "Dispatch 250 packages", earned: totalPackages >= 250 },
-    { id: "money-in", emoji: "✅", name: "Money In", desc: "First delivered order", earned: delivered >= 1 },
-    { id: "warmed-up", emoji: "🔥", name: "Warmed Up", desc: "3-day dispatch streak", earned: bestStreak >= 3 },
-    { id: "week-of-fire", emoji: "⚡", name: "Week of Fire", desc: "7-day dispatch streak", earned: bestStreak >= 7 },
-    { id: "unstoppable", emoji: "🌋", name: "Unstoppable", desc: "14-day dispatch streak", earned: bestStreak >= 14 },
-    { id: "habit-royalty", emoji: "👑", name: "Habit Royalty", desc: "30-day dispatch streak", earned: bestStreak >= 30 },
-    { id: "big-day", emoji: "🌟", name: "Big Day", desc: "5 packages in one day", earned: bestDay >= 5 },
-    { id: "mega-day", emoji: "🚀", name: "Mega Day", desc: "10 packages in one day", earned: bestDay >= 10 },
-    { id: "lakh-club", emoji: "💰", name: "Lakh Club", desc: "Net worth over Rs. 100,000", earned: netWorth >= 100_000 },
-    { id: "millionaire", emoji: "💎", name: "Millionaire", desc: "Net worth over Rs. 1,000,000", earned: netWorth >= 1_000_000 },
-  ];
+  // Badges are assembled at the bottom of this function — the fun ones need
+  // the report aggregations (months, customers, districts) computed below.
 
   // Last-14-day activity series. Dispatches come from manifests (perDay is
   // already bucketed); delivered/returned days come from the tracking timeline,
@@ -538,6 +579,306 @@ export function computeMetrics(
     returnRatePct: Math.round(blendedReturnRate * 100),
   };
 
+  // --- Monthly trend report ---------------------------------------------------
+  // Same accounting as the P&L (revenue/costs on the settlement day, shipped on
+  // the manifest day), bucketed per calendar month over ALL history. The full
+  // series also answers "was there ever a profitable month?" for its badge.
+  interface MonthAgg {
+    shipped: number;
+    delivered: number;
+    returned: number;
+    revenue: number;
+    cogs: number;
+    courier: number;
+    ad: number;
+  }
+  const monthAgg = new Map<string, MonthAgg>();
+  const monthOf = (day: string) => day.slice(0, 7);
+  const bucketFor = (month: string): MonthAgg => {
+    let m = monthAgg.get(month);
+    if (!m) {
+      m = { shipped: 0, delivered: 0, returned: 0, revenue: 0, cogs: 0, courier: 0, ad: 0 };
+      monthAgg.set(month, m);
+    }
+    return m;
+  };
+  for (const [day, count] of perDay) bucketFor(monthOf(day)).shipped += count;
+  for (const [orderId, day] of deliveredDayByOrder) {
+    const o = orderById.get(orderId);
+    if (!o) continue;
+    const m = bucketFor(monthOf(day));
+    m.delivered++;
+    m.revenue += Number(o.total_cod);
+    m.cogs += orderCogs(o);
+    m.courier += courierCostFor(o.district, settings.courier_cost_base, settings.courier_cost_overrides);
+  }
+  for (const [orderId, day] of returnedDayByOrder) {
+    if (!orderById.has(orderId)) continue;
+    const m = bucketFor(monthOf(day));
+    m.returned++;
+    m.courier += Number(settings.courier_return_cost);
+  }
+  for (const s of adSpend) bucketFor(monthOf(s.day)).ad += Number(s.amount);
+
+  const monthLabel = (key: string): string => {
+    const [y, mo] = key.split("-").map(Number);
+    const short = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Colombo",
+      month: "short",
+    }).format(new Date(Date.UTC(y, mo - 1, 15)));
+    return `${short} ’${String(y).slice(2)}`;
+  };
+  const allMonths: MonthStat[] = [...monthAgg.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([key, m]) => {
+      const netProfit = m.revenue - m.cogs - m.courier - m.ad;
+      return {
+        key,
+        label: monthLabel(key),
+        shipped: m.shipped,
+        delivered: m.delivered,
+        returned: m.returned,
+        revenue: m.revenue,
+        netProfit,
+        marginPct: m.revenue > 0 ? Math.round((netProfit / m.revenue) * 100) : 0,
+        aov: m.delivered > 0 ? Math.round(m.revenue / m.delivered) : 0,
+      };
+    });
+  const months = allMonths.slice(-6);
+  const everProfitableMonth = allMonths.some((m) => m.revenue > 0 && m.netProfit > 0);
+
+  // --- Customer insights --------------------------------------------------------
+  // Group by the last-9-digits phone identity (same trick risk scoring uses).
+  // A "buyer" actually took delivery at least once; a repeat buyer did it twice.
+  const custAgg = new Map<
+    string,
+    { name: string; phone: string; latest: string; delivered: number; revenue: number }
+  >();
+  for (const o of orders) {
+    const key = phoneKey(o.phone_number);
+    if (key.length < 9) continue;
+    let c = custAgg.get(key);
+    if (!c) {
+      c = { name: o.customer_name, phone: o.phone_number, latest: o.created_at, delivered: 0, revenue: 0 };
+      custAgg.set(key, c);
+    }
+    if (o.created_at >= c.latest) {
+      c.latest = o.created_at;
+      if (o.customer_name) c.name = o.customer_name;
+      c.phone = o.phone_number;
+    }
+    if (o.order_status === "delivered") {
+      c.delivered++;
+      c.revenue += Number(o.total_cod);
+    }
+  }
+  let buyers = 0;
+  let repeatBuyers = 0;
+  let totalRevenue = 0;
+  let repeatRevenue = 0;
+  for (const c of custAgg.values()) {
+    if (c.delivered === 0) continue;
+    buyers++;
+    totalRevenue += c.revenue;
+    if (c.delivered >= 2) {
+      repeatBuyers++;
+      repeatRevenue += c.revenue;
+    }
+  }
+  const topCustomers: TopCustomer[] = [...custAgg.values()]
+    .filter((c) => c.delivered > 0)
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 5)
+    .map((c) => ({ name: c.name || c.phone, phone: c.phone, orders: c.delivered, revenue: c.revenue }));
+  const customers: CustomerInsights = {
+    buyers,
+    repeatBuyers,
+    repeatRatePct: buyers > 0 ? Math.round((repeatBuyers / buyers) * 100) : 0,
+    totalRevenue,
+    repeatRevenue,
+    repeatRevenuePct: totalRevenue > 0 ? Math.round((repeatRevenue / totalRevenue) * 100) : 0,
+    topCustomers,
+  };
+
+  // --- Delivery speed -----------------------------------------------------------
+  // Dispatch day (earliest manifest) → delivered day, in civil days. Rides
+  // longer than 60 days are treated as data glitches and skipped.
+  const dispatchDayByOrder = new Map<string, string>();
+  for (const m of manifests) {
+    const key = dayKey(new Date(m.created_at));
+    const prev = dispatchDayByOrder.get(m.order_id);
+    if (!prev || key < prev) dispatchDayByOrder.set(m.order_id, key);
+  }
+  const civilDiff = (a: string, b: string): number => {
+    const [ay, am, ad] = a.split("-").map(Number);
+    const [by, bm, bd] = b.split("-").map(Number);
+    return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86_400_000);
+  };
+  let speedSum = 0;
+  let speedCount = 0;
+  const speedByDistrict = new Map<string, { sum: number; count: number }>();
+  for (const [orderId, deliveredDay] of deliveredDayByOrder) {
+    const dispatchDay = dispatchDayByOrder.get(orderId);
+    const o = orderById.get(orderId);
+    if (!dispatchDay || !o) continue;
+    const days = civilDiff(dispatchDay, deliveredDay);
+    if (days < 0 || days > 60) continue;
+    speedSum += days;
+    speedCount++;
+    const district = o.district || "Unknown";
+    const agg = speedByDistrict.get(district) ?? { sum: 0, count: 0 };
+    agg.sum += days;
+    agg.count++;
+    speedByDistrict.set(district, agg);
+  }
+  const speed: DeliverySpeed = {
+    avgDays: speedCount > 0 ? Math.round((speedSum / speedCount) * 10) / 10 : null,
+    measured: speedCount,
+    byDistrict: [...speedByDistrict.entries()]
+      .map(([name, { sum, count }]) => ({
+        name,
+        avgDays: Math.round((sum / count) * 10) / 10,
+        count,
+      }))
+      .sort((a, b) => b.avgDays - a.avgDays),
+  };
+
+  // --- Badge cabinet --------------------------------------------------------------
+  // Every ingredient below is a lifetime record (never decreases), so a badge
+  // can never un-earn. Count badges carry progress/target for the locked tiles.
+
+  // Longest run of consecutive deliveries with zero returns, in settlement order.
+  const settled: { day: string; returned: boolean }[] = [];
+  for (const o of orders) {
+    if (o.order_status !== "delivered" && o.order_status !== "returned") continue;
+    const isReturn = o.order_status === "returned";
+    const day =
+      (isReturn ? returnedDayByOrder.get(o.id) : deliveredDayByOrder.get(o.id)) ??
+      dayKey(new Date(o.created_at));
+    settled.push({ day, returned: isReturn });
+  }
+  settled.sort((a, b) => (a.day < b.day ? -1 : 1));
+  let cleanRun = 0;
+  let bestCleanRun = 0;
+  for (const s of settled) {
+    cleanRun = s.returned ? 0 : cleanRun + 1;
+    if (cleanRun > bestCleanRun) bestCleanRun = cleanRun;
+  }
+
+  // Time-of-day and weekend records from manifest timestamps.
+  const colomboHour = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Colombo",
+    hour: "numeric",
+    hour12: false,
+  });
+  let earlyBird = false;
+  let nightOwl = false;
+  for (const m of manifests) {
+    const h = Number(colomboHour.format(new Date(m.created_at))) % 24;
+    if (h < 9) earlyBird = true;
+    if (h >= 21) nightOwl = true;
+  }
+  let shippedSat = false;
+  let shippedSun = false;
+  for (const key of perDay.keys()) {
+    const [y, mo, d] = key.split("-").map(Number);
+    const wd = colomboWeekday.format(new Date(Date.UTC(y, mo - 1, d, 12)));
+    if (wd === "Sat") shippedSat = true;
+    if (wd === "Sun") shippedSun = true;
+  }
+
+  // Island coverage: distinct districts ever shipped to (out of 25).
+  const districtsShipped = new Set(
+    orders
+      .filter((o) => o.order_status !== "pending" && o.district && o.district !== "Unknown")
+      .map((o) => o.district)
+  ).size;
+
+  const lifetimeRevenue = totalRevenue;
+
+  const countBadge = (
+    id: string,
+    emoji: string,
+    name: string,
+    desc: string,
+    value: number,
+    target: number
+  ): Badge => ({
+    id,
+    emoji,
+    name,
+    desc,
+    earned: value >= target,
+    progress: Math.min(Math.round(value), target),
+    target,
+  });
+
+  const badges: Badge[] = [
+    // Dispatch volume
+    countBadge("first-flight", "🐣", "First Flight", "Dispatch your first package", totalPackages, 1),
+    countBadge("ten-pack", "📦", "Ten Pack", "Dispatch 10 packages", totalPackages, 10),
+    countBadge("road-warrior", "🚚", "Road Warrior", "Dispatch 50 packages", totalPackages, 50),
+    countBadge("century-club", "💯", "Century Club", "Dispatch 100 packages", totalPackages, 100),
+    countBadge("warehouse-boss", "🏭", "Warehouse Boss", "Dispatch 250 packages", totalPackages, 250),
+    countBadge("convoy-commander", "🚛", "Convoy Commander", "Dispatch 500 packages", totalPackages, 500),
+    countBadge("thousand-club", "🐉", "Thousand Club", "Dispatch 1,000 packages", totalPackages, 1000),
+    // Deliveries landed
+    countBadge("money-in", "✅", "Money In", "First delivered order", delivered, 1),
+    countBadge("ten-landed", "📬", "Ten Landed", "10 orders delivered", delivered, 10),
+    countBadge("fifty-landed", "🎯", "Sharp Shooter", "50 orders delivered", delivered, 50),
+    countBadge("delivery-century", "🏆", "Delivery Century", "100 orders delivered", delivered, 100),
+    countBadge("half-k-landed", "🌠", "Half-K Landed", "500 orders delivered", delivered, 500),
+    // Streaks
+    countBadge("warmed-up", "🔥", "Warmed Up", "3-day dispatch streak", bestStreak, 3),
+    countBadge("week-of-fire", "⚡", "Week of Fire", "7-day dispatch streak", bestStreak, 7),
+    countBadge("unstoppable", "🌋", "Unstoppable", "14-day dispatch streak", bestStreak, 14),
+    countBadge("habit-royalty", "👑", "Habit Royalty", "30-day dispatch streak", bestStreak, 30),
+    countBadge("diamond-streak", "💠", "Diamond Streak", "60-day dispatch streak", bestStreak, 60),
+    countBadge("eternal-flame", "🌞", "Eternal Flame", "100-day dispatch streak", bestStreak, 100),
+    // Single-day records
+    countBadge("big-day", "🌟", "Big Day", "5 packages in one day", bestDay, 5),
+    countBadge("mega-day", "🚀", "Mega Day", "10 packages in one day", bestDay, 10),
+    countBadge("beast-mode", "💪", "Beast Mode", "15 packages in one day", bestDay, 15),
+    countBadge("warehouse-inferno", "🧨", "Warehouse Inferno", "20 packages in one day", bestDay, 20),
+    // Net worth
+    countBadge("lakh-club", "💰", "Lakh Club", "Net worth over Rs. 100,000", netWorth, 100_000),
+    countBadge("half-million", "🪙", "Half-Million", "Net worth over Rs. 500,000", netWorth, 500_000),
+    countBadge("millionaire", "💎", "Millionaire", "Net worth over Rs. 1,000,000", netWorth, 1_000_000),
+    countBadge("tycoon", "🏰", "Tycoon", "Net worth over Rs. 5,000,000", netWorth, 5_000_000),
+    // Lifetime delivered revenue
+    countBadge("first-lakh-sold", "💵", "First Lakh Sold", "Rs. 100,000 delivered lifetime", lifetimeRevenue, 100_000),
+    countBadge("money-machine", "💸", "Money Machine", "Rs. 1,000,000 delivered lifetime", lifetimeRevenue, 1_000_000),
+    countBadge("rupee-rocket", "🛸", "Rupee Rocket", "Rs. 10,000,000 delivered lifetime", lifetimeRevenue, 10_000_000),
+    // Profitability
+    {
+      id: "green-month",
+      emoji: "🌱",
+      name: "Green Month",
+      desc: "Finish a calendar month in profit",
+      earned: everProfitableMonth,
+    },
+    // Repeat customers
+    countBadge("first-fan", "🤝", "First Fan", "One customer ordered twice", repeatBuyers, 1),
+    countBadge("fan-club", "🫶", "Fan Club", "10 repeat customers", repeatBuyers, 10),
+    countBadge("cult-following", "🧲", "Cult Following", "25 repeat customers", repeatBuyers, 25),
+    // Island coverage
+    countBadge("island-explorer", "🗺️", "Island Explorer", "Ship to 10 districts", districtsShipped, 10),
+    countBadge("all-island-legend", "🏝️", "All-Island Legend", "Ship to all 25 districts", districtsShipped, 25),
+    // Perfect runs
+    countBadge("safe-hands", "🧤", "Safe Hands", "10 deliveries in a row, zero returns", bestCleanRun, 10),
+    countBadge("iron-wall", "🛡️", "Iron Wall", "30 deliveries in a row, zero returns", bestCleanRun, 30),
+    // Time-of-day flair
+    { id: "early-bird", emoji: "🌅", name: "Early Bird", desc: "Dispatch before 9 AM", earned: earlyBird },
+    { id: "night-owl", emoji: "🦉", name: "Night Owl", desc: "Dispatch after 9 PM", earned: nightOwl },
+    {
+      id: "weekend-warrior",
+      emoji: "🏖️",
+      name: "Weekend Warrior",
+      desc: "Dispatch on a Saturday and a Sunday",
+      earned: shippedSat && shippedSun,
+    },
+  ];
+
   return {
     level,
     levelTarget,
@@ -573,5 +914,8 @@ export function computeMetrics(
     returnLoss,
     reorder,
     cashFlow,
+    months,
+    customers,
+    speed,
   };
 }

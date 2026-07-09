@@ -1,7 +1,16 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState } from "react";
-import type { CashFlow, Metrics, OutcomeStat, PnlWindow, ReorderItem } from "@/lib/metrics";
+import type {
+  CashFlow,
+  CustomerInsights,
+  DeliverySpeed,
+  Metrics,
+  MonthStat,
+  OutcomeStat,
+  PnlWindow,
+  ReorderItem,
+} from "@/lib/metrics";
 import type { AdSpend, BusinessSettings, Product, TemplateKey } from "@/lib/types";
 import { DISTRICTS } from "@/lib/districts";
 import { DEFAULT_TEMPLATES, TEMPLATE_META } from "@/lib/templates";
@@ -129,6 +138,16 @@ export default function QuestPage() {
     coachLines.push({
       text: `📈 Record streak: ${metrics.bestStreakDays} days. Current: ${streak}. You gonna let past-you win?`,
       mood: "idle",
+    });
+  }
+  // Hype the badge that's closest to unlocking (only when it's within reach).
+  const nearBadge = metrics.badges
+    .filter((b) => !b.earned && b.target && b.progress !== undefined && b.progress / b.target >= 0.6)
+    .sort((a, b) => b.progress! / b.target! - a.progress! / a.target!)[0];
+  if (nearBadge) {
+    coachLines.push({
+      text: `🏅 “${nearBadge.name}” is ${nearBadge.target! - nearBadge.progress!} away (${nearBadge.progress}/${nearBadge.target}). That badge is basically yours already.`,
+      mood: "happy",
     });
   }
   if (coachLines.length === 0) {
@@ -376,6 +395,14 @@ export default function QuestPage() {
               <span className="font-display text-[10px] font-bold leading-tight text-ink-soft">
                 {b.desc}
               </span>
+              {!b.earned && b.target !== undefined && b.progress !== undefined && b.progress > 0 && (
+                <div className="mt-1 w-full">
+                  <ProgressBar value={(b.progress / b.target) * 100} tone="var(--color-gold)" className="h-2" />
+                  <span className="font-display text-[9px] font-extrabold text-ink-soft">
+                    {b.progress.toLocaleString("en-LK")}/{b.target.toLocaleString("en-LK")}
+                  </span>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -423,6 +450,13 @@ export default function QuestPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <CashFlowCard cash={metrics.cashFlow} />
         <ReorderRadar items={metrics.reorder} />
+      </div>
+
+      {/* ── DECISION REPORTS ──────────────────────────────────────── */}
+      <MonthlyTrendCard months={metrics.months} />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <CustomerInsightsCard customers={metrics.customers} />
+        <DeliverySpeedCard speed={metrics.speed} />
       </div>
 
       {/* ── WHERE RETURNS HAPPEN ──────────────────────────────────── */}
@@ -689,6 +723,231 @@ function ReturnRateCard({
             </div>
           ))}
         </div>
+      )}
+    </Card>
+  );
+}
+
+// Six months side by side — the "is this actually growing?" table. Same
+// settlement-day accounting as the P&L card, so the columns reconcile.
+function MonthlyTrendCard({ months }: { months: MonthStat[] }) {
+  const hasData = months.some((m) => m.shipped > 0 || m.delivered > 0);
+  const maxRevenue = Math.max(...months.map((m) => m.revenue), 1);
+  return (
+    <Card className="p-6">
+      <h2 className="font-display text-lg font-extrabold text-ink">📈 Monthly trends</h2>
+      <p className="mb-4 font-display text-xs font-bold text-ink-soft">
+        Month over month — revenue counts when the parcel lands, so the current month grows as
+        parcels settle.
+      </p>
+      {!hasData ? (
+        <p className="font-display text-sm font-bold text-ink-soft">
+          Ship a few orders and your first month shows up here.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] border-separate border-spacing-y-1">
+            <thead>
+              <tr className="font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft">
+                <th className="px-2 text-left">Month</th>
+                <th className="px-2 text-right">Shipped</th>
+                <th className="px-2 text-right">Delivered</th>
+                <th className="px-2 text-right">Returned</th>
+                <th className="px-2 text-right">Revenue</th>
+                <th className="px-2 text-right">Net profit</th>
+                <th className="px-2 text-right">Margin</th>
+              </tr>
+            </thead>
+            <tbody>
+              {months.map((m, i) => {
+                const current = i === months.length - 1;
+                const profitable = m.netProfit >= 0;
+                return (
+                  <tr
+                    key={m.key}
+                    className={
+                      "rounded-xl font-display text-sm font-bold " +
+                      (current ? "bg-pond/60" : "bg-cream/70")
+                    }
+                  >
+                    <td className="rounded-l-xl px-2 py-2 font-extrabold text-ink">
+                      {m.label}
+                      {current && (
+                        <span className="ml-1.5 rounded-full bg-frog/20 px-1.5 py-0.5 text-[9px] font-extrabold text-frog-dark">
+                          NOW
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-2 py-2 text-right tabular-nums text-ink">{m.shipped}</td>
+                    <td className="px-2 py-2 text-right tabular-nums text-frog-dark">{m.delivered}</td>
+                    <td
+                      className={
+                        "px-2 py-2 text-right tabular-nums " +
+                        (m.returned > 0 ? "text-flame-dark" : "text-ink-soft")
+                      }
+                    >
+                      {m.returned}
+                    </td>
+                    <td className="px-2 py-2 text-right tabular-nums text-ink">
+                      <div className="flex items-center justify-end gap-2">
+                        <div className="h-2 w-14 overflow-hidden rounded-full bg-[#e8e2d5]">
+                          <div
+                            className="h-full rounded-full bg-frog"
+                            style={{ width: `${Math.round((m.revenue / maxRevenue) * 100)}%` }}
+                          />
+                        </div>
+                        {rs(m.revenue)}
+                      </div>
+                    </td>
+                    <td
+                      className={
+                        "px-2 py-2 text-right font-extrabold tabular-nums " +
+                        (profitable ? "text-frog-dark" : "text-flame-dark")
+                      }
+                    >
+                      {profitable ? "" : "−"}
+                      {rs(Math.abs(m.netProfit))}
+                    </td>
+                    <td
+                      className={
+                        "rounded-r-xl px-2 py-2 text-right tabular-nums " +
+                        (profitable ? "text-ink" : "text-flame-dark")
+                      }
+                    >
+                      {m.marginPct}%
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// Repeat buyers: the cheapest revenue a COD shop has — no ad spend, and they
+// already proved they open the door for the courier.
+function CustomerInsightsCard({ customers }: { customers: CustomerInsights }) {
+  return (
+    <Card className="p-5">
+      <h2 className="font-display text-lg font-extrabold text-ink">💚 Customers</h2>
+      <p className="mb-3 font-display text-xs font-bold text-ink-soft">
+        Buyers who took delivery, and who keeps coming back.
+      </p>
+      {customers.buyers === 0 ? (
+        <p className="font-display text-sm font-bold text-ink-soft">
+          No delivered orders yet — customers appear once the first parcel lands.
+        </p>
+      ) : (
+        <>
+          <div className="mb-3 grid grid-cols-3 gap-2">
+            <div className="rounded-xl bg-cream/70 p-2.5 text-center">
+              <p className="font-display text-xl font-extrabold text-ink">{customers.buyers}</p>
+              <p className="font-display text-[10px] font-bold text-ink-soft">buyers</p>
+            </div>
+            <div className="rounded-xl bg-pond/60 p-2.5 text-center">
+              <p className="font-display text-xl font-extrabold text-frog-dark">
+                {customers.repeatRatePct}%
+              </p>
+              <p className="font-display text-[10px] font-bold text-ink-soft">
+                buy again ({customers.repeatBuyers})
+              </p>
+            </div>
+            <div className="rounded-xl bg-cream/70 p-2.5 text-center">
+              <p className="font-display text-xl font-extrabold text-ink">
+                {customers.repeatRevenuePct}%
+              </p>
+              <p className="font-display text-[10px] font-bold text-ink-soft">
+                of revenue is repeat
+              </p>
+            </div>
+          </div>
+          <p className="mb-1.5 font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft">
+            Top customers
+          </p>
+          <div className="space-y-1.5">
+            {customers.topCustomers.map((c, i) => (
+              <div
+                key={c.phone}
+                className="flex items-center gap-2 rounded-xl bg-cream/70 px-3 py-1.5"
+              >
+                <span className="text-sm">{["🥇", "🥈", "🥉", "🏅", "🏅"][i]}</span>
+                <span className="min-w-0 flex-1 truncate font-display text-sm font-bold text-ink">
+                  {c.name}
+                </span>
+                <span className="shrink-0 font-display text-[11px] font-bold text-ink-soft">
+                  {c.orders} {c.orders === 1 ? "order" : "orders"}
+                </span>
+                <span className="shrink-0 font-display text-sm font-extrabold tabular-nums text-frog-dark">
+                  {rs(c.revenue)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+// Dispatch → doorstep, in days. Slow districts sit on top: that's where COD
+// refusals breed while the parcel rides.
+function DeliverySpeedCard({ speed }: { speed: DeliverySpeed }) {
+  const slowLine = speed.avgDays !== null ? speed.avgDays * 1.5 : Infinity;
+  return (
+    <Card className="p-5">
+      <h2 className="font-display text-lg font-extrabold text-ink">🛵 Delivery speed</h2>
+      <p className="mb-3 font-display text-xs font-bold text-ink-soft">
+        Dispatch to doorstep. Slow lanes breed refusals — chase the courier there.
+      </p>
+      {speed.avgDays === null ? (
+        <p className="font-display text-sm font-bold text-ink-soft">
+          Needs at least one tracked delivery to measure.
+        </p>
+      ) : (
+        <>
+          <div className="mb-3 flex items-baseline gap-2 rounded-xl bg-pond/60 px-4 py-3">
+            <span className="font-display text-3xl font-extrabold text-frog-dark">
+              {speed.avgDays}
+            </span>
+            <span className="font-display text-sm font-bold text-ink">days average</span>
+            <span className="ml-auto font-display text-[11px] font-bold text-ink-soft">
+              {speed.measured} parcels measured
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {speed.byDistrict.slice(0, 8).map((d) => {
+              const slow = d.avgDays >= slowLine && d.avgDays >= 3;
+              return (
+                <div
+                  key={d.name}
+                  className={
+                    "flex items-center gap-2 rounded-xl px-3 py-1.5 " +
+                    (slow ? "border-2 border-flame/50 bg-flame-tint" : "bg-cream/70")
+                  }
+                >
+                  <span className="min-w-0 flex-1 truncate font-display text-sm font-bold text-ink">
+                    {slow ? "🐢 " : ""}
+                    {d.name}
+                  </span>
+                  <span className="shrink-0 font-display text-[11px] font-bold text-ink-soft">
+                    {d.count} {d.count === 1 ? "parcel" : "parcels"}
+                  </span>
+                  <span
+                    className={
+                      "w-16 shrink-0 text-right font-display text-sm font-extrabold tabular-nums " +
+                      (slow ? "text-flame-dark" : "text-ink")
+                    }
+                  >
+                    {d.avgDays} d
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </Card>
   );
