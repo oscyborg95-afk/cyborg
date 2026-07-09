@@ -513,7 +513,12 @@ async function connectToWhatsApp() {
     logger,
     browser: Browsers.ubuntu("Daily Cart"),
     markOnlineOnConnect: false, // keep phone notifications ringing
-    syncFullHistory: false,
+    // On the next fresh relink (QR re-scan), ask the phone to dump its full
+    // cached history — this backfills older chats/messages that were tagged in
+    // WhatsApp but never crossed into the dashboard. The messaging-history.set
+    // handler below persists whatever the phone sends (bounded by the phone's
+    // own cache, typically recent months).
+    syncFullHistory: true,
   });
 
   sock.ev.on("creds.update", auth.saveCreds);
