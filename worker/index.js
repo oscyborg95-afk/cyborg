@@ -14,11 +14,15 @@
 //   GET  /qr                         → HTML page with the live QR to scan
 //   GET  /qr.json                    → { ready, qr } (Workspace embeds this)
 //   GET  /chats                      → [{ id, name, lastMessage, timestamp, unreadCount }]
-//   GET  /messages/:chatId           → [{ id, chatId, body, fromMe, timestamp, senderName }]
-//   GET  /media/:id                  → { mime, data } (base64) — captured voice notes/photos
-//   POST /send { chatId, text }      → { ok }
+//   GET  /messages/:chatId           → [{ id, chatId, body, fromMe, timestamp, senderName, status, media }]
+//   GET  /media/:id                  → { mime, data } (base64) — captured photos/voice notes/stickers
+//   GET  /avatar/:jid                → { url } — profile picture (null when none/hidden)
+//   POST /send { chatId, text, media? { mime, data } } → { ok }
+//   POST /read { chatId }            → { ok } — mark chat read on the phone (blue ticks)
+//   POST /typing { chatId, state }   → { ok } — "composing" | "paused" presence
 //   POST /mock/incoming { chatId, body }   (mock mode only)
-// Socket.io events: "wa:message", "wa:status" ({ ready }), "wa:qr" ({ qr })
+// Socket.io events: "wa:message", "wa:update" ({ id, chatId, status }),
+//                   "wa:status" ({ ready }), "wa:qr" ({ qr })
 
 const fs = require("fs");
 const path = require("path");
@@ -111,6 +115,7 @@ ${refreshSeconds ? `<meta http-equiv="refresh" content="${refreshSeconds}" />` :
 if (MOCK) {
   const now = Date.now();
   const chats = new Map(); // chatId -> { id, name, messages: [] }
+  const mockMedia = new Map(); // msgId -> { mime, data }
 
   function seedChat(id, name, messages) {
     chats.set(id, {
@@ -123,6 +128,8 @@ if (MOCK) {
         fromMe: m.fromMe,
         timestamp: now - m.minAgo * 60_000,
         senderName: m.fromMe ? "You" : name,
+        status: m.fromMe ? 4 : 0, // our seeded sends read as blue-ticked
+        media: "",
       })),
     });
   }
@@ -165,7 +172,7 @@ if (MOCK) {
   });
 
   app.post("/send", (req, res) => {
-    const { chatId, text } = req.body;
+    const { chatId, text, media } = req.body;
     // Live WhatsApp JIDs end in @s.whatsapp.net; the mock seeds use @c.us.
     // Match by phone digits so server-side sends (alerts, broadcast) work here.
     let chat = chats.get(chatId);
@@ -173,22 +180,50 @@ if (MOCK) {
       const digits = String(chatId).split("@")[0];
       chat = [...chats.values()].find((c) => c.id.split("@")[0] === digits);
     }
-    if (!chat || !text) return res.status(400).json({ error: "unknown chatId or empty text" });
+    if (!chat || (!text && !media?.data)) {
+      return res.status(400).json({ error: "unknown chatId or empty text" });
+    }
     const msg = {
       id: `${chat.id}-${chat.messages.length}`,
       chatId: chat.id,
-      body: text,
+      body: text || "[photo]",
       fromMe: true,
       timestamp: Date.now(),
       senderName: "You",
+      status: 1,
+      media: media?.data ? "image" : "",
     };
+    if (media?.data) mockMedia.set(msg.id, { mime: media.mime || "image/jpeg", data: media.data });
     chat.messages.push(msg);
     emitMessage(msg);
     res.json({ ok: true });
+    // Walk the ticks like a real send: sent → delivered → read.
+    for (const [status, delay] of [
+      [2, 700],
+      [3, 1800],
+      [4, 4000],
+    ]) {
+      setTimeout(() => {
+        msg.status = status;
+        io.emit("wa:update", { id: msg.id, chatId: msg.chatId, status });
+      }, delay);
+    }
   });
 
-  // No real media in mock mode — the parse route degrades to text-only.
-  app.get("/media/:id", (_req, res) => res.status(404).json({ error: "no media in mock mode" }));
+  // Serves photos sent from the dashboard; seeded chats carry no media.
+  app.get("/media/:id", (req, res) => {
+    const m = mockMedia.get(req.params.id);
+    if (!m) return res.status(404).json({ error: "no media captured for this message" });
+    res.json(m);
+  });
+
+  app.post("/read", (req, res) => {
+    const chat = chats.get(req.body.chatId);
+    if (chat) chat.messages.forEach((m) => { if (!m.fromMe) m.status = 4; });
+    res.json({ ok: true });
+  });
+  app.post("/typing", (_req, res) => res.json({ ok: true }));
+  app.get("/avatar/:jid", (_req, res) => res.json({ url: null }));
 
   app.post("/mock/incoming", (req, res) => {
     const { chatId, body } = req.body;
@@ -201,6 +236,8 @@ if (MOCK) {
       fromMe: false,
       timestamp: Date.now(),
       senderName: chat.name,
+      status: 0,
+      media: "",
     };
     chat.messages.push(msg);
     emitMessage(msg);
@@ -273,6 +310,8 @@ async function ensureTables() {
       ts      bigint not null,
       sender  text not null default ''
     );
+    alter table wa_messages add column if not exists status int not null default 0;
+    alter table wa_messages add column if not exists media text not null default '';
     create index if not exists idx_wa_messages_jid_ts on wa_messages(jid, ts);
     create table if not exists wa_media (
       id   text primary key,
@@ -281,9 +320,10 @@ async function ensureTables() {
       ts   bigint not null
     );
   `);
-  // Media is only needed while an order is being parsed — prune after 14 days.
+  // Media feeds AI parsing and inline chat rendering — prune after 30 days
+  // (the UI falls back to a "[photo]"-style placeholder once bytes are gone).
   await pool
-    .query("delete from wa_media where ts < $1", [Date.now() - 14 * 24 * 60 * 60 * 1000])
+    .query("delete from wa_media where ts < $1", [Date.now() - 30 * 24 * 60 * 60 * 1000])
     .catch(() => {});
 }
 
@@ -314,9 +354,18 @@ async function getMedia(id) {
 async function saveMessage(msg) {
   if (pool) {
     const inserted = await pool.query(
-      `insert into wa_messages (id, jid, body, from_me, ts, sender)
-       values ($1,$2,$3,$4,$5,$6) on conflict (id) do nothing returning id`,
-      [msg.id, msg.chatId, msg.body, msg.fromMe, msg.timestamp, msg.senderName]
+      `insert into wa_messages (id, jid, body, from_me, ts, sender, status, media)
+       values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing returning id`,
+      [
+        msg.id,
+        msg.chatId,
+        msg.body,
+        msg.fromMe,
+        msg.timestamp,
+        msg.senderName,
+        msg.status ?? 0,
+        msg.media ?? "",
+      ]
     );
     if (inserted.rowCount === 0) return false;
     await pool.query(
@@ -349,7 +398,7 @@ async function saveMessage(msg) {
 async function listChats() {
   if (pool) {
     const { rows } = await pool.query(
-      "select jid, name, unread, last_ts, last_message from wa_chats order by last_ts desc limit 300"
+      "select jid, name, unread, last_ts, last_message from wa_chats order by last_ts desc limit 1000"
     );
     return rows.map((r) => ({
       id: r.jid,
@@ -373,7 +422,7 @@ async function listChats() {
 async function listMessages(jid) {
   if (pool) {
     const { rows } = await pool.query(
-      "select id, jid, body, from_me, ts, sender from wa_messages where jid = $1 order by ts asc limit 500",
+      "select id, jid, body, from_me, ts, sender, status, media from wa_messages where jid = $1 order by ts asc limit 500",
       [jid]
     );
     return rows.map((r) => ({
@@ -383,6 +432,8 @@ async function listMessages(jid) {
       fromMe: r.from_me,
       timestamp: r.ts,
       senderName: r.sender,
+      status: r.status,
+      media: r.media,
     }));
   }
   const chatMsgs = memMessages.get(jid);
@@ -488,6 +539,14 @@ function normalize(m) {
     (content.locationMessage && "[location]") ||
     null;
   if (!body) return null;
+  // Which captured-bytes kind this message carries (drives inline rendering).
+  const media = content.imageMessage
+    ? "image"
+    : content.audioMessage
+      ? "audio"
+      : content.stickerMessage
+        ? "sticker"
+        : "";
   return {
     id: m.key.id,
     chatId: jid,
@@ -495,7 +554,25 @@ function normalize(m) {
     fromMe: Boolean(m.key.fromMe),
     timestamp: Number(m.messageTimestamp || 0) * 1000 || Date.now(),
     senderName: m.pushName || "",
+    status: Number(m.status ?? 0),
+    media,
   };
+}
+
+/** Persist a delivery-status bump (sent → delivered → read) and tell the UI. */
+async function updateMessageStatus(id, jid, status) {
+  if (pool) {
+    // Acks can arrive out of order — never let a "delivered" overwrite a "read".
+    await pool.query("update wa_messages set status = greatest(status, $1) where id = $2", [
+      status,
+      id,
+    ]);
+  } else {
+    const chatMsgs = memMessages.get(jid);
+    const msg = chatMsgs?.get(id);
+    if (msg) msg.status = Math.max(msg.status ?? 0, status);
+  }
+  io.emit("wa:update", { id, chatId: jid, status });
 }
 
 // --- Connection ----------------------------------------------------------------
@@ -555,6 +632,15 @@ async function connectToWhatsApp() {
     }
   });
 
+  // Delivery acks: pending → sent → delivered → read. Feeds the UI's ticks.
+  sock.ev.on("messages.update", async (updates) => {
+    for (const { key, update } of updates) {
+      if (!key?.id || !key.remoteJid || update?.status === undefined) continue;
+      if (isJidGroup(key.remoteJid) || isJidBroadcast(key.remoteJid)) continue;
+      await updateMessageStatus(key.id, key.remoteJid, Number(update.status)).catch(() => {});
+    }
+  });
+
   // Live messages: inbound AND outbound (including ones sent from your phone).
   sock.ev.on("messages.upsert", async ({ messages }) => {
     for (const m of messages) {
@@ -583,9 +669,8 @@ async function connectToWhatsApp() {
 const MAX_MEDIA_BYTES = 6 * 1024 * 1024;
 
 async function captureMedia(rawMessage, msg) {
-  if (msg.fromMe) return;
   const content = unwrap(rawMessage.message);
-  const media = content?.audioMessage || content?.imageMessage;
+  const media = content?.audioMessage || content?.imageMessage || content?.stickerMessage;
   if (!media) return;
   if (Number(media.fileLength || 0) > MAX_MEDIA_BYTES) return; // skip huge files
 
@@ -595,7 +680,8 @@ async function captureMedia(rawMessage, msg) {
   });
   if (!buffer || buffer.length > MAX_MEDIA_BYTES) return;
   // "audio/ogg; codecs=opus" → "audio/ogg" (what the AI APIs expect).
-  const mime = (media.mimetype || (content.audioMessage ? "audio/ogg" : "image/jpeg"))
+  const mime = (media.mimetype ||
+    (content.audioMessage ? "audio/ogg" : content.stickerMessage ? "image/webp" : "image/jpeg"))
     .split(";")[0]
     .trim();
   await saveMedia(msg.id, mime, buffer);
@@ -633,14 +719,95 @@ app.get("/media/:id", async (req, res) => {
   }
 });
 
+// Mark a chat read on the phone itself — the customer sees blue ticks and the
+// phone's unread badge clears, exactly like opening the chat in WhatsApp.
+app.post("/read", async (req, res) => {
+  if (!ready || !sock) return res.status(503).json({ error: "WhatsApp not linked yet" });
+  const { chatId } = req.body;
+  if (!chatId) return res.status(400).json({ error: "chatId required" });
+  try {
+    let ids = [];
+    if (pool) {
+      const { rows } = await pool.query(
+        "select id from wa_messages where jid = $1 and from_me = false order by ts desc limit 20",
+        [chatId]
+      );
+      ids = rows.map((r) => r.id);
+    } else {
+      const chatMsgs = memMessages.get(chatId);
+      if (chatMsgs) {
+        ids = [...chatMsgs.values()]
+          .filter((m) => !m.fromMe)
+          .slice(-20)
+          .map((m) => m.id);
+      }
+    }
+    if (ids.length > 0) {
+      await sock.readMessages(ids.map((id) => ({ remoteJid: chatId, id, fromMe: false })));
+    }
+    await resetUnread(chatId);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Profile pictures, cached for 6h — WhatsApp rate-limits this lookup, and
+// most avatars barely change. null = no picture / hidden by privacy settings.
+const avatarCache = new Map(); // jid -> { url, ts }
+app.get("/avatar/:jid", async (req, res) => {
+  if (!ready || !sock) return res.status(503).json({ error: "WhatsApp not linked yet" });
+  const jid = req.params.jid;
+  const cached = avatarCache.get(jid);
+  if (cached && Date.now() - cached.ts < 6 * 60 * 60 * 1000) return res.json({ url: cached.url });
+  try {
+    const url = await sock.profilePictureUrl(jid, "preview").catch(() => null);
+    avatarCache.set(jid, { url: url ?? null, ts: Date.now() });
+    res.json({ url: url ?? null });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Presence: show "typing…" on the customer's phone while the operator types.
+app.post("/typing", async (req, res) => {
+  if (!ready || !sock) return res.status(503).json({ error: "WhatsApp not linked yet" });
+  const { chatId, state } = req.body;
+  if (!chatId || !["composing", "paused"].includes(state)) {
+    return res.status(400).json({ error: "chatId and state (composing|paused) required" });
+  }
+  try {
+    await sock.sendPresenceUpdate(state, chatId);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.post("/send", async (req, res) => {
   if (!ready || !sock) {
     return res.status(503).json({ error: "WhatsApp not linked yet — scan the QR at /qr" });
   }
-  const { chatId, text } = req.body;
-  if (!chatId || !text) return res.status(400).json({ error: "chatId and text required" });
+  const { chatId, text, media } = req.body;
+  if (!chatId || (!text && !media?.data)) {
+    return res.status(400).json({ error: "chatId and text (or media) required" });
+  }
   try {
-    const sent = await sock.sendMessage(chatId, { text });
+    let sent;
+    let mediaBuffer = null;
+    if (media?.data) {
+      mediaBuffer = Buffer.from(media.data, "base64");
+      if (mediaBuffer.length > MAX_MEDIA_BYTES) {
+        return res.status(400).json({ error: "media too large (6 MB max)" });
+      }
+      sent = await sock.sendMessage(chatId, {
+        image: mediaBuffer,
+        mimetype: media.mime || "image/jpeg",
+        caption: text || undefined,
+      });
+    } else {
+      sent = await sock.sendMessage(chatId, { text });
+    }
     // Answer as soon as WhatsApp accepts the message — persisting to Postgres
     // (2 round trips to a remote DB) happens after, so the UI isn't kept waiting.
     res.json({ ok: true });
@@ -652,6 +819,12 @@ app.post("/send", async (req, res) => {
           if (isNew) emitMessage(msg);
         })
         .catch((err) => console.error("[cyborg-wa-worker] failed to store sent message:", err.message));
+      // Keep the sent photo's bytes so the dashboard can render it inline.
+      if (mediaBuffer) {
+        saveMedia(msg.id, (media.mime || "image/jpeg").split(";")[0].trim(), mediaBuffer).catch(
+          () => {}
+        );
+      }
     }
   } catch (err) {
     res.status(500).json({ error: String(err) });

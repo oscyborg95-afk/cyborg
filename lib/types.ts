@@ -184,4 +184,10 @@ export interface WaMessage {
   fromMe: boolean;
   timestamp: number;
   senderName: string;
+  // Delivery state for fromMe messages (WhatsApp ack levels):
+  // 0 error · 1 pending · 2 sent ✓ · 3 delivered ✓✓ · 4 read · 5 played
+  status?: number;
+  // Media kind when the message carries bytes the worker captured
+  // ("image" | "audio" | "sticker"), "" / undefined for plain text.
+  media?: string;
 }

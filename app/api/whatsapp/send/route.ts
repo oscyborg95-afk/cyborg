@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { sendWhatsAppMessage, WorkerOfflineError } from "@/lib/wa";
 
 export async function POST(req: NextRequest) {
-  const { chatId, text } = await req.json();
-  if (!chatId || !text) {
-    return NextResponse.json({ error: "chatId and text are required" }, { status: 400 });
+  const { chatId, text, media } = await req.json();
+  if (!chatId || (!text && !media?.data)) {
+    return NextResponse.json({ error: "chatId and text (or media) are required" }, { status: 400 });
   }
   try {
-    await sendWhatsAppMessage(chatId, text);
+    await sendWhatsAppMessage(chatId, text ?? "", media);
     return NextResponse.json({ ok: true });
   } catch (err) {
     const offline = err instanceof WorkerOfflineError;

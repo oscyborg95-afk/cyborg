@@ -20,11 +20,17 @@ export async function workerFetch<T>(path: string, init?: RequestInit): Promise<
   return data as T;
 }
 
-export function sendWhatsAppMessage(chatId: string, text: string) {
+// An image riding with (or instead of) the text — base64 bytes + mime.
+export interface WaOutboundMedia {
+  mime: string;
+  data: string;
+}
+
+export function sendWhatsAppMessage(chatId: string, text: string, media?: WaOutboundMedia) {
   return workerFetch<{ ok: boolean }>("/send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chatId, text }),
+    body: JSON.stringify({ chatId, text, media }),
   });
 }
 

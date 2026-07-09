@@ -72,6 +72,180 @@ interface Draft {
 const inputCls =
   "mt-1 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog";
 
+// --- WhatsApp-style time formatting -----------------------------------------
+
+const timeFmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+function startOfDay(ts: number): number {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+// Chat-list timestamp: time today, "Yesterday", weekday inside a week, else date.
+function fmtChatTime(ts: number, now: number): string {
+  if (!ts) return "";
+  const today = startOfDay(now);
+  if (ts >= today) return timeFmt.format(ts);
+  if (ts >= today - 86_400_000) return "Yesterday";
+  if (ts >= today - 6 * 86_400_000)
+    return new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(ts);
+  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit" }).format(ts);
+}
+
+// Day-separator label between message groups.
+function fmtDayLabel(ts: number, now: number): string {
+  const today = startOfDay(now);
+  if (ts >= today) return "Today";
+  if (ts >= today - 86_400_000) return "Yesterday";
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  }).format(ts);
+}
+
+// Delivery ticks for our own messages: 🕓 pending, ✓ sent, ✓✓ delivered, ✓✓ read.
+function Ticks({ status }: { status?: number }) {
+  if (status === undefined) return null;
+  if (status <= 1) return <span className="text-[10px] opacity-70">🕓</span>;
+  const read = status >= 4;
+  return (
+    <span className={"text-[11px] font-extrabold " + (read ? "text-[#53bdeb]" : "opacity-70")}>
+      {status >= 3 ? "✓✓" : "✓"}
+    </span>
+  );
+}
+
+// --- Avatars (profile pictures with initials fallback) ----------------------
+
+const avatarCache = new Map<string, string | null>(); // jid -> url (null = none)
+const avatarInFlight = new Map<string, Promise<string | null>>();
+
+function fetchAvatar(jid: string): Promise<string | null> {
+  if (avatarCache.has(jid)) return Promise.resolve(avatarCache.get(jid)!);
+  let p = avatarInFlight.get(jid);
+  if (!p) {
+    p = fetch(`${WORKER_URL}/avatar/${encodeURIComponent(jid)}`)
+      .then((r) => (r.ok ? r.json() : { url: null }))
+      .then((d: { url: string | null }) => {
+        avatarCache.set(jid, d.url);
+        avatarInFlight.delete(jid);
+        return d.url;
+      })
+      .catch(() => {
+        avatarInFlight.delete(jid);
+        return null;
+      });
+    avatarInFlight.set(jid, p);
+  }
+  return p;
+}
+
+const AVATAR_TONES = ["#7ac74f", "#5aa9e6", "#b088f9", "#f4a259", "#e5989b", "#48b8a0"];
+
+function Avatar({ jid, name, size = 44 }: { jid: string; name: string; size?: number }) {
+  const [url, setUrl] = useState<string | null>(() => avatarCache.get(jid) ?? null);
+  useEffect(() => {
+    let alive = true;
+    fetchAvatar(jid).then((u) => alive && setUrl(u));
+    return () => {
+      alive = false;
+    };
+  }, [jid]);
+  const initials = (name || "?")
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("");
+  const tone = AVATAR_TONES[[...jid].reduce((s, ch) => s + ch.charCodeAt(0), 0) % AVATAR_TONES.length];
+  if (url) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- WhatsApp CDN url, not a static asset
+      <img
+        src={url}
+        alt=""
+        width={size}
+        height={size}
+        className="shrink-0 rounded-full object-cover"
+        style={{ width: size, height: size }}
+        onError={() => setUrl(null)}
+      />
+    );
+  }
+  return (
+    <div
+      className="flex shrink-0 items-center justify-center rounded-full font-display font-extrabold text-white"
+      style={{ width: size, height: size, background: tone, fontSize: size * 0.38 }}
+    >
+      {initials || "?"}
+    </div>
+  );
+}
+
+// --- Inline media (photos, voice notes, stickers) ----------------------------
+
+type MediaBytes = { mime: string; data: string } | "missing";
+const mediaCache = new Map<string, MediaBytes>();
+
+/** Seed the cache (used for instant optimistic rendering of a just-sent photo). */
+function seedMediaCache(id: string, mime: string, data: string) {
+  mediaCache.set(id, { mime, data });
+}
+
+function MediaBubble({ msg }: { msg: WaMessage }) {
+  const [bytes, setBytes] = useState<MediaBytes | null>(() => mediaCache.get(msg.id) ?? null);
+  useEffect(() => {
+    if (mediaCache.has(msg.id)) {
+      setBytes(mediaCache.get(msg.id)!);
+      return;
+    }
+    let alive = true;
+    fetch(`${WORKER_URL}/media/${encodeURIComponent(msg.id)}`)
+      .then((r) => (r.ok ? r.json() : "missing"))
+      .then((d: MediaBytes) => {
+        const v = d === "missing" || !("data" in (d as object)) ? "missing" : d;
+        mediaCache.set(msg.id, v as MediaBytes);
+        if (alive) setBytes(v as MediaBytes);
+      })
+      .catch(() => alive && setBytes("missing"));
+    return () => {
+      alive = false;
+    };
+  }, [msg.id]);
+
+  const placeholder = msg.media === "audio" ? "🎤 Voice note" : msg.media === "sticker" ? "💟 Sticker" : "📷 Photo";
+  if (bytes === null) {
+    return (
+      <div className="flex h-24 w-40 animate-pulse items-center justify-center rounded-xl bg-black/10 text-xs font-bold opacity-70">
+        {placeholder}
+      </div>
+    );
+  }
+  if (bytes === "missing") {
+    return <p className="text-xs font-semibold italic opacity-70">{placeholder} — no longer available</p>;
+  }
+  const src = `data:${bytes.mime};base64,${bytes.data}`;
+  if (msg.media === "audio") {
+    return <audio controls src={src} className="max-w-[240px]" preload="metadata" />;
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- base64 chat media, not a static asset
+    <img
+      src={src}
+      alt=""
+      className={
+        "cursor-pointer rounded-xl object-cover " +
+        (msg.media === "sticker" ? "h-28 w-28" : "max-h-72 max-w-full")
+      }
+      onClick={() => {
+        const w = window.open();
+        w?.document.write(`<body style="margin:0;background:#111;display:grid;place-items:center;height:100vh"><img src="${src}" style="max-width:100vw;max-height:100vh" /></body>`);
+      }}
+    />
+  );
+}
+
 export default function Workspace() {
   const [chats, setChats] = useState<WaChat[]>([]);
   const [activeChatId, setActiveChatId] = useState<null | string>(null);
@@ -100,12 +274,21 @@ export default function Workspace() {
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [xpBurst, setXpBurst] = useState<{ id: number; title: string; sub?: string } | null>(null);
+  // Photo staged in the composer, ready to send with an optional caption.
+  const [attach, setAttach] = useState<{ mime: string; data: string } | null>(null);
+  const [sendingPhoto, setSendingPhoto] = useState(false);
 
   const activeChatIdRef = useRef<string | null>(null);
   activeChatIdRef.current = activeChatId;
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const prevWaReadyRef = useRef<boolean | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  // Typing-presence throttle: at most one "composing" ping per 4s, "paused" after 3s idle.
+  const typingRef = useRef<{ last: number; timer: ReturnType<typeof setTimeout> | null }>({
+    last: 0,
+    timer: null,
+  });
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
   const activePhone = activeChatId ? chatIdToPhone(activeChatId) : null;
@@ -213,6 +396,16 @@ export default function Workspace() {
     socket.on("disconnect", () => setWorkerOffline(true));
     socket.on("wa:status", ({ ready: r }: { ready: boolean }) => setWaReady(r));
     socket.on("wa:qr", ({ qr }: { qr: string }) => setQrImage(qr));
+    // Delivery acks: bump the ticks on our bubbles as WhatsApp confirms them.
+    socket.on(
+      "wa:update",
+      ({ id, chatId, status }: { id: string; chatId: string; status: number }) => {
+        if (chatId !== activeChatIdRef.current) return;
+        setMessages((prev) =>
+          prev.map((m) => (m.id === id ? { ...m, status: Math.max(m.status ?? 0, status) } : m))
+        );
+      }
+    );
     socket.on("wa:message", (msg: WaMessage) => {
       if (msg.chatId === activeChatIdRef.current) {
         setMessages((prev) => {
@@ -296,8 +489,38 @@ export default function Workspace() {
     setConfirmText(null);
     setNotice(null);
     setError(null);
+    setAttach(null);
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, unreadCount: 0 } : c)));
+    // Mark read on the phone too — blue ticks for the customer, badge cleared.
+    fetch(`${WORKER_URL}/read`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId }),
+    }).catch(() => {});
     await loadMessages(chatId);
+  }
+
+  // Show "typing…" on the customer's phone while the operator writes.
+  function pingTyping() {
+    const chatId = activeChatIdRef.current;
+    if (!chatId) return;
+    const t = typingRef.current;
+    const nowMs = Date.now();
+    const post = (state: "composing" | "paused") =>
+      fetch(`${WORKER_URL}/typing`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId, state }),
+      }).catch(() => {});
+    if (nowMs - t.last > 4000) {
+      t.last = nowMs;
+      post("composing");
+    }
+    if (t.timer) clearTimeout(t.timer);
+    t.timer = setTimeout(() => {
+      t.last = 0;
+      post("paused");
+    }, 3000);
   }
 
   async function setChatState(state: ChatStateValue) {
@@ -328,6 +551,7 @@ export default function Workspace() {
       fromMe: true,
       timestamp: Date.now(),
       senderName: "You",
+      status: 1,
     };
     setMessages((prev) => [...prev, temp]);
     const res = await fetch("/api/whatsapp/send", {
@@ -345,7 +569,62 @@ export default function Workspace() {
     return true;
   }
 
+  // Send the staged photo (with the typed text as its caption).
+  async function sendPhoto() {
+    if (!activeChatId || !attach) return;
+    setSendingPhoto(true);
+    setError(null);
+    const caption = input.trim();
+    const temp: WaMessage = {
+      id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      chatId: activeChatId,
+      body: caption || "[photo]",
+      fromMe: true,
+      timestamp: Date.now(),
+      senderName: "You",
+      status: 1,
+      media: "image",
+    };
+    seedMediaCache(temp.id, attach.mime, attach.data); // renders instantly
+    setMessages((prev) => [...prev, temp]);
+    try {
+      const res = await fetch("/api/whatsapp/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId: activeChatId, text: caption, media: attach }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Send failed");
+      setAttach(null);
+      setInput("");
+    } catch (err) {
+      setMessages((prev) => prev.filter((m) => m.id !== temp.id));
+      setError(err instanceof Error ? err.message : "Photo send failed");
+    } finally {
+      setSendingPhoto(false);
+    }
+  }
+
+  function stagePhoto(file: File) {
+    if (!file.type.startsWith("image/")) return;
+    if (file.size > 5 * 1024 * 1024) {
+      setError("Photo too big — 5 MB max.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+      setAttach({ mime: file.type, data: base64 });
+    };
+    reader.readAsDataURL(file);
+  }
+
   async function handleSend() {
+    if (attach) {
+      await sendPhoto();
+      return;
+    }
     const text = input;
     setInput("");
     const ok = await sendText(text);
@@ -695,31 +974,60 @@ export default function Workspace() {
                 key={chat.id}
                 onClick={() => selectChat(chat.id)}
                 className={
-                  "block w-full border-b border-cardline/60 px-3 py-2.5 text-left transition hover:bg-pond/40 " +
+                  "flex w-full items-center gap-2.5 border-b border-cardline/60 px-3 py-2.5 text-left transition hover:bg-pond/40 " +
                   (chat.id === activeChatId ? "bg-pond/70" : "")
                 }
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate font-display text-sm font-bold text-ink">
-                    {chat.unreadCount > 0 && (
-                      <span className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-frog align-middle" />
-                    )}
-                    {chat.name}
-                  </span>
-                  <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 font-display text-[10px] font-extrabold ${badge.className}`}
-                  >
-                    {badge.label}
-                  </span>
+                <Avatar jid={chat.id} name={chat.name} size={42} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={
+                        "truncate font-display text-sm text-ink " +
+                        (chat.unreadCount > 0 ? "font-extrabold" : "font-bold")
+                      }
+                    >
+                      {chat.name}
+                    </span>
+                    <span
+                      className={
+                        "shrink-0 font-display text-[10px] font-bold " +
+                        (chat.unreadCount > 0 ? "text-frog-dark" : "text-ink-soft")
+                      }
+                    >
+                      {fmtChatTime(chat.timestamp, now)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex items-center justify-between gap-2">
+                    <p
+                      className={
+                        "truncate text-xs " +
+                        (chat.unreadCount > 0
+                          ? "font-bold text-ink"
+                          : "font-semibold text-ink-soft")
+                      }
+                    >
+                      {chat.lastMessage}
+                    </p>
+                    <span className="flex shrink-0 items-center gap-1">
+                      {chat.unreadCount > 0 && (
+                        <span className="flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-frog px-1 font-display text-[10px] font-extrabold leading-none text-white">
+                          {chat.unreadCount}
+                        </span>
+                      )}
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 font-display text-[9px] font-extrabold ${badge.className}`}
+                      >
+                        {badge.label}
+                      </span>
+                    </span>
+                  </div>
+                  {stale && chatState && (
+                    <p className="mt-0.5 font-display text-[10px] font-extrabold text-gold-dark">
+                      ⏰ stuck {hoursStuck(chatState, now)}h — send a nudge
+                    </p>
+                  )}
                 </div>
-                <p className="mt-0.5 truncate text-xs font-semibold text-ink-soft">
-                  {chat.lastMessage}
-                </p>
-                {stale && chatState && (
-                  <p className="mt-0.5 font-display text-[10px] font-extrabold text-gold-dark">
-                    ⏰ stuck {hoursStuck(chatState, now)}h — send a nudge
-                  </p>
-                )}
               </button>
             );
           })}
@@ -739,6 +1047,7 @@ export default function Workspace() {
         {activeChat ? (
           <>
             <div className="flex items-center gap-3 border-b-2 border-cardline bg-white/60 px-4 py-2">
+              <Avatar jid={activeChat.id} name={activeChat.name} size={40} />
               <div>
                 <div className="font-display text-base font-extrabold text-ink">
                   {activeChat.name}
@@ -758,21 +1067,55 @@ export default function Workspace() {
               </select>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
-              {messages.map((m) => (
-                <div key={m.id} className={m.fromMe ? "flex justify-end" : "flex justify-start"}>
-                  <div
-                    className={
-                      "max-w-[70%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm font-semibold shadow-sm " +
-                      (m.fromMe
-                        ? "rounded-br-md bg-frog text-white"
-                        : "rounded-bl-md border-2 border-cardline bg-white text-ink")
-                    }
-                  >
-                    {m.body}
+            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto bg-cream/40 p-4">
+              {messages.map((m, i) => {
+                const prev = messages[i - 1];
+                const newDay = !prev || startOfDay(prev.timestamp) !== startOfDay(m.timestamp);
+                // Media placeholders ("[photo]") aren't captions — hide them
+                // under the rendered media; real captions show below the image.
+                const isPlaceholder = /^\[(photo|video|voice note|document|sticker|location)\]$/.test(
+                  m.body
+                );
+                return (
+                  <div key={m.id}>
+                    {newDay && (
+                      <div className="my-3 flex justify-center">
+                        <span className="rounded-full bg-white px-3 py-1 font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft shadow-sm">
+                          {fmtDayLabel(m.timestamp, now)}
+                        </span>
+                      </div>
+                    )}
+                    <div className={m.fromMe ? "flex justify-end" : "flex justify-start"}>
+                      <div
+                        className={
+                          "max-w-[70%] rounded-2xl px-3 py-2 text-sm font-semibold shadow-sm " +
+                          (m.fromMe
+                            ? "rounded-br-md bg-frog text-white"
+                            : "rounded-bl-md border-2 border-cardline bg-white text-ink")
+                        }
+                      >
+                        {m.media ? (
+                          <div className="space-y-1.5">
+                            <MediaBubble msg={m} />
+                            {!isPlaceholder && <p className="whitespace-pre-wrap">{m.body}</p>}
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-wrap">{m.body}</p>
+                        )}
+                        <div
+                          className={
+                            "mt-0.5 flex items-center justify-end gap-1 text-[10px] font-bold " +
+                            (m.fromMe ? "text-white/80" : "text-ink-soft")
+                          }
+                        >
+                          <span>{timeFmt.format(m.timestamp)}</span>
+                          {m.fromMe && <Ticks status={m.status} />}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               <div ref={bottomRef} />
             </div>
 
@@ -806,16 +1149,80 @@ export default function Workspace() {
               </Button>
             </div>
 
-            <div className="flex gap-2 border-t-2 border-cardline bg-white/60 p-3">
+            {attach && (
+              <div className="flex items-center gap-3 border-t-2 border-cardline bg-white/80 px-4 py-2">
+                {/* eslint-disable-next-line @next/next/no-img-element -- staged upload preview */}
+                <img
+                  src={`data:${attach.mime};base64,${attach.data}`}
+                  alt=""
+                  className="h-16 w-16 rounded-xl object-cover"
+                />
+                <p className="flex-1 font-display text-xs font-bold text-ink-soft">
+                  📎 Photo ready — the message box below becomes its caption.
+                </p>
+                <button
+                  onClick={() => setAttach(null)}
+                  className="rounded-lg px-2 py-1 font-display text-xs font-bold text-flame-dark hover:bg-flame-tint"
+                >
+                  ✕ Remove
+                </button>
+              </div>
+            )}
+            <div className="flex items-end gap-2 border-t-2 border-cardline bg-white/60 p-3">
               <input
-                className="flex-1 rounded-xl border-2 border-cardline bg-white px-3.5 py-2.5 text-sm font-semibold text-ink outline-none focus:border-frog"
-                placeholder="Type a message…"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) stagePhoto(f);
+                  e.target.value = "";
+                }}
               />
-              <Button tone="frog" onClick={handleSend} disabled={!input.trim()}>
-                Send
+              <button
+                onClick={() => fileRef.current?.click()}
+                title="Attach a photo"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border-2 border-cardline bg-white text-lg transition hover:border-frog hover:bg-pond"
+              >
+                📎
+              </button>
+              <textarea
+                rows={1}
+                className="max-h-28 flex-1 resize-none rounded-xl border-2 border-cardline bg-white px-3.5 py-2.5 text-sm font-semibold text-ink outline-none focus:border-frog"
+                placeholder={attach ? "Add a caption… (Enter to send)" : "Type a message…  (Enter sends, Shift+Enter = new line)"}
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  pingTyping();
+                  // Autosize up to ~4 lines, like WhatsApp's composer.
+                  e.target.style.height = "auto";
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 112)}px`;
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                    (e.target as HTMLTextAreaElement).style.height = "auto";
+                  }
+                }}
+                onPaste={(e) => {
+                  // Pasting a screenshot stages it as a photo, like WhatsApp Web.
+                  const file = [...e.clipboardData.items]
+                    .find((it) => it.type.startsWith("image/"))
+                    ?.getAsFile();
+                  if (file) {
+                    e.preventDefault();
+                    stagePhoto(file);
+                  }
+                }}
+              />
+              <Button
+                tone="frog"
+                onClick={handleSend}
+                disabled={sendingPhoto || (!input.trim() && !attach)}
+              >
+                {sendingPhoto ? "…" : attach ? "Send 📷" : "Send"}
               </Button>
             </div>
           </>
