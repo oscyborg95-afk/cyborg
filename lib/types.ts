@@ -148,6 +148,10 @@ export interface BusinessSettings {
   courier_cost_base: number;
   courier_return_cost: number;
   courier_cost_overrides: CourierCostOverrides;
+  // Operator's own Gemini API key(s) for AI address parsing, one per line.
+  // When set, overrides the GEMINI_API_KEY env var; the parser rotates to the
+  // next key on a rate-limit (429). Empty string = fall back to the env key.
+  gemini_api_key: string;
 }
 
 export interface WaChat {

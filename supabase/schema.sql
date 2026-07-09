@@ -85,7 +85,11 @@ create table if not exists business_settings (
   -- fee eaten on a returned parcel (the round-trip loss).
   courier_cost_base      numeric not null default 350,
   courier_return_cost    numeric not null default 200,
-  courier_cost_overrides jsonb   not null default '{}'::jsonb -- { "Jaffna": 450, ... } delivered-cost overrides
+  courier_cost_overrides jsonb   not null default '{}'::jsonb, -- { "Jaffna": 450, ... } delivered-cost overrides
+  -- Operator's own Gemini API key(s) for AI address parsing. One key per line;
+  -- the parser rotates to the next key when one hits its free-tier rate limit.
+  -- Overrides the GEMINI_API_KEY env var when set.
+  gemini_api_key   varchar not null default ''
 );
 insert into business_settings (id) values (1) on conflict do nothing;
 

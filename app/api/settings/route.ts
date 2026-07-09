@@ -41,6 +41,17 @@ function sanitizePrefix(raw: unknown): string {
   return cleaned || "DC";
 }
 
+// One or more Gemini API keys, one per line. Trim each line, drop blanks and
+// dupes, and keep the multi-line shape the parser expects for key rotation.
+function sanitizeApiKeys(raw: unknown): string {
+  const seen = new Set<string>();
+  for (const line of String(raw ?? "").split(/[\r\n]+/)) {
+    const key = line.trim();
+    if (key) seen.add(key);
+  }
+  return [...seen].join("\n");
+}
+
 export async function GET() {
   try {
     return NextResponse.json({ settings: await getSettings() });
@@ -65,6 +76,7 @@ export async function POST(req: NextRequest) {
     courier_cost_base: Number(body.courier_cost_base ?? 0),
     courier_return_cost: Number(body.courier_return_cost ?? 0),
     courier_cost_overrides: sanitizeCourierOverrides(body.courier_cost_overrides),
+    gemini_api_key: sanitizeApiKeys(body.gemini_api_key),
   };
   if (
     [

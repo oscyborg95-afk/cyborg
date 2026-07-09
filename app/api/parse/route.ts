@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { parseRawAddress, type MediaAttachment } from "@/lib/parse";
 import { shippingFeeFor } from "@/lib/districts";
 import { fetchWaMedia } from "@/lib/wa";
+import { getSettings } from "@/lib/db";
 
 // Parse delivery details out of chat text, and optionally out of voice notes /
 // photos: media_ids are WhatsApp message ids whose bytes the worker captured.
@@ -22,8 +23,14 @@ export async function POST(req: NextRequest) {
     await Promise.all(mediaIds.map((id) => fetchWaMedia(id).catch(() => null)))
   ).filter((m): m is MediaAttachment => m !== null);
 
+  // The operator's Gemini key(s) live in Settings; fall back to the env var
+  // inside parseRawAddress when none is configured.
+  const settings = await getSettings().catch(() => null);
+
   try {
-    const parsed = await parseRawAddress(raw_text, media);
+    const parsed = await parseRawAddress(raw_text, media, {
+      geminiApiKey: settings?.gemini_api_key,
+    });
     return NextResponse.json({
       ...parsed,
       shipping_fee: shippingFeeFor(parsed.district),

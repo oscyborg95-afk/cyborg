@@ -3,7 +3,9 @@ import { DISTRICTS } from "./districts";
 import type { ParsedAddress } from "./types";
 
 // AI address parsing. Provider is picked by which key is set (checked in this order):
-//   1. GEMINI_API_KEY    — Google AI Studio, free tier (https://aistudio.google.com/apikey)
+//   1. Gemini key(s)     — from Settings (business_settings.gemini_api_key) first,
+//                          else the GEMINI_API_KEY env var. Google AI Studio, free
+//                          tier (https://aistudio.google.com/apikey).
 //   2. ANTHROPIC_API_KEY — Claude fallback for anyone who already has one
 // Both are forced into the same JSON schema, so the rest of the app doesn't care.
 
@@ -36,14 +38,32 @@ export interface MediaAttachment {
   data: string;
 }
 
+export interface ParseOptions {
+  // One or more Gemini API keys from Settings, newline/comma/space separated.
+  // When present these win over the GEMINI_API_KEY env var.
+  geminiApiKey?: string;
+}
+
+// Split a stored key blob into a de-duplicated list of individual keys.
+function splitKeys(raw?: string | null): string[] {
+  if (!raw) return [];
+  return [...new Set(raw.split(/[\s,]+/).map((k) => k.trim()).filter(Boolean))];
+}
+
 export async function parseRawAddress(
   rawText: string,
-  media: MediaAttachment[] = []
+  media: MediaAttachment[] = [],
+  opts: ParseOptions = {}
 ): Promise<ParsedAddress> {
-  if (process.env.GEMINI_API_KEY) return parseWithGemini(rawText, media);
+  // Operator-configured keys take priority; fall back to the env var.
+  const geminiKeys = splitKeys(opts.geminiApiKey);
+  if (geminiKeys.length === 0 && process.env.GEMINI_API_KEY) {
+    geminiKeys.push(process.env.GEMINI_API_KEY);
+  }
+  if (geminiKeys.length) return parseWithGemini(rawText, media, geminiKeys);
   if (process.env.ANTHROPIC_API_KEY) return parseWithClaude(rawText, media);
   throw new Error(
-    "No AI key configured. Get a free key at https://aistudio.google.com/apikey and set GEMINI_API_KEY in .env.local"
+    "No AI key configured. Add a Gemini API key in Settings (free at https://aistudio.google.com/apikey), or set GEMINI_API_KEY."
   );
 }
 
@@ -53,7 +73,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function parseWithGemini(
   rawText: string,
-  media: MediaAttachment[]
+  media: MediaAttachment[],
+  apiKeys: string[]
 ): Promise<ParsedAddress> {
   const requestBody = JSON.stringify({
     system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
@@ -97,32 +118,47 @@ async function parseWithGemini(
     },
   });
 
-  // Gemini occasionally returns 503 (UNAVAILABLE / "high demand") — a transient
-  // spike, not a real failure. Retry a few times with backoff so the operator
-  // never sees a blip from clicking Parse.
+  // One request for a single key. Gemini occasionally returns 503 (UNAVAILABLE /
+  // "high demand") — a transient spike, not a real failure — so retry a few
+  // times with backoff, so the operator never sees a blip from clicking Parse.
+  const callOnce = async (apiKey: string): Promise<Response> => {
+    let res: Response | null = null;
+    const backoffMs = [600, 1200, 2500];
+    for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+      res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+          body: requestBody,
+        }
+      );
+      if (res.status !== 503 || attempt === backoffMs.length) break;
+      await sleep(backoffMs[attempt]);
+    }
+    if (!res) throw new Error("Gemini request failed to start.");
+    return res;
+  };
+
+  // Try each configured key in turn: a rate-limited (429) key rotates to the
+  // next, so a single exhausted free-tier key doesn't block parsing when the
+  // operator has added spares in Settings.
   let res: Response | null = null;
-  const backoffMs = [600, 1200, 2500];
-  for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
-    res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": process.env.GEMINI_API_KEY!,
-        },
-        body: requestBody,
-      }
-    );
-    if (res.status !== 503 || attempt === backoffMs.length) break;
-    await sleep(backoffMs[attempt]);
+  for (let i = 0; i < apiKeys.length; i++) {
+    res = await callOnce(apiKeys[i]);
+    if (res.status === 429 && i < apiKeys.length - 1) continue;
+    break;
   }
   if (!res) throw new Error("Gemini request failed to start.");
 
   if (!res.ok) {
     const body = (await res.text()).slice(0, 300);
     if (res.status === 429) {
-      throw new Error("Gemini free-tier rate limit hit — wait a minute and try again.");
+      throw new Error(
+        apiKeys.length > 1
+          ? "All Gemini keys are rate-limited right now — wait a minute, or add another key in Settings."
+          : "Gemini free-tier rate limit hit — wait a minute, or add another key in Settings."
+      );
     }
     if (res.status === 503) {
       throw new Error("Gemini is busy right now (high demand) — please tap Parse again.");

@@ -100,6 +100,7 @@ const DEFAULT_SETTINGS: BusinessSettings = {
   courier_cost_base: 350,
   courier_return_cost: 200,
   courier_cost_overrides: {},
+  gemini_api_key: "",
 };
 
 // --- Orders ------------------------------------------------------------------
@@ -141,6 +142,9 @@ async function ensureOrderNoSchema(db: Queryable): Promise<void> {
   );
   await db.query(
     "alter table business_settings add column if not exists business_phone_2 varchar not null default ''"
+  );
+  await db.query(
+    "alter table business_settings add column if not exists gemini_api_key varchar not null default ''"
   );
   g.__orderNoReady = true;
 }
@@ -693,7 +697,8 @@ export async function getSettings(): Promise<BusinessSettings> {
       `select bank_cash, stock_units, stock_unit_cost,
               business_name, business_address, business_phone_1, business_phone_2,
               order_prefix, templates,
-              courier_cost_base, courier_return_cost, courier_cost_overrides
+              courier_cost_base, courier_return_cost, courier_cost_overrides,
+              gemini_api_key
        from business_settings where id = 1`
     );
     return rows[0] ? { ...DEFAULT_SETTINGS, ...(rows[0] as Partial<BusinessSettings>) } : DEFAULT_SETTINGS;
@@ -708,8 +713,8 @@ export async function updateSettings(settings: BusinessSettings): Promise<Busine
       `insert into business_settings
          (id, bank_cash, stock_units, stock_unit_cost,
           business_name, business_address, business_phone_1, business_phone_2, order_prefix, templates,
-          courier_cost_base, courier_return_cost, courier_cost_overrides)
-       values (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          courier_cost_base, courier_return_cost, courier_cost_overrides, gemini_api_key)
+       values (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        on conflict (id) do update set
          bank_cash = excluded.bank_cash,
          stock_units = excluded.stock_units,
@@ -722,7 +727,8 @@ export async function updateSettings(settings: BusinessSettings): Promise<Busine
          templates = excluded.templates,
          courier_cost_base = excluded.courier_cost_base,
          courier_return_cost = excluded.courier_return_cost,
-         courier_cost_overrides = excluded.courier_cost_overrides`,
+         courier_cost_overrides = excluded.courier_cost_overrides,
+         gemini_api_key = excluded.gemini_api_key`,
       [
         settings.bank_cash,
         settings.stock_units,
@@ -736,6 +742,7 @@ export async function updateSettings(settings: BusinessSettings): Promise<Busine
         settings.courier_cost_base,
         settings.courier_return_cost,
         JSON.stringify(settings.courier_cost_overrides ?? {}),
+        settings.gemini_api_key ?? "",
       ]
     );
     return settings;

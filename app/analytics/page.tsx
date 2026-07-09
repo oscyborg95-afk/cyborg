@@ -529,6 +529,41 @@ export default function QuestPage() {
         </div>
         <CourierOverridesEditor settings={settings} setSettings={setSettings} />
 
+        <h2 className="mb-1 mt-6 font-display text-lg font-extrabold text-ink">
+          🤖 AI address parsing
+        </h2>
+        <p className="mb-3 font-display text-xs font-bold text-ink-soft">
+          Your own Gemini API key powers &ldquo;Parse from chat&rdquo;. Paste{" "}
+          <strong>one key per line</strong> — when the free tier of one key hits its rate limit, the
+          parser automatically rotates to the next. Get free keys at{" "}
+          <a
+            href="https://aistudio.google.com/apikey"
+            target="_blank"
+            rel="noreferrer"
+            className="text-sky-dark underline"
+          >
+            aistudio.google.com/apikey
+          </a>
+          .
+        </p>
+        <label className="block font-display text-xs font-bold text-ink-soft">
+          Gemini API key(s)
+          <textarea
+            rows={3}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder={"AIzaSy…key-one\nAIzaSy…key-two (optional)"}
+            className="mt-1.5 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-mono text-sm font-semibold text-ink outline-none focus:border-frog"
+            value={settings.gemini_api_key}
+            onChange={(e) => setSettings({ ...settings, gemini_api_key: e.target.value })}
+          />
+        </label>
+        <p className="mt-1.5 font-display text-[11px] font-bold text-ink-soft">
+          {settings.gemini_api_key.trim()
+            ? `${settings.gemini_api_key.split(/[\r\n]+/).filter((k) => k.trim()).length} key(s) saved — used before the server's built-in key.`
+            : "No key set — parsing falls back to the server's GEMINI_API_KEY."}
+        </p>
+
         <Button tone="frog" onClick={saveSettings} disabled={saving} className="mt-5">
           {saving ? "Saving…" : "Save & recalculate"}
         </Button>
