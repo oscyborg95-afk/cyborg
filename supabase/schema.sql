@@ -119,6 +119,49 @@ create table if not exists ad_spend (
   amount numeric not null default 0
 );
 
+-- Actual courier settlement batches. Gross COD remains useful operationally,
+-- but bank cash increases only by amount_received (the net deposit).
+create table if not exists courier_remittances (
+  id                uuid primary key default gen_random_uuid(),
+  invoice_no        varchar not null unique,
+  paid_at           timestamptz not null,
+  source_filename   varchar not null,
+  source_mime       varchar not null default 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  source_file       bytea not null,
+  line_count        int not null,
+  matched_count     int not null default 0,
+  gross_cod         numeric not null,
+  collected_cod     numeric not null,
+  delivery_charges  numeric not null,
+  commission        numeric not null,
+  invoice_vat       numeric not null,
+  additional_tax    numeric not null default 0,
+  other_deductions  numeric not null default 0,
+  invoice_payable   numeric not null,
+  expected_net      numeric not null,
+  amount_received   numeric not null,
+  variance          numeric not null,
+  cash_applied      boolean not null default true,
+  notes             text not null default '',
+  created_at        timestamptz not null default now()
+);
+
+create table if not exists courier_remittance_lines (
+  id                 uuid primary key default gen_random_uuid(),
+  remittance_id      uuid not null references courier_remittances(id) on delete cascade,
+  matched_order_id   uuid references orders(id) on delete set null,
+  order_date         varchar not null default '',
+  waybill_id         varchar not null,
+  order_no           varchar not null default '',
+  cod                numeric not null,
+  collected_cod      numeric not null,
+  vat                numeric not null,
+  commission         numeric not null,
+  delivery_charge    numeric not null,
+  payable            numeric not null,
+  status             varchar not null default ''
+);
+
 -- For existing databases created before these columns were added:
 alter table orders add column if not exists city varchar not null default '';
 alter table orders add column if not exists item_name varchar not null default '';
@@ -131,6 +174,7 @@ alter table orders add column if not exists remitted_at timestamptz; -- COD payo
 alter table orders add column if not exists order_no varchar; -- short courier reference (DC-1001)
 alter table orders add column if not exists idempotency_key varchar;
 alter table orders add column if not exists archived_at timestamptz;
+alter table orders add column if not exists remittance_id uuid references courier_remittances(id) on delete set null;
 create unique index if not exists uq_orders_idempotency_key
   on orders(idempotency_key) where idempotency_key is not null;
 alter table business_settings add column if not exists order_prefix varchar not null default 'DC';

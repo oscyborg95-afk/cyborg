@@ -9,7 +9,7 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 | Route | What it is |
 |---|---|
 | `/` | **Three-panel workspace** — searchable inbox (`/` to search, `j`/`k` to move) with triage filters and a follow-up queue for chats stuck mid-order, live chat with a state-aware quick-action bar, and the logistics copilot (parse from chat → COD risk check → dispatch → auto-message the customer) |
-| `/orders` | Manual fallback flow (paste → parse → book → copy), order status bookkeeping, cash reconciliation (courier payouts → bank cash), returned-order redelivery flow, CSV export |
+| `/orders` | Manual fallback flow (paste → parse → book → copy), order status bookkeeping, courier invoice upload and net-payout reconciliation, returned-order redelivery flow, CSV export |
 | `/broadcast` | Rate-limited WhatsApp blast to past customers (launches/restocks) |
 | `/analytics` | High-score board — levels, dispatch streak, net worth — plus return rates by district/product and an ad-spend/ROAS tracker |
 | `/login` | Operator login (only when `APP_PASSWORD` is set) |
@@ -48,7 +48,7 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 | COD risk scoring (per-phone delivery history) | `lib/risk.ts` |
 | Follow-up queue (stale AWAITING_* chats → one-tap Sinhala nudge) | `app/page.tsx`, templates `followUpAddress` / `followUpConfirm` |
 | Proactive tracking alerts (out-for-delivery / delivered / returned auto-messages) | `app/api/track/sync/route.ts` |
-| Cash reconciliation (courier payout batches → bank cash) | `app/api/remittance/route.ts`, Orders page |
+| Cash reconciliation (XLSX invoice → gross COD, fees, commission, VAT/tax, actual bank receipt, variance) | `app/api/remittance/route.ts`, Orders page |
 | Return workflow (redeliver offer + one-click re-book) | `app/api/orders/[id]/rebook/route.ts` |
 | Ad spend + ROAS (manual daily entry, delivered-revenue attribution) | `app/api/adspend/route.ts`, Quest page |
 | Broadcast (rate-limited, past customers only) | `app/broadcast/page.tsx` |
@@ -74,8 +74,10 @@ parsing, one-click courier dispatch, and a gamified high-score board.
    `/analytics`, a courier return puts the unit back into product stock automatically,
    and the customer is auto-messaged on out-for-delivery / delivered / returned.
    A cron can also drive it: `POST /api/track/sync`.
-5. When the courier hands over the COD payout, hit **Payout received** on `/orders` —
-   the delivered total moves into bank cash on the Quest board.
+5. When the Friday courier payout lands, upload its `InvoiceDetails.xlsx` on `/orders`,
+   verify delivery/commission/VAT deductions, enter the actual bank receipt, and record it.
+   Bank cash increases by the actual net receipt—not gross COD. Disable the bank-cash switch
+   when the balance was already updated manually.
 
 ## Customizing
 

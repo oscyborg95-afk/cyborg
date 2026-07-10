@@ -27,6 +27,7 @@ import { Froggy } from "../components/froggy";
 import { Button, Card } from "../components/ui";
 import { CityPicker } from "../components/city-picker";
 import { ItemsEditor } from "../components/items-editor";
+import { RemittancePanel } from "../components/remittance-panel";
 
 // Manual fallback flow: paste → parse → verify → save → book → copy.
 // The realtime workspace at / replaces this for day-to-day work, but this page
@@ -166,7 +167,6 @@ export default function OrdersPage() {
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [msgTemplates, setMsgTemplates] = useState<MessageTemplates>({});
   const [search, setSearch] = useState("");
-  const [remitting, setRemitting] = useState(false);
   const [redeliverSentId, setRedeliverSentId] = useState<string | null>(null);
   const [rebookingId, setRebookingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -441,34 +441,6 @@ export default function OrdersPage() {
   const unremitted = orders.filter((o) => o.order_status === "delivered" && !o.remitted_at);
   const unremittedTotal = unremitted.reduce((sum, o) => sum + Number(o.total_cod), 0);
 
-  async function handleRemit() {
-    if (
-      !confirm(
-        `Mark the courier payout as received?\n\nRs. ${Math.round(unremittedTotal).toLocaleString("en-LK")} across ${unremitted.length} delivered order${unremitted.length === 1 ? "" : "s"} moves into bank cash.`
-      )
-    )
-      return;
-    setRemitting(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/remittance", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ order_ids: unremitted.map((o) => o.id) }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setSyncNote(
-        `💵 Payout received — Rs. ${Math.round(data.total).toLocaleString("en-LK")} (${data.count} orders) added to bank cash.`
-      );
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Remittance failed");
-    } finally {
-      setRemitting(false);
-    }
-  }
-
   function handleExportCsv() {
     const csv = ordersToCsv(orders, manifests);
     // BOM so Excel opens the Sinhala names correctly.
@@ -531,26 +503,14 @@ export default function OrdersPage() {
         </div>
       </header>
 
-      {unremitted.length > 0 && (
-        <Card className="!border-gold bg-gold/10 p-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex-1">
-              <p className="font-display text-sm font-extrabold text-ink">
-                💵 Awaiting courier payout: Rs.{" "}
-                {Math.round(unremittedTotal).toLocaleString("en-LK")}
-              </p>
-              <p className="font-display text-xs font-bold text-ink-soft">
-                {unremitted.length} delivered order{unremitted.length === 1 ? "" : "s"} whose COD
-                the courier hasn&apos;t handed over yet. When the payout lands, mark it received —
-                the total moves into bank cash on the Quest page.
-              </p>
-            </div>
-            <Button tone="gold" onClick={handleRemit} disabled={remitting}>
-              {remitting ? "Recording…" : "✅ Payout received"}
-            </Button>
-          </div>
-        </Card>
-      )}
+      <RemittancePanel
+        outstandingCount={unremitted.length}
+        outstandingGross={unremittedTotal}
+        onRecorded={async (message) => {
+          setSyncNote(message);
+          await refresh();
+        }}
+      />
 
       {syncNote && (
         <Card className="animate-pop p-3">

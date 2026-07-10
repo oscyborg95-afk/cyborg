@@ -8,6 +8,7 @@ import type {
   ChatState,
   ChatStateValue,
   CustomerAlert,
+  CourierRemittance,
   NewOrder,
   NewProduct,
   Order,
@@ -16,6 +17,7 @@ import type {
   ShippingManifest,
   TrackingEvent,
 } from "./types";
+import type { CourierInvoiceLine, ParsedCourierInvoice } from "./remittance-invoice";
 
 // Data layer. Connects directly to Postgres (Supabase) when DATABASE_URL is set,
 // otherwise falls back to an in-memory store so the dashboard works before the
@@ -50,6 +52,9 @@ const g = globalThis as unknown as {
   __alertsReady?: boolean; // whether the customer_alerts table has been ensured
   __cyborgOrderLocks?: Map<string, Promise<void>>;
   __cyborgTrackingSyncRunning?: boolean;
+  __cyborgRemittances?: Map<string, CourierRemittance>;
+  __cyborgRemittanceFiles?: Map<string, { data: Buffer; filename: string; mime: string }>;
+  __remittancesReady?: boolean;
 };
 
 let pool: Pool | null = null;
@@ -95,6 +100,8 @@ const memTrackingEvents = (g.__cyborgTrackingEvents ??= []);
 const memAdSpend = (g.__cyborgAdSpend ??= new Map<string, number>()); // day -> Rs.
 const memAlerts = (g.__cyborgAlerts ??= new Map<string, CustomerAlert>());
 const memOrderLocks = (g.__cyborgOrderLocks ??= new Map<string, Promise<void>>());
+const memRemittances = (g.__cyborgRemittances ??= new Map<string, CourierRemittance>());
+const memRemittanceFiles = (g.__cyborgRemittanceFiles ??= new Map());
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   bank_cash: 0,
@@ -772,65 +779,198 @@ export async function recordCustomerAlert(
 
 // --- Cash reconciliation (courier COD remittances) ---------------------------
 
-// Postgres "undefined_column" — the remitted_at migration hasn't been run yet.
-function isUndefinedColumn(err: unknown): boolean {
-  return (
-    typeof err === "object" && err !== null && (err as { code?: string }).code === "42703"
+async function ensureRemittanceSchema(db: Queryable): Promise<void> {
+  if (g.__remittancesReady) return;
+  await db.query(`create table if not exists courier_remittances (
+    id uuid primary key default gen_random_uuid(), invoice_no varchar not null unique,
+    paid_at timestamptz not null, source_filename varchar not null,
+    source_mime varchar not null, source_file bytea not null,
+    line_count int not null, matched_count int not null default 0,
+    gross_cod numeric not null, collected_cod numeric not null,
+    delivery_charges numeric not null, commission numeric not null,
+    invoice_vat numeric not null, additional_tax numeric not null default 0,
+    other_deductions numeric not null default 0, invoice_payable numeric not null,
+    expected_net numeric not null, amount_received numeric not null,
+    variance numeric not null, cash_applied boolean not null default true,
+    notes text not null default '', created_at timestamptz not null default now()
+  )`);
+  await db.query(`create table if not exists courier_remittance_lines (
+    id uuid primary key default gen_random_uuid(),
+    remittance_id uuid not null references courier_remittances(id) on delete cascade,
+    matched_order_id uuid references orders(id) on delete set null,
+    order_date varchar not null default '', waybill_id varchar not null,
+    order_no varchar not null default '', cod numeric not null,
+    collected_cod numeric not null, vat numeric not null, commission numeric not null,
+    delivery_charge numeric not null, payable numeric not null,
+    status varchar not null default ''
+  )`);
+  await db.query("alter table orders add column if not exists remitted_at timestamptz");
+  await db.query(
+    "alter table orders add column if not exists remittance_id uuid references courier_remittances(id) on delete set null"
   );
+  await db.query(
+    "create index if not exists idx_remittance_lines_batch on courier_remittance_lines(remittance_id)"
+  );
+  g.__remittancesReady = true;
 }
 
-/**
- * Mark a batch of delivered orders as paid out by the courier: stamps
- * remitted_at and moves the batch total into business_settings.bank_cash,
- * atomically. Only delivered + not-yet-remitted orders in `ids` count.
- */
-export async function remitOrders(ids: string[]): Promise<{ count: number; total: number }> {
-  const run = () =>
-    withTransaction(async (db) => {
-      if (db) {
-        const { rows } = await db.query(
-          `update orders set remitted_at = now()
-           where id = any($1) and order_status = 'delivered' and remitted_at is null
-           returning total_cod`,
-          [ids]
-        );
-        const total = rows.reduce((sum, r) => sum + Number(r.total_cod), 0);
-        if (rows.length > 0) {
-          await db.query(
-            "update business_settings set bank_cash = bank_cash + $1 where id = 1",
-            [total]
-          );
-        }
-        return { count: rows.length, total };
-      }
-      let total = 0;
-      let count = 0;
-      for (const id of ids) {
-        const order = memOrders.get(id);
-        if (order && order.order_status === "delivered" && !order.remitted_at) {
-          memOrders.set(id, { ...order, remitted_at: new Date().toISOString() });
-          total += Number(order.total_cod);
-          count++;
-        }
-      }
-      if (count > 0) {
-        const s = g.__cyborgSettings ?? DEFAULT_SETTINGS;
-        g.__cyborgSettings = { ...s, bank_cash: s.bank_cash + total };
-      }
-      return { count, total };
-    });
-
-  try {
-    return await run();
-  } catch (err) {
-    // Self-migrate: the column is additive and nullable, so adding it in place
-    // is safe — spares the operator a manual schema.sql run.
-    if (pool && isUndefinedColumn(err)) {
-      await pool.query("alter table orders add column if not exists remitted_at timestamptz");
-      return run();
-    }
-    throw err;
+export async function findRemittanceMatches(
+  orderRefs: string[],
+  waybills: string[]
+): Promise<Array<{ order: Order; tracking_id: string | null }>> {
+  if (pool) {
+    await ensureRemittanceSchema(pool);
+    const { rows } = await pool.query(
+      `select o.*, m.tracking_id
+       from orders o left join shipping_manifests m on m.order_id = o.id
+       where m.tracking_id = any($1::text[])
+          or o.id::text = any($2::text[])
+          or o.order_no = any($2::text[])`,
+      [waybills, orderRefs]
+    );
+    return rows.map((row) => ({ order: row as Order, tracking_id: row.tracking_id ?? null }));
   }
+  const refs = new Set(orderRefs);
+  const bills = new Set(waybills);
+  return [...memOrders.values()]
+    .map((order) => ({
+      order,
+      tracking_id: [...memManifests.values()].find((m) => m.order_id === order.id)?.tracking_id ?? null,
+    }))
+    .filter(({ order, tracking_id }) =>
+      Boolean((tracking_id && bills.has(tracking_id)) || refs.has(order.id) || (order.order_no && refs.has(order.order_no)))
+    );
+}
+
+export interface NewCourierRemittance {
+  invoice: ParsedCourierInvoice;
+  lines: Array<CourierInvoiceLine & { matched_order_id: string | null }>;
+  paid_at: string;
+  source_filename: string;
+  source_mime: string;
+  source_file: Buffer;
+  additional_tax: number;
+  other_deductions: number;
+  amount_received: number;
+  cash_applied: boolean;
+  notes: string;
+}
+
+export async function createCourierRemittance(input: NewCourierRemittance): Promise<CourierRemittance> {
+  const expectedNet = Math.max(0, input.invoice.payable - input.additional_tax - input.other_deductions);
+  const variance = Math.round((input.amount_received - expectedNet) * 100) / 100;
+  const matchedIds = [...new Set(input.lines.flatMap((line) => line.matched_order_id ? [line.matched_order_id] : []))];
+
+  if (pool) {
+    await ensureRemittanceSchema(pool);
+    return withTransaction(async (db) => {
+      const inserted = await db!.query(
+        `insert into courier_remittances
+          (invoice_no, paid_at, source_filename, source_mime, source_file, line_count,
+           matched_count, gross_cod, collected_cod, delivery_charges, commission,
+           invoice_vat, additional_tax, other_deductions, invoice_payable,
+           expected_net, amount_received, variance, cash_applied, notes)
+         values ($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         returning id, invoice_no, paid_at, source_filename, line_count, matched_count,
+           gross_cod, collected_cod, delivery_charges, commission, invoice_vat,
+           additional_tax, other_deductions, invoice_payable, expected_net,
+           amount_received, variance, cash_applied, notes, created_at`,
+        [
+          input.invoice.invoice_no, input.paid_at, input.source_filename, input.source_mime,
+          input.source_file, input.lines.length, input.invoice.gross_cod,
+          input.invoice.collected_cod, input.invoice.delivery_charges, input.invoice.commission,
+          input.invoice.vat, input.additional_tax, input.other_deductions, input.invoice.payable,
+          expectedNet, input.amount_received, variance, input.cash_applied, input.notes,
+        ]
+      );
+      const id = inserted.rows[0].id as string;
+      for (const line of input.lines) {
+        await db!.query(
+          `insert into courier_remittance_lines
+            (remittance_id, matched_order_id, order_date, waybill_id, order_no, cod,
+             collected_cod, vat, commission, delivery_charge, payable, status)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [id, line.matched_order_id, line.order_date, line.waybill_id, line.order_no,
+           line.cod, line.collected_cod, line.vat, line.commission,
+           line.delivery_charge, line.payable, line.status]
+        );
+      }
+      let matchedCount = 0;
+      if (matchedIds.length > 0) {
+        const updated = await db!.query(
+          `update orders set remitted_at = $1, remittance_id = $2
+           where id = any($3::uuid[]) and order_status = 'delivered' and remitted_at is null
+           returning id`,
+          [input.paid_at, id, matchedIds]
+        );
+        matchedCount = updated.rows.length;
+      }
+      await db!.query("update courier_remittances set matched_count = $1 where id = $2", [matchedCount, id]);
+      if (input.cash_applied) {
+        await db!.query("update business_settings set bank_cash = bank_cash + $1 where id = 1", [input.amount_received]);
+      }
+      return { ...inserted.rows[0], matched_count: matchedCount } as CourierRemittance;
+    });
+  }
+
+  if ([...memRemittances.values()].some((batch) => batch.invoice_no === input.invoice.invoice_no)) {
+    throw new Error("This invoice has already been recorded");
+  }
+  const id = randomUUID();
+  let matchedCount = 0;
+  for (const orderId of matchedIds) {
+    const order = memOrders.get(orderId);
+    if (order?.order_status === "delivered" && !order.remitted_at) {
+      memOrders.set(orderId, { ...order, remitted_at: input.paid_at, remittance_id: id });
+      matchedCount++;
+    }
+  }
+  if (input.cash_applied) {
+    const settings = g.__cyborgSettings ?? DEFAULT_SETTINGS;
+    g.__cyborgSettings = { ...settings, bank_cash: settings.bank_cash + input.amount_received };
+  }
+  const batch: CourierRemittance = {
+    id, invoice_no: input.invoice.invoice_no, paid_at: input.paid_at,
+    source_filename: input.source_filename, line_count: input.lines.length, matched_count: matchedCount,
+    gross_cod: input.invoice.gross_cod, collected_cod: input.invoice.collected_cod,
+    delivery_charges: input.invoice.delivery_charges, commission: input.invoice.commission,
+    invoice_vat: input.invoice.vat, additional_tax: input.additional_tax,
+    other_deductions: input.other_deductions, invoice_payable: input.invoice.payable,
+    expected_net: expectedNet, amount_received: input.amount_received, variance,
+    cash_applied: input.cash_applied, notes: input.notes, created_at: new Date().toISOString(),
+  };
+  memRemittances.set(id, batch);
+  memRemittanceFiles.set(id, { data: input.source_file, filename: input.source_filename, mime: input.source_mime });
+  return batch;
+}
+
+export async function listCourierRemittances(): Promise<CourierRemittance[]> {
+  if (pool) {
+    await ensureRemittanceSchema(pool);
+    const { rows } = await pool.query(
+      `select id, invoice_no, paid_at, source_filename, line_count, matched_count,
+        gross_cod, collected_cod, delivery_charges, commission, invoice_vat,
+        additional_tax, other_deductions, invoice_payable, expected_net,
+        amount_received, variance, cash_applied, notes, created_at
+       from courier_remittances order by paid_at desc limit 52`
+    );
+    return rows as CourierRemittance[];
+  }
+  return [...memRemittances.values()].sort((a, b) => b.paid_at.localeCompare(a.paid_at));
+}
+
+export async function getCourierRemittanceFile(id: string): Promise<{ data: Buffer; filename: string; mime: string } | null> {
+  if (pool) {
+    await ensureRemittanceSchema(pool);
+    const { rows } = await pool.query(
+      "select source_file, source_filename, source_mime from courier_remittances where id = $1",
+      [id]
+    );
+    return rows[0]
+      ? { data: rows[0].source_file as Buffer, filename: rows[0].source_filename, mime: rows[0].source_mime }
+      : null;
+  }
+  return memRemittanceFiles.get(id) ?? null;
 }
 
 // --- Ad spend (manual daily entry, feeds ROAS) --------------------------------

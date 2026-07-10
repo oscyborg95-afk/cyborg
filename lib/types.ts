@@ -33,6 +33,7 @@ export interface Order {
   // When the courier's COD payout for this delivered order was received.
   // null/undefined = delivered cash still with the courier ("awaiting payout").
   remitted_at?: string | null;
+  remittance_id?: string | null;
   // Stable key supplied by the dispatch UI so retries return the original
   // order instead of creating and booking a duplicate.
   idempotency_key?: string | null;
@@ -77,6 +78,29 @@ export interface CustomerAlert {
   created_at: string;
 }
 
+export interface CourierRemittance {
+  id: string;
+  invoice_no: string;
+  paid_at: string;
+  source_filename: string;
+  line_count: number;
+  matched_count: number;
+  gross_cod: number;
+  collected_cod: number;
+  delivery_charges: number;
+  commission: number;
+  invoice_vat: number;
+  additional_tax: number;
+  other_deductions: number;
+  invoice_payable: number;
+  expected_net: number;
+  amount_received: number;
+  variance: number;
+  cash_applied: boolean;
+  notes: string;
+  created_at: string;
+}
+
 export interface ParsedAddress {
   name: string;
   phone: string;
@@ -92,6 +116,7 @@ export type NewOrder = Omit<
   | "created_at"
   | "order_status"
   | "remitted_at"
+  | "remittance_id"
   | "order_no"
   | "idempotency_key"
   | "archived_at"
