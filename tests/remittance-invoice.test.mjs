@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseCourierInvoiceRows } from "../lib/remittance-invoice.ts";
+import {
+  filterInvoiceToOwnedWaybills,
+  parseCourierInvoiceRows,
+} from "../lib/remittance-invoice.ts";
 
 test("courier invoice reconciles hidden percentage commission into net payable", () => {
   const headers = [
@@ -19,6 +22,25 @@ test("courier invoice reconciles hidden percentage commission into net payable",
   assert.equal(parsed.vat, 0);
   assert.equal(parsed.payable, 3099.1);
   assert.equal(parsed.collected_cod - parsed.delivery_charges - parsed.commission - parsed.vat, parsed.payable);
+});
+
+test("mixed courier invoice totals include only owned waybills", () => {
+  const source = parseCourierInvoiceRows([
+    ["ORDER DATE", "WAYBILL ID", "INVOICE NO", "ORDER NO", "VAT %", "COMMISSION", "COD", "COLLECTED COD", "TOTAL VAT", "TOTAL COMMISSION", "DELIVERY CHARGE", "PAYABLE", "WEIGHT (KG)", "STATUS"],
+    ["2026-07-08", "MINE-1", "MIXED-1", "mine", 0, 1, 1340, 1340, 0, 0, 475, 851.6, 1, "Delivered"],
+    ["2026-07-08", "OTHER-1", "MIXED-1", "other", 0, 1, 2750, 2750, 0, 0, 475, 2247.5, 1, "Delivered"],
+  ]);
+  const filtered = filterInvoiceToOwnedWaybills(source, [
+    { waybill_id: "MINE-1", order_id: "order-1", order_status: "booked", remitted_at: null },
+  ]);
+  assert.equal(filtered.source_line_count, 2);
+  assert.equal(filtered.matched_count, 1);
+  assert.equal(filtered.ignored.length, 1);
+  assert.equal(filtered.invoice.gross_cod, 1340);
+  assert.equal(filtered.invoice.delivery_charges, 475);
+  assert.equal(filtered.invoice.commission, 13.4);
+  assert.equal(filtered.invoice.payable, 851.6);
+  assert.equal(filtered.lines[0].matched_order_id, "order-1");
 });
 
 test("recorded settlement keeps actual receipt separate from invoice payable", async () => {

@@ -28,6 +28,51 @@ export interface ParsedCourierInvoice {
   payable: number;
 }
 
+export interface OwnedWaybillMatch {
+  waybill_id: string;
+  order_id: string;
+  order_status: string;
+  remitted_at?: string | null;
+}
+
+export function filterInvoiceToOwnedWaybills(
+  source: ParsedCourierInvoice,
+  matches: OwnedWaybillMatch[]
+) {
+  const byWaybill = new Map(matches.map((match) => [match.waybill_id, match]));
+  let alreadyRemittedCount = 0;
+  const ignored: Array<{ waybill_id: string; order_no: string; reason: string }> = [];
+  const lines = source.lines.flatMap((line) => {
+    const match = byWaybill.get(line.waybill_id);
+    if (
+      match &&
+      (match.order_status === "booked" || match.order_status === "delivered") &&
+      !match.remitted_at
+    ) {
+      return [{ ...line, matched_order_id: match.order_id }];
+    }
+    if (match?.remitted_at) alreadyRemittedCount++;
+    ignored.push({
+      waybill_id: line.waybill_id,
+      order_no: line.order_no,
+      reason: match
+        ? match.remitted_at
+          ? "This waybill was already paid out"
+          : `Your order is ${match.order_status}, so it is not payable`
+        : "Waybill does not belong to your stored shipments",
+    });
+    return [];
+  });
+  return {
+    invoice: summarizeCourierInvoiceLines(source.invoice_no, lines),
+    lines,
+    source_line_count: source.lines.length,
+    matched_count: lines.length,
+    already_remitted_count: alreadyRemittedCount,
+    ignored,
+  };
+}
+
 const REQUIRED_HEADERS = [
   "WAYBILL ID",
   "INVOICE NO",
@@ -45,6 +90,24 @@ const asNumber = (value: InvoiceCell | undefined, label: string, row: number) =>
   if (!Number.isFinite(parsed)) throw new Error(`${label} is not a number on invoice row ${row}`);
   return parsed;
 };
+
+export function summarizeCourierInvoiceLines(
+  invoiceNo: string,
+  lines: CourierInvoiceLine[]
+): ParsedCourierInvoice {
+  const sum = (key: keyof CourierInvoiceLine) =>
+    roundMoney(lines.reduce((total, line) => total + Number(line[key]), 0));
+  return {
+    invoice_no: invoiceNo,
+    lines,
+    gross_cod: sum("cod"),
+    collected_cod: sum("collected_cod"),
+    vat: sum("vat"),
+    commission: sum("commission"),
+    delivery_charges: sum("delivery_charge"),
+    payable: sum("payable"),
+  };
+}
 
 export function parseCourierInvoiceRows(rows: InvoiceCell[][]): ParsedCourierInvoice {
   if (rows.length < 2) throw new Error("The invoice workbook has no delivery rows");
@@ -95,16 +158,5 @@ export function parseCourierInvoiceRows(rows: InvoiceCell[][]): ParsedCourierInv
   if (lines.length === 0) throw new Error("The invoice workbook has no usable delivery rows");
   const invoiceNumbers = new Set(lines.map((line) => line.invoice_no));
   if (invoiceNumbers.size !== 1) throw new Error("The workbook contains more than one invoice number");
-  const sum = (key: keyof CourierInvoiceLine) =>
-    roundMoney(lines.reduce((total, line) => total + Number(line[key]), 0));
-  return {
-    invoice_no: lines[0].invoice_no,
-    lines,
-    gross_cod: sum("cod"),
-    collected_cod: sum("collected_cod"),
-    vat: sum("vat"),
-    commission: sum("commission"),
-    delivery_charges: sum("delivery_charge"),
-    payable: sum("payable"),
-  };
+  return summarizeCourierInvoiceLines(lines[0].invoice_no, lines);
 }

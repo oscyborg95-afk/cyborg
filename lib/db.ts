@@ -898,8 +898,8 @@ export async function createCourierRemittance(input: NewCourierRemittance): Prom
       let matchedCount = 0;
       if (matchedIds.length > 0) {
         const updated = await db!.query(
-          `update orders set remitted_at = $1, remittance_id = $2
-           where id = any($3::uuid[]) and order_status = 'delivered' and remitted_at is null
+          `update orders set order_status = 'delivered', remitted_at = $1, remittance_id = $2
+           where id = any($3::uuid[]) and order_status in ('booked', 'delivered') and remitted_at is null
            returning id`,
           [input.paid_at, id, matchedIds]
         );
@@ -920,8 +920,17 @@ export async function createCourierRemittance(input: NewCourierRemittance): Prom
   let matchedCount = 0;
   for (const orderId of matchedIds) {
     const order = memOrders.get(orderId);
-    if (order?.order_status === "delivered" && !order.remitted_at) {
-      memOrders.set(orderId, { ...order, remitted_at: input.paid_at, remittance_id: id });
+    if (
+      order &&
+      (order.order_status === "booked" || order.order_status === "delivered") &&
+      !order.remitted_at
+    ) {
+      memOrders.set(orderId, {
+        ...order,
+        order_status: "delivered",
+        remitted_at: input.paid_at,
+        remittance_id: id,
+      });
       matchedCount++;
     }
   }

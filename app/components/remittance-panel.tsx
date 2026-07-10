@@ -17,9 +17,10 @@ interface InvoiceSummary {
 
 interface InvoicePreview {
   invoice: InvoiceSummary;
+  source_line_count: number;
   matched_count: number;
   already_remitted_count: number;
-  unmatched: Array<{ waybill_id: string; order_no: string; reason: string }>;
+  ignored: Array<{ waybill_id: string; order_no: string; reason: string }>;
 }
 
 const money = (value: number) =>
@@ -168,22 +169,42 @@ export function RemittancePanel({
               ["Commission", -preview.invoice.commission],
               ["Invoice VAT", -preview.invoice.vat],
               ["Invoice payable", preview.invoice.payable],
-              ["Rows", preview.invoice.lines.length],
+              ["My orders", preview.invoice.lines.length],
             ].map(([label, value]) => (
               <div key={String(label)} className="rounded-xl bg-white/70 p-2">
                 <p className="font-display text-[10px] font-extrabold uppercase text-ink-soft">{label}</p>
                 <p className="font-display text-sm font-extrabold text-ink">
-                  {label === "Rows" ? value : money(Number(value))}
+                  {label === "My orders" ? value : money(Number(value))}
                 </p>
               </div>
             ))}
           </div>
 
           <p className="font-display text-xs font-bold text-ink-soft">
-            Invoice <span className="text-ink">{preview.invoice.invoice_no}</span> · {preview.matched_count} payable order
-            {preview.matched_count === 1 ? "" : "s"} matched · {preview.unmatched.length} legacy/unmatched
+            Invoice <span className="text-ink">{preview.invoice.invoice_no}</span> · {preview.matched_count} of {preview.source_line_count} rows belong to your shipped orders · {preview.ignored.length} ignored
             {preview.already_remitted_count ? ` · ${preview.already_remitted_count} already recorded` : ""}.
           </p>
+
+          {preview.matched_count === 0 && (
+            <p className="rounded-xl bg-flame-tint p-3 font-display text-xs font-extrabold text-flame-dark">
+              No invoice waybill matches your stored shipping manifests. Nothing from this invoice can be recorded.
+            </p>
+          )}
+
+          {preview.ignored.length > 0 && (
+            <details className="rounded-xl bg-white/60 px-3 py-2">
+              <summary className="cursor-pointer font-display text-xs font-extrabold text-ink-soft">
+                View {preview.ignored.length} ignored invoice row{preview.ignored.length === 1 ? "" : "s"}
+              </summary>
+              <div className="mt-2 max-h-36 space-y-1 overflow-y-auto">
+                {preview.ignored.map((row) => (
+                  <p key={`${row.waybill_id}:${row.order_no}`} className="font-mono text-[10px] text-ink-soft">
+                    {row.waybill_id} — {row.reason}
+                  </p>
+                ))}
+              </div>
+            </details>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <label className="font-display text-xs font-bold text-ink-soft">
@@ -219,7 +240,11 @@ export function RemittancePanel({
             <span className={Math.abs(variance) < 0.01 ? "text-frog-dark" : "text-flame-dark"}>{money(variance)}</span>
             {!cashApplied && " · Bank cash will not change (use this if you already updated the balance manually)."}
           </p>
-          <Button tone="gold" onClick={recordPayout} disabled={busy || !amountReceived || !paidAt}>
+          <Button
+            tone="gold"
+            onClick={recordPayout}
+            disabled={busy || preview.matched_count === 0 || !amountReceived || !paidAt}
+          >
             {busy ? "Recording…" : "✅ Record actual payout"}
           </Button>
         </div>

@@ -5,7 +5,11 @@ import {
   findRemittanceMatches,
   listCourierRemittances,
 } from "@/lib/db";
-import { parseCourierInvoiceRows, type InvoiceCell } from "@/lib/remittance-invoice";
+import {
+  parseCourierInvoiceRows,
+  filterInvoiceToOwnedWaybills,
+  type InvoiceCell,
+} from "@/lib/remittance-invoice";
 
 export const runtime = "nodejs";
 const MAX_INVOICE_BYTES = 3 * 1024 * 1024;
@@ -29,30 +33,22 @@ async function readInvoice(form: FormData) {
 async function preview(form: FormData) {
   const parsed = await readInvoice(form);
   const matches = await findRemittanceMatches(
-    parsed.invoice.lines.map((line) => line.order_no),
+    [],
     parsed.invoice.lines.map((line) => line.waybill_id)
   );
-  const byWaybill = new Map(matches.flatMap((match) => match.tracking_id ? [[match.tracking_id, match.order] as const] : []));
-  const byReference = new Map(matches.flatMap((match) => [
-    [match.order.id, match.order] as const,
-    ...(match.order.order_no ? [[match.order.order_no, match.order] as const] : []),
-  ]));
-  let matchedCount = 0;
-  let alreadyRemittedCount = 0;
-  const unmatched: Array<{ waybill_id: string; order_no: string; reason: string }> = [];
-  const lines = parsed.invoice.lines.map((line) => {
-    const order = byWaybill.get(line.waybill_id) ?? byReference.get(line.order_no);
-    const eligible = order?.order_status === "delivered" && !order.remitted_at;
-    if (eligible) matchedCount++;
-    else if (order?.remitted_at) alreadyRemittedCount++;
-    else unmatched.push({
-      waybill_id: line.waybill_id,
-      order_no: line.order_no,
-      reason: order ? `Order is ${order.order_status}, not delivered` : "Not found in this system",
-    });
-    return { ...line, matched_order_id: eligible ? order.id : null };
-  });
-  return { ...parsed, lines, matched_count: matchedCount, already_remitted_count: alreadyRemittedCount, unmatched };
+  const owned = filterInvoiceToOwnedWaybills(
+    parsed.invoice,
+    matches.flatMap((match) => match.tracking_id ? [{
+      waybill_id: match.tracking_id,
+      order_id: match.order.id,
+      order_status: match.order.order_status,
+      remitted_at: match.order.remitted_at,
+    }] : [])
+  );
+  return {
+    ...parsed,
+    ...owned,
+  };
 }
 
 export async function GET() {
@@ -71,10 +67,15 @@ export async function POST(req: NextRequest) {
     if (form.get("mode") !== "commit") {
       return NextResponse.json({
         invoice: result.invoice,
+        source_line_count: result.source_line_count,
         matched_count: result.matched_count,
         already_remitted_count: result.already_remitted_count,
-        unmatched: result.unmatched,
+        ignored: result.ignored,
       });
+    }
+
+    if (result.lines.length === 0) {
+      throw new Error("None of the invoice waybills match your shipped orders");
     }
 
     const paidAtRaw = String(form.get("paid_at") ?? "");
