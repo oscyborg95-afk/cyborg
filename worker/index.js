@@ -51,7 +51,9 @@ const MOCK = process.env.WA_MOCK === "true";
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Base64 expands a 5 MB photo to about 6.7 MB. Keep the parser just above that
+// while the /send route still enforces the decoded 6 MB media limit below.
+app.use(express.json({ limit: "8mb" }));
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 

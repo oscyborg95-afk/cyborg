@@ -45,8 +45,11 @@ const g = globalThis as unknown as {
   __cyborgAdSpend?: Map<string, number>;
   __cyborgOrderSeq?: number; // in-memory running number for short order refs
   __orderNoReady?: boolean; // whether the order_no schema has been ensured
+  __orderSafetyReady?: boolean; // idempotency/archive/manifest uniqueness schema
   __cyborgAlerts?: Map<string, CustomerAlert>; // in-memory customer-alert log
   __alertsReady?: boolean; // whether the customer_alerts table has been ensured
+  __cyborgOrderLocks?: Map<string, Promise<void>>;
+  __cyborgTrackingSyncRunning?: boolean;
 };
 
 let pool: Pool | null = null;
@@ -91,6 +94,7 @@ const memProducts = (g.__cyborgProducts ??= new Map<string, Product>());
 const memTrackingEvents = (g.__cyborgTrackingEvents ??= []);
 const memAdSpend = (g.__cyborgAdSpend ??= new Map<string, number>()); // day -> Rs.
 const memAlerts = (g.__cyborgAlerts ??= new Map<string, CustomerAlert>());
+const memOrderLocks = (g.__cyborgOrderLocks ??= new Map<string, Promise<void>>());
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   bank_cash: 0,
@@ -113,7 +117,21 @@ const DEFAULT_SETTINGS: BusinessSettings = {
 // Idempotently make sure the short-order-number schema exists (sequence + the
 // order_no / order_prefix columns). Runs once per process — matches the app's
 // existing self-migration pattern so a fresh DB works without a manual schema run.
+async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
+  if (g.__orderSafetyReady) return;
+  await db.query("alter table orders add column if not exists idempotency_key varchar");
+  await db.query("alter table orders add column if not exists archived_at timestamptz");
+  await db.query(
+    "create unique index if not exists uq_orders_idempotency_key on orders(idempotency_key) where idempotency_key is not null"
+  );
+  await db.query(
+    "create unique index if not exists uq_shipping_manifests_order on shipping_manifests(order_id)"
+  );
+  g.__orderSafetyReady = true;
+}
+
 async function ensureOrderNoSchema(db: Queryable): Promise<void> {
+  await ensureOrderSafetySchema(db);
   if (g.__orderNoReady) return;
   await db.query("create sequence if not exists order_number_seq start 1001");
   await db.query("alter table orders add column if not exists order_no varchar");
@@ -165,7 +183,8 @@ async function nextOrderNo(db: Queryable): Promise<string> {
 
 export async function createOrder(
   input: NewOrder,
-  db: Queryable | null = pool
+  db: Queryable | null = pool,
+  idempotencyKey: string | null = null
 ): Promise<Order> {
   if (db) {
     await ensureOrderNoSchema(db);
@@ -173,8 +192,10 @@ export async function createOrder(
     const { rows } = await db.query(
       `insert into orders
          (order_no, customer_name, phone_number, phone_2, raw_address, parsed_address, city, city_id, district,
-          product_id, item_name, items, product_price, shipping_fee, discount, total_cod, order_status)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'pending')
+          product_id, item_name, items, product_price, shipping_fee, discount, total_cod,
+          idempotency_key, order_status)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'pending')
+       on conflict (idempotency_key) where idempotency_key is not null do nothing
        returning *`,
       [
         order_no,
@@ -194,9 +215,17 @@ export async function createOrder(
         input.shipping_fee,
         input.discount,
         input.total_cod,
+        idempotencyKey,
       ]
     );
-    return rows[0] as Order;
+    if (rows[0]) return rows[0] as Order;
+    const existing = await db.query("select * from orders where idempotency_key = $1", [idempotencyKey]);
+    if (!existing.rows[0]) throw new Error("Idempotent order creation failed");
+    return existing.rows[0] as Order;
+  }
+  if (idempotencyKey) {
+    const existing = [...memOrders.values()].find((o) => o.idempotency_key === idempotencyKey);
+    if (existing) return existing;
   }
   const seq = (g.__cyborgOrderSeq = (g.__cyborgOrderSeq ?? 1000) + 1);
   const prefix = (g.__cyborgSettings ?? DEFAULT_SETTINGS).order_prefix || "DC";
@@ -206,53 +235,65 @@ export async function createOrder(
     order_no: `${prefix}-${seq}`,
     order_status: "pending",
     remitted_at: null,
+    idempotency_key: idempotencyKey,
+    archived_at: null,
     created_at: new Date().toISOString(),
   };
   memOrders.set(order.id, order);
   return order;
 }
 
-// Delete an order and everything that hangs off it. Manifests and tracking
-// events cascade in Postgres; the in-memory store clears them explicitly.
-// Any stock the order had "out" (booked/delivered) is returned to the shed.
-export async function deleteOrder(id: string): Promise<void> {
-  await withTransaction(async (db) => {
-    const order = await getOrder(id, db);
-    if (!order) return;
-
-    const out = STOCK_OUT[order.order_status];
-    if (out > 0) {
-      if (order.items && order.items.length > 0) {
-        for (const item of order.items) {
-          if (item.product_id && item.qty > 0) {
-            await adjustProductStock(item.product_id, out * item.qty, db);
-          }
-        }
-      } else if (order.product_id) {
-        await adjustProductStock(order.product_id, out, db);
-      }
-    }
-
-    if (db) {
-      await db.query("delete from orders where id = $1", [id]);
-      return;
-    }
-    memOrders.delete(id);
-    for (const [mid, m] of memManifests) if (m.order_id === id) memManifests.delete(mid);
-    for (let i = memTrackingEvents.length - 1; i >= 0; i--) {
-      if (memTrackingEvents[i].order_id === id) memTrackingEvents.splice(i, 1);
-    }
-  });
+async function withMemOrderLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const previous = memOrderLocks.get(id) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const tail = previous.then(() => gate);
+  memOrderLocks.set(id, tail);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (memOrderLocks.get(id) === tail) memOrderLocks.delete(id);
+  }
 }
 
-export async function listOrders(): Promise<Order[]> {
+// Archive instead of deleting business history. Booked parcels must first be
+// returned/cancelled with the courier so they cannot disappear while in flight.
+export async function archiveOrder(id: string): Promise<void> {
+  const run = async (db: Queryable | null) => {
+    const order = db
+      ? ((await db.query("select * from orders where id = $1 for update", [id])).rows[0] as Order | undefined)
+      : memOrders.get(id);
+    if (!order) return;
+    if (order.order_status === "booked") {
+      throw new Error("Booked orders cannot be archived until they are delivered or returned");
+    }
+    if (order.order_status === "delivered" && !order.remitted_at) {
+      throw new Error("Delivered orders cannot be archived until their COD payout is recorded");
+    }
+    const archivedAt = new Date().toISOString();
+    if (db) await db.query("update orders set archived_at = $1 where id = $2", [archivedAt, id]);
+    else memOrders.set(id, { ...order, archived_at: archivedAt });
+  };
+  if (pool) await withTransaction(run);
+  else await withMemOrderLock(id, () => run(null));
+}
+
+export async function listOrders(includeArchived = false): Promise<Order[]> {
   if (pool) {
+    await ensureOrderNoSchema(pool);
     const { rows } = await pool.query(
-      "select * from orders order by created_at desc limit 200"
+      `select * from orders
+       where ($1::boolean or archived_at is null)
+       order by created_at desc limit 200`,
+      [includeArchived]
     );
     return rows as Order[];
   }
-  return [...memOrders.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  return [...memOrders.values()]
+    .filter((o) => includeArchived || !o.archived_at)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
 export async function getOrder(
@@ -279,9 +320,17 @@ const STOCK_OUT: Record<OrderStatus, number> = {
 export async function updateOrderStatus(
   id: string,
   status: OrderStatus,
-  db: Queryable | null = pool
+  db?: Queryable | null
 ): Promise<void> {
-  const order = await getOrder(id, db);
+  // Standalone transitions create their own transaction/mutex. Callers already
+  // holding an order transaction pass its executor explicitly.
+  if (db === undefined) {
+    if (pool) return withTransaction((tx) => updateOrderStatus(id, status, tx));
+    return withMemOrderLock(id, () => updateOrderStatus(id, status, null));
+  }
+  const order = db
+    ? (((await db.query("select * from orders where id = $1 for update", [id])).rows[0] as Order) ?? null)
+    : await getOrder(id, null);
   if (!order) throw new Error("Order not found");
   const oldStatus = order.order_status;
 
@@ -307,6 +356,84 @@ export async function updateOrderStatus(
         await adjustProductStock(order.product_id, delta, db);
       }
     }
+  }
+}
+
+export class OrderBookingConflictError extends Error {}
+
+// Serialize the external courier call and the local manifest/status writes for
+// one order. The unique manifest index is a second line of defence.
+export async function bookOrderOnce(
+  id: string,
+  book: (order: Order) => Promise<BookingResultLike>
+): Promise<{ order: Order; manifest: ShippingManifest; reused: boolean }> {
+  const run = async (db: Queryable | null) => {
+    const order = db
+      ? (((await db.query("select * from orders where id = $1 for update", [id])).rows[0] as Order) ?? null)
+      : await getOrder(id, null);
+    if (!order) throw new Error("Order not found");
+    const existing = db
+      ? ((await db.query("select * from shipping_manifests where order_id = $1 limit 1", [id])).rows[0] as ShippingManifest | undefined)
+      : [...memManifests.values()].find((m) => m.order_id === id);
+    if (existing) return { order, manifest: existing, reused: true };
+    if (order.order_status !== "pending") {
+      throw new OrderBookingConflictError(`Order is already ${order.order_status}`);
+    }
+    const booking = await book(order);
+    const manifest = await createManifest(
+      {
+        order_id: id,
+        courier_name: booking.courier_name,
+        tracking_id: booking.tracking_id,
+        pdf_label_url: booking.pdf_label_url,
+        last_checkpoint: "booked",
+      },
+      db
+    );
+    await updateOrderStatus(id, "booked", db);
+    await addTrackingEvent(id, `Booked with ${booking.courier_name}`, "booked", db);
+    return { order: { ...order, order_status: "booked" as const }, manifest, reused: false };
+  };
+  if (pool) return withTransaction(run);
+  return withMemOrderLock(id, () => run(null));
+}
+
+interface BookingResultLike {
+  courier_name: string;
+  tracking_id: string;
+  pdf_label_url: string | null;
+}
+
+// Only one tracking sweep may run across all app instances. A skipped caller
+// returns null immediately instead of duplicating status and message side effects.
+export async function withExclusiveTrackingSync<T>(fn: () => Promise<T>): Promise<T | null> {
+  if (!pool) {
+    if (g.__cyborgTrackingSyncRunning) return null;
+    g.__cyborgTrackingSyncRunning = true;
+    try {
+      return await fn();
+    } finally {
+      g.__cyborgTrackingSyncRunning = false;
+    }
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      "select pg_try_advisory_xact_lock(hashtext('cyborg_tracking_sync')) as acquired"
+    );
+    if (!rows[0]?.acquired) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const result = await fn();
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
 }
 

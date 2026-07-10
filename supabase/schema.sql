@@ -24,6 +24,8 @@ create table if not exists orders (
   discount       numeric not null default 0,
   total_cod      numeric not null default 0,
   order_status   varchar not null default 'pending', -- pending → booked → delivered → returned
+  idempotency_key varchar,
+  archived_at    timestamptz,
   created_at     timestamptz not null default now()
 );
 
@@ -47,6 +49,7 @@ create table if not exists shipping_manifests (
   last_checkpoint varchar,
   created_at      timestamptz not null default now()
 );
+create unique index if not exists uq_shipping_manifests_order on shipping_manifests(order_id);
 
 -- Per-order courier tracking timeline: one row per status change observed.
 create table if not exists tracking_events (
@@ -126,6 +129,10 @@ alter table orders add column if not exists city_id int;
 alter table orders add column if not exists items jsonb;
 alter table orders add column if not exists remitted_at timestamptz; -- COD payout received (cash reconciliation)
 alter table orders add column if not exists order_no varchar; -- short courier reference (DC-1001)
+alter table orders add column if not exists idempotency_key varchar;
+alter table orders add column if not exists archived_at timestamptz;
+create unique index if not exists uq_orders_idempotency_key
+  on orders(idempotency_key) where idempotency_key is not null;
 alter table business_settings add column if not exists order_prefix varchar not null default 'DC';
 alter table business_settings add column if not exists templates jsonb not null default '{}'::jsonb;
 alter table business_settings add column if not exists business_name varchar not null default '';

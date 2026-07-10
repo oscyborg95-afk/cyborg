@@ -12,7 +12,7 @@ import { computeMetrics } from "@/lib/metrics";
 export async function GET() {
   try {
     const [orders, manifests, settings, products, events, adSpend] = await Promise.all([
-      listOrders(),
+      listOrders(true),
       listManifests(),
       getSettings(),
       listProducts(),

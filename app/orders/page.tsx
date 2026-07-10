@@ -411,13 +411,9 @@ export default function OrdersPage() {
 
   async function handleDelete(order: Order) {
     const ref = order.order_no ? `${order.order_no} — ` : "";
-    const stockNote =
-      order.order_status === "booked" || order.order_status === "delivered"
-        ? "\n\nAny stock it holds returns to the shed."
-        : "";
     if (
       !confirm(
-        `Delete order ${ref}${order.customer_name} (Rs. ${order.total_cod})?\n\nThis removes it permanently, along with its tracking timeline.${stockNote}`
+        `Archive order ${ref}${order.customer_name} (Rs. ${order.total_cod})?\n\nIt will leave the operational list, but its tracking, stock, and financial history will be preserved.`
       )
     )
       return;
@@ -430,7 +426,7 @@ export default function OrdersPage() {
       if (expandedId === order.id) setExpandedId(null);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
+      setError(err instanceof Error ? err.message : "Archive failed");
     } finally {
       setDeletingId(null);
     }
@@ -917,11 +913,21 @@ export default function OrdersPage() {
                             </Button>
                             <button
                               onClick={() => handleDelete(order)}
-                              disabled={deletingId === order.id}
-                              title="Delete order"
+                              disabled={
+                                deletingId === order.id ||
+                                order.order_status === "booked" ||
+                                (order.order_status === "delivered" && !order.remitted_at)
+                              }
+                              title={
+                                order.order_status === "booked"
+                                  ? "Wait until the courier delivers or returns this order"
+                                  : order.order_status === "delivered" && !order.remitted_at
+                                    ? "Record the COD payout before archiving"
+                                    : "Archive order"
+                              }
                               className="rounded-xl px-3 py-1.5 font-display text-xs font-bold text-ink-soft transition hover:bg-flame-tint hover:text-[#c04545] disabled:opacity-50"
                             >
-                              {deletingId === order.id ? "Deleting…" : "🗑 Delete"}
+                              {deletingId === order.id ? "Archiving…" : "🗄 Archive"}
                             </button>
                           </div>
                         </td>

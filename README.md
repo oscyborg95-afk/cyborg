@@ -73,7 +73,7 @@ parsing, one-click courier dispatch, and a gamified high-score board.
    minutes (and `/orders` on every visit) — `delivered` feeds the level counter on
    `/analytics`, a courier return puts the unit back into product stock automatically,
    and the customer is auto-messaged on out-for-delivery / delivered / returned.
-   A cron can also drive it: `GET /api/track/sync`.
+   A cron can also drive it: `POST /api/track/sync`.
 5. When the courier hands over the COD payout, hit **Payout received** on `/orders` —
    the delivered total moves into bank cash on the Quest board.
 

@@ -33,6 +33,12 @@ export interface Order {
   // When the courier's COD payout for this delivered order was received.
   // null/undefined = delivered cash still with the courier ("awaiting payout").
   remitted_at?: string | null;
+  // Stable key supplied by the dispatch UI so retries return the original
+  // order instead of creating and booking a duplicate.
+  idempotency_key?: string | null;
+  // Archived orders disappear from operational lists but remain available to
+  // financial reporting and audit history. No stock or cash is changed.
+  archived_at?: string | null;
   created_at: string;
 }
 
@@ -82,7 +88,13 @@ export interface ParsedAddress {
 
 export type NewOrder = Omit<
   Order,
-  "id" | "created_at" | "order_status" | "remitted_at" | "order_no"
+  | "id"
+  | "created_at"
+  | "order_status"
+  | "remitted_at"
+  | "order_no"
+  | "idempotency_key"
+  | "archived_at"
 >;
 
 // One day's Meta/Facebook ad spend, entered manually on the Quest page.

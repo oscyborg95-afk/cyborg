@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  addTrackingEvent,
+  bookOrderOnce,
   createOrder,
-  createManifest,
-  updateOrderStatus,
   upsertChatState,
-  withTransaction,
 } from "@/lib/db";
 import { bookCourierOrder } from "@/lib/couriers";
 import { itemsSummary, parseItems } from "@/lib/items";
@@ -16,6 +13,7 @@ import { itemsSummary, parseItems } from "@/lib/items";
 // it manually from the workspace (a booked parcel shouldn't auto-message).
 export async function POST(req: NextRequest) {
   const body = await req.json();
+  const idempotencyKey = req.headers.get("idempotency-key")?.trim() ?? "";
   const {
     chat_id,
     customer_name,
@@ -40,6 +38,12 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    return NextResponse.json(
+      { error: "A valid Idempotency-Key header is required" },
+      { status: 400 }
+    );
+  }
 
   const items = parseItems(rawItems);
   // Line items are the source of truth for the products subtotal when present.
@@ -53,7 +57,7 @@ export async function POST(req: NextRequest) {
   try {
     // The pending order is created on its own first: if the courier booking
     // throws, it stays as a reviewable pending order rather than vanishing.
-    const order = await createOrder({
+    const pendingOrder = await createOrder({
       customer_name,
       phone_number,
       phone_2,
@@ -69,29 +73,18 @@ export async function POST(req: NextRequest) {
       shipping_fee: shippingFee,
       discount: discountValue,
       total_cod: Math.max(0, productPrice + shippingFee - discountValue),
-    });
+    }, undefined, idempotencyKey);
 
-    const booking = await bookCourierOrder({ ...order }, cityId);
-    // Manifest, status flip, and the stock decrement it triggers must all land
-    // together — one transaction so a mid-flow failure can't leave them split.
-    const manifest = await withTransaction(async (db) => {
-      const m = await createManifest(
-        {
-          order_id: order.id,
-          courier_name: booking.courier_name,
-          tracking_id: booking.tracking_id,
-          pdf_label_url: booking.pdf_label_url,
-          last_checkpoint: "booked",
-        },
-        db
-      );
-      await updateOrderStatus(order.id, "booked", db);
-      return m;
-    });
-    await addTrackingEvent(order.id, `Booked with ${booking.courier_name}`, "booked");
+    const booked = await bookOrderOnce(pendingOrder.id, (order) =>
+      bookCourierOrder(order, order.city_id)
+    );
     await upsertChatState(phone_number, chat_id, "SHIPPED", customer_name);
 
-    return NextResponse.json({ order, manifest });
+    return NextResponse.json({
+      order: booked.order,
+      manifest: booked.manifest,
+      reused: booked.reused,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Dispatch failed";
     return NextResponse.json({ error: message }, { status: 502 });

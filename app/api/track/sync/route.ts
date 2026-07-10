@@ -9,6 +9,7 @@ import {
   recordCustomerAlert,
   updateManifestCheckpoint,
   updateOrderStatus,
+  withExclusiveTrackingSync,
 } from "@/lib/db";
 import { getTrackingStatus } from "@/lib/couriers";
 import { alertBodyFor, makeTemplates } from "@/lib/templates";
@@ -109,13 +110,21 @@ async function runSync() {
 
 export async function POST() {
   try {
-    return NextResponse.json(await runSync());
+    const result = await withExclusiveTrackingSync(runSync);
+    if (result === null) {
+      return NextResponse.json({
+        skipped: true,
+        checked: 0,
+        delivered: 0,
+        returned: 0,
+        inTransit: 0,
+        alertsSent: 0,
+        failures: [],
+      });
+    }
+    return NextResponse.json({ ...result, skipped: false });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Tracking sync failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
-}
-
-export async function GET() {
-  return POST();
 }

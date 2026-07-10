@@ -279,6 +279,7 @@ export default function Workspace() {
   const [sendingPhoto, setSendingPhoto] = useState(false);
 
   const activeChatIdRef = useRef<string | null>(null);
+  const dispatchKeyRef = useRef<{ chatId: string; key: string } | null>(null);
   activeChatIdRef.current = activeChatId;
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const prevWaReadyRef = useRef<boolean | null>(null);
@@ -715,13 +716,20 @@ export default function Workspace() {
 
   async function dispatch() {
     if (!draft || !activeChatId) return;
+    if (dispatchKeyRef.current?.chatId !== activeChatId) {
+      dispatchKeyRef.current = { chatId: activeChatId, key: crypto.randomUUID() };
+    }
+    const idempotencyKey = dispatchKeyRef.current.key;
     setDispatching(true);
     setError(null);
     setNotice(null);
     try {
       const res = await fetch("/api/dispatch", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
         body: JSON.stringify({
           chat_id: activeChatId,
           ...draft,
@@ -740,6 +748,7 @@ export default function Workspace() {
       playChime("win"); // user just clicked DISPATCH — gesture-safe
       setTimeout(() => setCelebrate(false), 3600);
       setDraft(null);
+      dispatchKeyRef.current = null;
       await Promise.all([loadOrders(), loadStates(), loadMessages(activeChatId), loadProducts()]);
       // Update the nav chips + tell the operator where today's quest stands.
       window.dispatchEvent(new Event("metrics:refresh"));
