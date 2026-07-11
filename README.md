@@ -48,6 +48,7 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 | COD risk scoring (per-phone delivery history) | `lib/risk.ts` |
 | Follow-up queue (stale AWAITING_* chats → one-tap Sinhala nudge) | `app/page.tsx`, templates `followUpAddress` / `followUpConfirm` |
 | Proactive tracking alerts (out-for-delivery / delivered / returned auto-messages) | `app/api/track/sync/route.ts` |
+| Real-time courier webhooks (including rescheduled / failed delivery alerts) | `app/api/courier/webhook/route.ts` |
 | Cash reconciliation (XLSX invoice → gross COD, fees, commission, VAT/tax, actual bank receipt, variance) | `app/api/remittance/route.ts`, Orders page |
 | Return workflow (redeliver offer + one-click re-book) | `app/api/orders/[id]/rebook/route.ts` |
 | Ad spend + ROAS (manual daily entry, delivered-revenue attribution) | `app/api/adspend/route.ts`, Quest page |

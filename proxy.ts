@@ -11,7 +11,15 @@ export async function proxy(req: NextRequest) {
   if (!PASSWORD) return NextResponse.next();
 
   const { pathname } = req.nextUrl;
-  if (pathname === "/login" || pathname === "/api/login") return NextResponse.next();
+  // External courier callbacks cannot carry the operator's browser cookie.
+  // This route performs its own constant-time COURIER_WEBHOOK_SECRET check.
+  if (
+    pathname === "/login" ||
+    pathname === "/api/login" ||
+    pathname === "/api/courier/webhook"
+  ) {
+    return NextResponse.next();
+  }
 
   const cookie = req.cookies.get(AUTH_COOKIE)?.value;
   if (cookie && cookie === (await authToken(PASSWORD))) return NextResponse.next();
