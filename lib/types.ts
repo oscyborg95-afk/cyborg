@@ -63,6 +63,59 @@ export interface TrackingEvent {
   created_at: string;
 }
 
+export type TrackingNotificationStatus = "pending" | "processing" | "sent" | "failed";
+
+export interface TrackingNotificationJob {
+  id: string;
+  webhook_event_id: string | null;
+  order_id: string;
+  recipient: "customer" | "owner";
+  alert_kind: AlertKind | null;
+  chat_id: string;
+  body: string;
+  status: TrackingNotificationStatus;
+  attempts: number;
+  next_attempt_at: string;
+  last_error: string;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export interface CourierWebhookEvent {
+  id: string;
+  fingerprint: string;
+  tracking_id: string;
+  order_id: string;
+  status: string;
+  checkpoint: string;
+  payload: Record<string, unknown>;
+  received_at: string;
+  processed_at: string | null;
+  processing_error: string;
+}
+
+export interface TrackingProblem {
+  order_id: string;
+  order_no: string | null;
+  customer_name: string;
+  phone_number: string;
+  tracking_id: string;
+  checkpoint: string;
+  status: string;
+  attempt: number | null;
+  occurred_at: string;
+  notification_status: TrackingNotificationStatus | null;
+}
+
+export interface TrackingHealth {
+  last_webhook_at: string | null;
+  last_notification_at: string | null;
+  queue_pending: number;
+  queue_failed: number;
+  stale_in_flight: number;
+  problems: TrackingProblem[];
+}
+
 // Automated tracking-driven customer WhatsApp alerts. One row per (order, kind)
 // that was actually sent, so the same alert is never sent twice and failures
 // stay visible. See lib/db.ts customer_alerts.

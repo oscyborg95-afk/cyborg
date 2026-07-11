@@ -30,6 +30,16 @@ parsing, one-click courier dispatch, and a gamified high-score board.
    field names in `lib/couriers.ts` to your courier's docs. Mock tracking IDs otherwise.
 5. `npm run dev` and open http://localhost:3000.
 
+### Tracking reliability
+
+Set `COURIER_WEBHOOK_SECRET` for the TransExpress callback and `CRON_SECRET`
+for the protected tracking fallback runner. `vercel.json` schedules a daily
+00:00 Asia/Colombo recovery sweep, which is compatible with Vercel Hobby. On
+Vercel Pro, change the schedule to `*/10 * * * *` for a ten-minute fallback.
+For a ten-minute fallback on any Vercel plan, set Railway worker variables
+`APP_TRACKING_CRON_URL=https://cyborg-fawn.vercel.app/api/tracking/cron` and
+the same `CRON_SECRET` value used by Vercel.
+
 ## Architecture
 
 ```
@@ -49,6 +59,7 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 | Follow-up queue (stale AWAITING_* chats → one-tap Sinhala nudge) | `app/page.tsx`, templates `followUpAddress` / `followUpConfirm` |
 | Proactive tracking alerts (out-for-delivery / delivered / returned auto-messages) | `app/api/track/sync/route.ts` |
 | Real-time courier webhooks (including rescheduled / failed delivery alerts) | `app/api/courier/webhook/route.ts` |
+| Durable webhook inbox, retryable WhatsApp outbox, tracking health + protected fallback runner | `lib/db.ts`, `app/api/tracking/*` |
 | Cash reconciliation (XLSX invoice → gross COD, fees, commission, VAT/tax, actual bank receipt, variance) | `app/api/remittance/route.ts`, Orders page |
 | Return workflow (redeliver offer + one-click re-book) | `app/api/orders/[id]/rebook/route.ts` |
 | Ad spend + ROAS (manual daily entry, delivered-revenue attribution) | `app/api/adspend/route.ts`, Quest page |

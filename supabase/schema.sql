@@ -189,3 +189,45 @@ alter table business_settings add column if not exists courier_cost_overrides js
 
 create index if not exists idx_orders_status on orders(order_status);
 create index if not exists idx_manifests_order on shipping_manifests(order_id);
+create unique index if not exists uq_manifests_tracking on shipping_manifests(tracking_id);
+
+-- Durable courier webhook inbox. fingerprint makes provider retries idempotent.
+create table if not exists courier_webhook_events (
+  id               uuid primary key default gen_random_uuid(),
+  fingerprint      varchar not null unique,
+  tracking_id      varchar not null,
+  order_id         uuid not null references orders(id) on delete cascade,
+  status           varchar not null,
+  checkpoint       text not null,
+  attempt          int,
+  payload          jsonb not null default '{}'::jsonb,
+  received_at      timestamptz not null default now(),
+  processed_at     timestamptz,
+  processing_error text not null default ''
+);
+create index if not exists idx_webhook_events_order
+  on courier_webhook_events(order_id, received_at desc);
+create index if not exists idx_webhook_events_received
+  on courier_webhook_events(received_at desc);
+
+-- Durable WhatsApp outbox. Failed jobs are retried with exponential backoff.
+create table if not exists tracking_notification_jobs (
+  id               uuid primary key default gen_random_uuid(),
+  webhook_event_id uuid references courier_webhook_events(id) on delete cascade,
+  order_id         uuid not null references orders(id) on delete cascade,
+  recipient        varchar not null,
+  alert_kind       varchar,
+  chat_id          varchar not null,
+  body             text not null,
+  status           varchar not null default 'pending',
+  attempts         int not null default 0,
+  next_attempt_at  timestamptz not null default now(),
+  last_error       text not null default '',
+  created_at       timestamptz not null default now(),
+  sent_at          timestamptz
+);
+create unique index if not exists uq_tracking_notification_event_recipient
+  on tracking_notification_jobs(webhook_event_id, recipient)
+  where webhook_event_id is not null;
+create index if not exists idx_tracking_notification_due
+  on tracking_notification_jobs(status, next_attempt_at);

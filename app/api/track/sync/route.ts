@@ -38,7 +38,7 @@ function alertKindFor(outcome: string, checkpoint: string): AlertKind | null {
   return null;
 }
 
-async function runSync() {
+export async function runTrackingSync() {
   const [orders, manifests, settings] = await Promise.all([
     listOrders(),
     listManifests(),
@@ -110,7 +110,7 @@ async function runSync() {
 
 export async function POST() {
   try {
-    const result = await withExclusiveTrackingSync(runSync);
+    const result = await withExclusiveTrackingSync(runTrackingSync);
     if (result === null) {
       return NextResponse.json({
         skipped: true,

@@ -21,6 +21,7 @@ import type {
   OrderStatus,
   Product,
   ShippingManifest,
+  TrackingHealth,
   TrackingEvent,
 } from "@/lib/types";
 import { Froggy } from "../components/froggy";
@@ -170,12 +171,14 @@ export default function OrdersPage() {
   const [redeliverSentId, setRedeliverSentId] = useState<string | null>(null);
   const [rebookingId, setRebookingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [trackingHealth, setTrackingHealth] = useState<TrackingHealth | null>(null);
 
   const refresh = useCallback(async () => {
-    const [ordersRes, productsRes, settingsRes] = await Promise.all([
+    const [ordersRes, productsRes, settingsRes, healthRes] = await Promise.all([
       fetch("/api/orders"),
       fetch("/api/products"),
       fetch("/api/settings"),
+      fetch("/api/tracking/health"),
     ]);
     const data = await ordersRes.json();
     if (ordersRes.ok) {
@@ -189,6 +192,8 @@ export default function OrdersPage() {
     if (productsRes.ok) setProducts(productsData.products);
     const settingsData = await settingsRes.json();
     if (settingsRes.ok) setMsgTemplates(settingsData.settings?.templates ?? {});
+    const healthData = await healthRes.json();
+    if (healthRes.ok) setTrackingHealth(healthData.health);
   }, []);
 
   const syncTracking = useCallback(async () => {
@@ -213,6 +218,7 @@ export default function OrdersPage() {
 
   useEffect(() => {
     // Load, then pull the latest courier statuses once per visit.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh().then(syncTracking);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -511,6 +517,8 @@ export default function OrdersPage() {
           await refresh();
         }}
       />
+
+      {trackingHealth && <TrackingHealthPanel health={trackingHealth} />}
 
       {syncNote && (
         <Card className="animate-pop p-3">
@@ -914,6 +922,75 @@ export default function OrdersPage() {
         )}
       </Card>
     </main>
+  );
+}
+
+function TrackingHealthPanel({ health }: { health: TrackingHealth }) {
+  const phoneLink = (phone: string) => {
+    const digits = phone.replace(/\D/g, "");
+    return `https://wa.me/${digits.startsWith("0") ? `94${digits.slice(1)}` : digits}`;
+  };
+  const healthy = health.queue_failed === 0 && health.stale_in_flight === 0;
+  return (
+    <Card className={healthy ? "p-5" : "!border-gold bg-gold/5 p-5"}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-display text-lg font-extrabold text-ink">📡 Tracking health</h2>
+          <p className="font-display text-xs font-bold text-ink-soft">
+            Webhooks, WhatsApp delivery queue, and parcels needing intervention
+          </p>
+        </div>
+        <span className={`rounded-full px-3 py-1 font-display text-xs font-extrabold ${healthy ? "bg-pond text-frog-dark" : "bg-gold/25 text-gold-dark"}`}>
+          {healthy ? "● Healthy" : "● Attention needed"}
+        </span>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <HealthStat label="Last webhook" value={health.last_webhook_at ? timeAgo(health.last_webhook_at) : "Never"} />
+        <HealthStat label="Last WhatsApp" value={health.last_notification_at ? timeAgo(health.last_notification_at) : "Never"} />
+        <HealthStat label="Queued" value={String(health.queue_pending)} />
+        <HealthStat label="Failed" value={String(health.queue_failed)} warn={health.queue_failed > 0} />
+        <HealthStat label="Stale 24h+" value={String(health.stale_in_flight)} warn={health.stale_in_flight > 0} />
+      </div>
+      {health.problems.length > 0 && (
+        <div className="mt-4 border-t-2 border-cardline/60 pt-3">
+          <h3 className="mb-2 font-display text-xs font-extrabold uppercase tracking-wide text-flame-dark">
+            ⚠️ Active delivery problems
+          </h3>
+          <div className="space-y-2">
+            {health.problems.map((problem) => (
+              <div key={problem.order_id} className="flex flex-wrap items-center gap-3 rounded-xl bg-white p-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-display text-sm font-extrabold text-ink">
+                    {problem.order_no ?? problem.tracking_id} · {problem.customer_name}
+                  </div>
+                  <div className="font-display text-xs font-bold text-ink-soft">
+                    {problem.status.replaceAll("_", " ")}
+                    {problem.attempt ? ` · attempt ${problem.attempt}` : ""}
+                    {` · ${timeAgo(problem.occurred_at)}`}
+                  </div>
+                  <div className="truncate font-display text-[11px] font-semibold text-ink-soft">{problem.checkpoint}</div>
+                </div>
+                <span className={`rounded-full px-2 py-1 font-display text-[10px] font-extrabold ${problem.notification_status === "sent" ? "bg-pond text-frog-dark" : problem.notification_status === "failed" ? "bg-flame-tint text-flame-dark" : "bg-gold/20 text-gold-dark"}`}>
+                  WhatsApp {problem.notification_status ?? "not queued"}
+                </span>
+                <a href={phoneLink(problem.phone_number)} target="_blank" rel="noreferrer" className="rounded-xl bg-frog px-3 py-1.5 font-display text-xs font-extrabold text-white">
+                  Contact customer
+                </a>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function HealthStat({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <div className={`rounded-xl p-3 ${warn ? "bg-flame-tint" : "bg-cream/70"}`}>
+      <div className="font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft">{label}</div>
+      <div className={`mt-1 font-display text-sm font-extrabold ${warn ? "text-flame-dark" : "text-ink"}`}>{value}</div>
+    </div>
   );
 }
 

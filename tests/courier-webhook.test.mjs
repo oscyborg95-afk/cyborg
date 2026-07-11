@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  inspectCourierWebhook,
   parseCourierWebhook,
   webhookCheckpoint,
 } from "../lib/courier-webhook.ts";
@@ -24,6 +25,13 @@ test("parses nested TransExpress-style reschedule payloads", () => {
     webhookCheckpoint(event),
     "Rescheduled — attempt 2 — Customer unavailable"
   );
+});
+
+test("strict inspection reports payload shape and missing identity fields", () => {
+  const inspected = inspectCourierWebhook({ data: { remarks: "No answer" } });
+  assert.equal(inspected.event, null);
+  assert.deepEqual(inspected.missing, ["waybill_id", "status"]);
+  assert.deepEqual(inspected.observedKeys, ["data", "remarks"]);
 });
 
 test("accepts alternative waybill and mapped-status keys", () => {

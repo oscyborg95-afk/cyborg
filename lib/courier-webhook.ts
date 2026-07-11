@@ -9,6 +9,12 @@ export interface ParsedCourierWebhook {
   attempt: number | null;
 }
 
+export interface CourierWebhookParseResult {
+  event: ParsedCourierWebhook | null;
+  observedKeys: string[];
+  missing: string[];
+}
+
 function entriesDeep(value: unknown, depth = 0): Array<[string, unknown]> {
   if (!value || typeof value !== "object" || depth > 4) return [];
   const out: Array<[string, unknown]> = [];
@@ -61,6 +67,24 @@ export function parseCourierWebhook(payload: unknown): ParsedCourierWebhook | nu
     remarks,
     attempt: Number.isFinite(parsedAttempt) && parsedAttempt > 0 ? parsedAttempt : null,
   };
+}
+
+// Strict envelope used by the route: every payload is captured with its key
+// shape, while missing identity fields are rejected instead of guessed.
+export function inspectCourierWebhook(payload: unknown): CourierWebhookParseResult {
+  const entries = entriesDeep(payload);
+  const observedKeys = [...new Set(entries.map(([key]) => key))].sort();
+  const event = parseCourierWebhook(payload);
+  const missing: string[] = [];
+  if (!event?.trackingId) missing.push("waybill_id");
+  if (!event) {
+    const hasStatus = entries.some(([key, value]) =>
+      ["mapped_status", "status", "status_name", "current_status", "delivery_status", "state"].includes(key) &&
+      (typeof value === "string" || typeof value === "number")
+    );
+    if (!hasStatus) missing.push("status");
+  }
+  return { event, observedKeys, missing };
 }
 
 export function webhookCheckpoint(event: ParsedCourierWebhook): string {

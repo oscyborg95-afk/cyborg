@@ -16,7 +16,8 @@ export async function proxy(req: NextRequest) {
   if (
     pathname === "/login" ||
     pathname === "/api/login" ||
-    pathname === "/api/courier/webhook"
+    pathname === "/api/courier/webhook" ||
+    pathname === "/api/tracking/cron"
   ) {
     return NextResponse.next();
   }

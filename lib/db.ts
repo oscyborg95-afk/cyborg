@@ -9,6 +9,7 @@ import type {
   ChatStateValue,
   CustomerAlert,
   CourierRemittance,
+  CourierWebhookEvent,
   NewOrder,
   NewProduct,
   Order,
@@ -16,6 +17,8 @@ import type {
   Product,
   ShippingManifest,
   TrackingEvent,
+  TrackingHealth,
+  TrackingNotificationJob,
 } from "./types";
 import type { CourierInvoiceLine, ParsedCourierInvoice } from "./remittance-invoice";
 
@@ -52,6 +55,9 @@ const g = globalThis as unknown as {
   __alertsReady?: boolean; // whether the customer_alerts table has been ensured
   __cyborgOrderLocks?: Map<string, Promise<void>>;
   __cyborgTrackingSyncRunning?: boolean;
+  __cyborgWebhookEvents?: Map<string, CourierWebhookEvent>;
+  __cyborgNotificationJobs?: Map<string, TrackingNotificationJob>;
+  __trackingOpsReady?: boolean;
   __cyborgRemittances?: Map<string, CourierRemittance>;
   __cyborgRemittanceFiles?: Map<string, { data: Buffer; filename: string; mime: string }>;
   __remittancesReady?: boolean;
@@ -102,6 +108,8 @@ const memAlerts = (g.__cyborgAlerts ??= new Map<string, CustomerAlert>());
 const memOrderLocks = (g.__cyborgOrderLocks ??= new Map<string, Promise<void>>());
 const memRemittances = (g.__cyborgRemittances ??= new Map<string, CourierRemittance>());
 const memRemittanceFiles = (g.__cyborgRemittanceFiles ??= new Map());
+const memWebhookEvents = (g.__cyborgWebhookEvents ??= new Map<string, CourierWebhookEvent>());
+const memNotificationJobs = (g.__cyborgNotificationJobs ??= new Map<string, TrackingNotificationJob>());
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   bank_cash: 0,
@@ -487,6 +495,237 @@ export async function updateManifestCheckpoint(id: string, checkpoint: string): 
   }
   const manifest = memManifests.get(id);
   if (manifest) memManifests.set(id, { ...manifest, last_checkpoint: checkpoint });
+}
+
+// --- Durable courier webhook inbox + notification outbox -------------------
+
+async function ensureTrackingOpsSchema(db: Queryable): Promise<void> {
+  if (g.__trackingOpsReady) return;
+  await db.query(
+    `create table if not exists tracking_events (
+       id uuid primary key default gen_random_uuid(),
+       order_id uuid not null references orders(id) on delete cascade,
+       checkpoint varchar not null, outcome varchar not null default 'in_transit',
+       created_at timestamptz not null default now())`
+  );
+  await db.query("create index if not exists idx_tracking_events_order on tracking_events(order_id, created_at)");
+  await db.query("create unique index if not exists uq_manifests_tracking on shipping_manifests(tracking_id)");
+  await db.query(
+    `create table if not exists courier_webhook_events (
+       id uuid primary key default gen_random_uuid(), fingerprint varchar not null unique,
+       tracking_id varchar not null, order_id uuid not null references orders(id) on delete cascade,
+       status varchar not null, checkpoint text not null, attempt int,
+       payload jsonb not null default '{}'::jsonb, received_at timestamptz not null default now(),
+       processed_at timestamptz, processing_error text not null default '')`
+  );
+  await db.query("create index if not exists idx_webhook_events_order on courier_webhook_events(order_id, received_at desc)");
+  await db.query("create index if not exists idx_webhook_events_received on courier_webhook_events(received_at desc)");
+  await db.query(
+    `create table if not exists tracking_notification_jobs (
+       id uuid primary key default gen_random_uuid(),
+       webhook_event_id uuid references courier_webhook_events(id) on delete cascade,
+       order_id uuid not null references orders(id) on delete cascade,
+       recipient varchar not null, alert_kind varchar, chat_id varchar not null, body text not null,
+       status varchar not null default 'pending', attempts int not null default 0,
+       next_attempt_at timestamptz not null default now(), last_error text not null default '',
+       created_at timestamptz not null default now(), sent_at timestamptz)`
+  );
+  await db.query(
+    `create unique index if not exists uq_tracking_notification_event_recipient
+       on tracking_notification_jobs(webhook_event_id, recipient) where webhook_event_id is not null`
+  );
+  await db.query("create index if not exists idx_tracking_notification_due on tracking_notification_jobs(status, next_attempt_at)");
+  g.__trackingOpsReady = true;
+}
+
+export async function getTrackedOrderByWaybill(
+  trackingId: string,
+  db: Queryable | null = pool
+): Promise<{ order: Order; manifest: ShippingManifest } | null> {
+  if (db) {
+    const { rows } = await db.query(
+      `select o.*, row_to_json(m) as manifest
+         from shipping_manifests m join orders o on o.id = m.order_id
+        where m.tracking_id = $1 limit 1`,
+      [trackingId]
+    );
+    if (!rows[0]) return null;
+    const { manifest, ...order } = rows[0] as Order & { manifest: ShippingManifest };
+    return { order: order as Order, manifest };
+  }
+  const manifest = [...memManifests.values()].find((m) => m.tracking_id === trackingId);
+  const order = manifest ? memOrders.get(manifest.order_id) : null;
+  return manifest && order ? { order, manifest } : null;
+}
+
+export interface WebhookNotificationInput {
+  recipient: "customer" | "owner";
+  alert_kind: AlertKind | null;
+  chat_id: string;
+  body: string;
+}
+
+export async function ingestCourierWebhook(input: {
+  fingerprint: string;
+  tracking_id: string;
+  status: string;
+  checkpoint: string;
+  attempt: number | null;
+  payload: Record<string, unknown>;
+  notifications: WebhookNotificationInput[];
+  terminal_status?: OrderStatus;
+}): Promise<{ duplicate: boolean; event_id: string; order_id: string }> {
+  if (pool) {
+    return withTransaction(async (db) => {
+      if (!db) throw new Error("Database unavailable");
+      await ensureTrackingOpsSchema(db);
+      const tracked = await getTrackedOrderByWaybill(input.tracking_id, db);
+      if (!tracked) throw new Error("Unknown waybill");
+      const inserted = await db.query(
+        `insert into courier_webhook_events
+           (fingerprint, tracking_id, order_id, status, checkpoint, attempt, payload)
+         values ($1,$2,$3,$4,$5,$6,$7::jsonb)
+         on conflict (fingerprint) do nothing returning id`,
+        [input.fingerprint, input.tracking_id, tracked.order.id, input.status,
+          input.checkpoint, input.attempt, JSON.stringify(input.payload)]
+      );
+      if (!inserted.rows[0]) {
+        const existing = await db.query("select id, order_id from courier_webhook_events where fingerprint = $1", [input.fingerprint]);
+        return { duplicate: true, event_id: existing.rows[0].id, order_id: existing.rows[0].order_id };
+      }
+      const eventId = inserted.rows[0].id as string;
+      await db.query("update shipping_manifests set last_checkpoint = $1 where id = $2", [input.checkpoint, tracked.manifest.id]);
+      await addTrackingEvent(tracked.order.id, input.checkpoint, input.status, db);
+      if (input.terminal_status) await updateOrderStatus(tracked.order.id, input.terminal_status, db);
+      for (const job of input.notifications) {
+        await db.query(
+          `insert into tracking_notification_jobs
+             (webhook_event_id, order_id, recipient, alert_kind, chat_id, body)
+           values ($1,$2,$3,$4,$5,$6) on conflict do nothing`,
+          [eventId, tracked.order.id, job.recipient, job.alert_kind, job.chat_id, job.body]
+        );
+      }
+      await db.query("update courier_webhook_events set processed_at = now() where id = $1", [eventId]);
+      return { duplicate: false, event_id: eventId, order_id: tracked.order.id };
+    });
+  }
+
+  const existing = [...memWebhookEvents.values()].find((e) => e.fingerprint === input.fingerprint);
+  if (existing) return { duplicate: true, event_id: existing.id, order_id: existing.order_id };
+  const tracked = await getTrackedOrderByWaybill(input.tracking_id, null);
+  if (!tracked) throw new Error("Unknown waybill");
+  const now = new Date().toISOString();
+  const event: CourierWebhookEvent = {
+    id: randomUUID(), fingerprint: input.fingerprint, tracking_id: input.tracking_id,
+    order_id: tracked.order.id, status: input.status, checkpoint: input.checkpoint,
+    payload: input.payload, received_at: now, processed_at: now, processing_error: "",
+  };
+  memWebhookEvents.set(event.id, event);
+  await updateManifestCheckpoint(tracked.manifest.id, input.checkpoint);
+  await addTrackingEvent(tracked.order.id, input.checkpoint, input.status, null);
+  if (input.terminal_status) await updateOrderStatus(tracked.order.id, input.terminal_status, null);
+  for (const item of input.notifications) {
+    const job: TrackingNotificationJob = {
+      id: randomUUID(), webhook_event_id: event.id, order_id: tracked.order.id,
+      ...item, status: "pending", attempts: 0, next_attempt_at: now,
+      last_error: "", created_at: now, sent_at: null,
+    };
+    memNotificationJobs.set(job.id, job);
+  }
+  return { duplicate: false, event_id: event.id, order_id: tracked.order.id };
+}
+
+export async function claimDueTrackingNotifications(limit = 10): Promise<TrackingNotificationJob[]> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const { rows } = await pool.query(
+      `with due as (
+         select id from tracking_notification_jobs
+          where status in ('pending','failed') and next_attempt_at <= now() and attempts < 6
+          order by next_attempt_at asc limit $1 for update skip locked
+       )
+       update tracking_notification_jobs j set status = 'processing', attempts = attempts + 1
+        from due where j.id = due.id returning j.*`,
+      [limit]
+    );
+    return rows as TrackingNotificationJob[];
+  }
+  const now = Date.now();
+  return [...memNotificationJobs.values()]
+    .filter((j) => ["pending", "failed"].includes(j.status) && new Date(j.next_attempt_at).getTime() <= now && j.attempts < 6)
+    .slice(0, limit)
+    .map((j) => {
+      const claimed = { ...j, status: "processing" as const, attempts: j.attempts + 1 };
+      memNotificationJobs.set(j.id, claimed);
+      return claimed;
+    });
+}
+
+export async function finishTrackingNotification(id: string, error?: string): Promise<void> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    if (!error) {
+      await pool.query("update tracking_notification_jobs set status='sent', sent_at=now(), last_error='' where id=$1", [id]);
+    } else {
+      await pool.query(
+        `update tracking_notification_jobs set status='failed', last_error=$2,
+           next_attempt_at=now() + make_interval(secs => least(3600, 30 * power(2, greatest(0, attempts - 1)))::int)
+         where id=$1`,
+        [id, error.slice(0, 500)]
+      );
+    }
+    return;
+  }
+  const job = memNotificationJobs.get(id);
+  if (!job) return;
+  memNotificationJobs.set(id, error
+    ? { ...job, status: "failed", last_error: error.slice(0, 500), next_attempt_at: new Date(Date.now() + Math.min(3_600_000, 30_000 * 2 ** Math.max(0, job.attempts - 1))).toISOString() }
+    : { ...job, status: "sent", last_error: "", sent_at: new Date().toISOString() });
+}
+
+export async function getTrackingHealth(): Promise<TrackingHealth> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const [summary, problems] = await Promise.all([
+      pool.query(
+        `select
+          (select max(received_at) from courier_webhook_events) as last_webhook_at,
+          (select max(sent_at) from tracking_notification_jobs where status='sent') as last_notification_at,
+          (select count(*)::int from tracking_notification_jobs where status in ('pending','processing')) as queue_pending,
+          (select count(*)::int from tracking_notification_jobs where status='failed') as queue_failed,
+          (select count(*)::int from shipping_manifests m join orders o on o.id=m.order_id
+            where o.order_status='booked' and coalesce((select max(created_at) from tracking_events t where t.order_id=o.id),m.created_at) < now()-interval '24 hours') as stale_in_flight`
+      ),
+      pool.query(
+        `with latest as (
+           select distinct on (e.order_id) e.* from courier_webhook_events e
+           order by e.order_id, e.received_at desc
+         )
+         select e.order_id, o.order_no, o.customer_name, o.phone_number,
+          e.tracking_id, e.checkpoint, e.status, e.attempt, e.received_at as occurred_at,
+          (select case
+             when bool_or(j.status='failed') then 'failed'
+             when bool_or(j.status in ('pending','processing')) then 'pending'
+             when bool_or(j.status='sent') then 'sent'
+             else null end
+           from tracking_notification_jobs j where j.webhook_event_id=e.id) as notification_status
+         from latest e join orders o on o.id=e.order_id
+         where e.status in ('rescheduled','failed_to_deliver') and o.order_status='booked'
+         order by e.received_at desc limit 50`
+      ),
+    ]);
+    return { ...summary.rows[0], problems: problems.rows } as TrackingHealth;
+  }
+  const events = [...memWebhookEvents.values()].sort((a, b) => b.received_at.localeCompare(a.received_at));
+  const jobs = [...memNotificationJobs.values()];
+  return {
+    last_webhook_at: events[0]?.received_at ?? null,
+    last_notification_at: jobs.filter((j) => j.sent_at).sort((a, b) => (b.sent_at ?? "").localeCompare(a.sent_at ?? ""))[0]?.sent_at ?? null,
+    queue_pending: jobs.filter((j) => ["pending", "processing"].includes(j.status)).length,
+    queue_failed: jobs.filter((j) => j.status === "failed").length,
+    stale_in_flight: 0,
+    problems: [],
+  };
 }
 
 // --- Products (presets + physical stock) -------------------------------------

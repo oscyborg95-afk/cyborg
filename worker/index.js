@@ -60,6 +60,26 @@ const io = new Server(server, { cors: { origin: "*" } });
 let ready = false;
 let latestQr = null; // data:image/png;base64,... — the most recent QR to scan, if any
 
+function startTrackingFallbackScheduler() {
+  const url = process.env.APP_TRACKING_CRON_URL;
+  const secret = process.env.CRON_SECRET;
+  if (!url || !secret) {
+    console.log("[cyborg-wa-worker] tracking fallback scheduler disabled (APP_TRACKING_CRON_URL / CRON_SECRET not set)");
+    return;
+  }
+  const run = async () => {
+    try {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${secret}` } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 160)}`);
+      console.log("[cyborg-wa-worker] tracking fallback completed");
+    } catch (err) {
+      console.error("[cyborg-wa-worker] tracking fallback failed:", err.message);
+    }
+  };
+  setTimeout(run, 60_000);
+  setInterval(run, 10 * 60_000);
+}
+
 function emitMessage(msg) {
   io.emit("wa:message", msg);
 }
@@ -249,6 +269,7 @@ if (MOCK) {
   server.listen(PORT, () => {
     setReady(true);
     console.log(`[cyborg-wa-worker] MOCK mode on :${PORT}`);
+    startTrackingFallbackScheduler();
   });
   return;
 }
@@ -834,7 +855,10 @@ app.post("/send", async (req, res) => {
 });
 
 // Listen immediately — /qr and /health must be reachable before the scan.
-server.listen(PORT, () => console.log(`[cyborg-wa-worker] LIVE mode on :${PORT} (waiting for QR scan)`));
+server.listen(PORT, () => {
+  console.log(`[cyborg-wa-worker] LIVE mode on :${PORT} (waiting for QR scan)`);
+  startTrackingFallbackScheduler();
+});
 
 ensureTables()
   .then(connectToWhatsApp)
