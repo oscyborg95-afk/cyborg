@@ -475,7 +475,7 @@ export default function OrdersPage() {
     : 0;
 
   return (
-    <main className="mx-auto max-w-5xl space-y-5 p-5 sm:p-6">
+    <main className="mx-auto min-w-0 max-w-5xl space-y-5 p-4 sm:p-6">
       <header className="flex flex-wrap items-center gap-3">
         <Froggy mood={orders.length > 0 ? "happy" : "idle"} size={56} />
         <div>
@@ -484,7 +484,7 @@ export default function OrdersPage() {
             Every order, its courier status, and the full delivery timeline
           </p>
         </div>
-        <div className="ml-auto flex gap-2">
+        <div className="flex w-full flex-wrap gap-2 lg:ml-auto lg:w-auto">
           <Button
             tone={showManual ? "ghost" : "gold"}
             onClick={() => {
@@ -713,8 +713,8 @@ export default function OrdersPage() {
             <p className="font-display text-sm font-bold text-ink-soft">No orders yet.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
+          <div className="overflow-x-auto rounded-xl border border-cardline/60" role="region" aria-label="Orders table" tabIndex={0}>
+            <table className="w-full min-w-[760px] text-left text-sm">
               <thead>
                 <tr className="border-b-2 border-cardline font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
                   <th className="py-2 pr-3">Customer</th>

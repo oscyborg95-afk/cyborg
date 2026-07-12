@@ -12,7 +12,7 @@ const TONE_CLASS: Record<Tone, string> = {
   grape: "bg-grape border-grape-dark text-white",
   flame: "bg-flame border-flame-dark text-white",
   gold: "bg-gold border-gold-dark text-ink",
-  ghost: "bg-white border-cardline text-ink",
+  ghost: "bg-surface border-cardline text-ink",
 };
 
 export function Button({
@@ -47,7 +47,7 @@ export function ProgressRing({
   size = 180,
   stroke = 16,
   color = "var(--color-frog)",
-  track = "#eee7d8",
+  track = "var(--color-track)",
   children,
 }: {
   value: number; // 0..100
@@ -98,7 +98,7 @@ export function ProgressBar({
 }) {
   const clamped = Math.max(0, Math.min(100, value));
   return (
-    <div className={`h-5 w-full overflow-hidden rounded-full bg-[#eee7d8] ${className}`}>
+    <div className={`h-5 w-full overflow-hidden rounded-full bg-track ${className}`}>
       <div
         className="relative h-full rounded-full"
         style={{

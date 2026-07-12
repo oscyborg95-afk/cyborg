@@ -17,6 +17,16 @@
   --color-ink: #3f3a34;
   --color-ink-soft: #8a8178;
   --color-cardline: #e9e2d6;
+  --color-surface: #ffffff;
+  --color-surface-soft: #f2ede3;
+  --color-surface-raised: #ffffff;
+  --color-track: #eee7d8;
+  --color-danger-bg: #fdecec;
+  --color-danger-line: #f3c1c1;
+  --color-danger-ink: #c04545;
+  --color-disabled-bg: #e5dfd4;
+  --color-disabled-ink: #706961;
+  --color-disabled-line: #c9c0b3;
 
   /* The three froggy characters + play accents */
   --color-frog: #58cc02; /* Steve – green (primary / success) */
@@ -145,6 +155,34 @@
 
 html {
   height: 100%;
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --color-cream: #12171b;
+  --color-pond: #203c2c;
+  --color-sky-tint: #183544;
+  --color-grape-tint: #352640;
+  --color-flame-tint: #402f1d;
+  --color-ink: #f3eee6;
+  --color-ink-soft: #b5c1c5;
+  --color-cardline: #3a4b50;
+  --color-surface: #1d282d;
+  --color-surface-soft: #243238;
+  --color-surface-raised: #29383e;
+  --color-track: #34434a;
+  --color-danger-bg: #43282b;
+  --color-danger-line: #76434a;
+  --color-danger-ink: #ff9ca5;
+  --color-disabled-bg: #334249;
+  --color-disabled-ink: #d0d8da;
+  --color-disabled-line: #51646b;
+  --color-frog-dark: #7edb37;
+  --color-sky-dark: #63c7f7;
+  --color-grape-dark: #c38af1;
+  --color-flame-dark: #ffb443;
+  --color-gold-dark: #ffd84d;
 }
 
 body {
@@ -187,17 +225,75 @@ body {
   border-bottom-width: 1px;
 }
 .btn3d:disabled {
-  opacity: 0.5;
+  opacity: 1;
+  background: var(--color-disabled-bg);
+  border-color: var(--color-disabled-line);
+  color: var(--color-disabled-ink);
   cursor: not-allowed;
   transform: none;
 }
 
+[data-theme="dark"] input:disabled,
+[data-theme="dark"] textarea:disabled,
+[data-theme="dark"] select:disabled {
+  opacity: 1;
+  background-color: var(--color-disabled-bg);
+  border-color: var(--color-disabled-line);
+  color: var(--color-disabled-ink);
+}
+
 /* Card with a soft bottom lip for depth. */
 .card3d {
-  background: #ffffff;
+  background: var(--color-surface);
   border: 2px solid var(--color-cardline);
   border-bottom-width: 5px;
   border-radius: 1.25rem;
+}
+
+/* Compatibility layer for legacy light utilities. Kept scoped to dark mode so
+   invoice output and Froggy artwork can retain intentional white. */
+[data-theme="dark"] .bg-white,
+[data-theme="dark"] .bg-white\/50,
+[data-theme="dark"] .bg-white\/60,
+[data-theme="dark"] .bg-white\/70,
+[data-theme="dark"] .bg-white\/80 {
+  background-color: color-mix(in srgb, var(--color-surface) 88%, transparent);
+}
+[data-theme="dark"] .bg-\[\#f2ede3\],
+[data-theme="dark"] .bg-\[\#eee7d8\],
+[data-theme="dark"] .bg-\[\#e8e2d5\] { background-color: var(--color-surface-soft); }
+[data-theme="dark"] .bg-\[\#fdecec\] { background-color: var(--color-danger-bg); }
+[data-theme="dark"] .border-\[\#f3c1c1\] { border-color: var(--color-danger-line); }
+[data-theme="dark"] .text-\[\#c04545\] { color: var(--color-danger-ink); }
+
+[data-theme="dark"] input,
+[data-theme="dark"] textarea,
+[data-theme="dark"] select { caret-color: var(--color-frog); }
+
+.theme-toggle-icon {
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+[data-theme="dark"] .theme-toggle-icon { transform: rotate(-18deg) scale(1.06); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Printed invoices are documents, never themed UI. */
+[data-theme="dark"] .invoice-sheet,
+[data-theme="dark"] .invoice-sheet .bg-white,
+[data-theme="dark"] .invoice-sheet .bg-white\/50,
+[data-theme="dark"] .invoice-sheet .bg-white\/60,
+[data-theme="dark"] .invoice-sheet .bg-white\/70,
+[data-theme="dark"] .invoice-sheet .bg-white\/80 {
+  background: #fff;
+  color: #111;
+  color-scheme: light;
 }
 
 /* ============================================================

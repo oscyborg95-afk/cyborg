@@ -93,10 +93,33 @@ export default function QuestPage() {
 
   if (!metrics || !settings) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 text-ink-soft">
-        <Froggy mood="thinking" size={110} />
-        <p className="font-display text-lg font-bold">Loading your quest…</p>
-      </div>
+      <main className="mx-auto max-w-5xl space-y-5 p-5 sm:p-6" aria-busy="true" aria-label="Loading quest dashboard">
+        <Card className="flex items-center gap-4 p-4">
+          <Froggy mood="thinking" size={72} />
+          <div>
+            <p className="font-display text-lg font-extrabold text-ink">Loading your quest…</p>
+            <p className="font-display text-sm font-bold text-ink-soft">Gathering today&apos;s orders, streak, and goals.</p>
+          </div>
+        </Card>
+        <Card className="p-6">
+          <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
+            <div className="h-40 w-40 shrink-0 animate-pulse rounded-full bg-track" />
+            <div className="flex-1 space-y-3">
+              <div className="h-7 w-2/3 animate-pulse rounded-lg bg-track" />
+              <div className="h-4 w-1/2 animate-pulse rounded-lg bg-track" />
+              <div className="h-5 w-full animate-pulse rounded-full bg-track" />
+            </div>
+          </div>
+        </Card>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {[0, 1, 2].map((item) => (
+            <Card key={item} className="space-y-3 p-4">
+              <div className="h-5 w-3/4 animate-pulse rounded-lg bg-track" />
+              <div className="h-12 animate-pulse rounded-xl bg-track" />
+            </Card>
+          ))}
+        </div>
+      </main>
     );
   }
 
@@ -745,7 +768,7 @@ function MonthlyTrendCard({ months }: { months: MonthStat[] }) {
           Ship a few orders and your first month shows up here.
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto rounded-xl border border-cardline/60" role="region" aria-label="Performance details table" tabIndex={0}>
           <table className="w-full min-w-[560px] border-separate border-spacing-y-1">
             <thead>
               <tr className="font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft">

@@ -14,7 +14,7 @@ const TABS = [
 export function NavTabs() {
   const pathname = usePathname();
   return (
-    <div className="flex gap-1">
+    <div className="order-last flex w-full min-w-0 gap-1 overflow-x-auto [scrollbar-width:none] md:order-none md:w-auto md:flex-1 md:justify-center">
       {TABS.map((t) => {
         const active = t.href === "/" ? pathname === "/" : pathname.startsWith(t.href);
         return (
@@ -22,14 +22,14 @@ export function NavTabs() {
             key={t.href}
             href={t.href}
             className={
-              "flex items-center gap-1.5 rounded-xl px-3 py-1.5 font-display text-sm font-bold transition " +
+              "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-1.5 font-display text-sm font-bold transition md:flex-none md:px-3 " +
               (active
                 ? "bg-pond text-frog-dark"
                 : "text-ink-soft hover:bg-pond/60 hover:text-ink")
             }
           >
             <span className="text-base leading-none">{t.emoji}</span>
-            {t.label}
+            <span className="hidden sm:inline">{t.label}</span>
           </Link>
         );
       })}

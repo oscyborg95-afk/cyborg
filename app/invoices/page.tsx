@@ -101,7 +101,7 @@ export default function InvoicesPage() {
           </Card>
         )}
 
-        <Card className="flex flex-wrap items-center gap-4 p-4">
+        <Card className="flex min-w-0 flex-wrap items-center gap-4 p-4">
           <label className="font-display text-sm font-bold text-ink-soft">
             Day
             <input
@@ -127,7 +127,7 @@ export default function InvoicesPage() {
           </span>
           <Button
             tone="frog"
-            className="ml-auto"
+            className="w-full sm:ml-auto sm:w-auto"
             disabled={selected.length === 0}
             onClick={() => window.print()}
           >
@@ -182,7 +182,7 @@ export default function InvoicesPage() {
       </div>
 
       {/* ── A4 sheets (the only thing that prints) ─────────────────── */}
-      <div className="print-area mx-auto flex flex-col items-center gap-6 pb-10">
+      <div className="print-area mx-auto flex w-full flex-col items-start gap-6 overflow-x-auto px-3 pb-10 sm:items-center sm:px-0">
         {settings &&
           sheets.map((sheet, i) => (
             <div key={i} className="invoice-sheet">

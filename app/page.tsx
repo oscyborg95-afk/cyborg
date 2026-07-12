@@ -923,12 +923,12 @@ export default function Workspace() {
   }
 
   return (
-    <div className="grid h-full grid-cols-[290px_1fr_350px] divide-x-2 divide-cardline">
+    <div className="grid h-full min-w-0 auto-cols-[100%] grid-flow-col overflow-x-auto overscroll-x-contain scroll-smooth snap-x snap-mandatory divide-x-2 divide-cardline xl:grid-flow-row xl:grid-cols-[290px_minmax(0,1fr)_350px] xl:overflow-hidden xl:snap-none">
       <Confetti run={celebrate} />
       <XPBurst burst={xpBurst} />
 
       {/* LEFT: inbox */}
-      <aside className="flex min-h-0 flex-col bg-white/50">
+      <aside className="flex min-h-0 min-w-0 snap-start flex-col bg-white/50">
         <div className="border-b-2 border-cardline p-2">
           <input
             ref={searchRef}
@@ -1052,7 +1052,7 @@ export default function Workspace() {
       </aside>
 
       {/* CENTER: live chat + action bar */}
-      <section className="flex min-h-0 flex-col">
+      <section className="flex min-h-0 min-w-0 snap-start flex-col">
         {activeChat ? (
           <>
             <div className="flex items-center gap-3 border-b-2 border-cardline bg-white/60 px-4 py-2">
@@ -1246,7 +1246,7 @@ export default function Workspace() {
       </section>
 
       {/* RIGHT: logistics copilot */}
-      <aside className="flex min-h-0 flex-col overflow-y-auto bg-white/50 p-4">
+      <aside className="flex min-h-0 min-w-0 snap-start flex-col overflow-y-auto bg-white/50 p-4">
         <h2 className="mb-2 font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
           Dispatch copilot
         </h2>
