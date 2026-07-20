@@ -56,6 +56,11 @@ export const TEMPLATE_META: Record<
     hint: "Auto-sent when the courier marks the parcel out for delivery.",
     placeholders: ["{{tracking}}"],
   },
+  rescheduledDelivery: {
+    label: "📅 Rescheduled delivery",
+    hint: "Auto-sent when delivery is rescheduled or the courier could not deliver the parcel.",
+    placeholders: ["{{tracking}}"],
+  },
   deliveredThanks: {
     label: "💚 Delivered thank-you",
     hint: "Auto-sent when the courier confirms delivery.",
@@ -93,6 +98,8 @@ export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
 
   outForDelivery: `🛵 ඔබගේ පැකේජය අද delivery සඳහා පිටත් වෙලා!\n📦 Tracking: {{tracking}}\nකරුණාකර phone එක ළඟ තියාගන්න — courier ඔබට call කරයි. 📞`,
 
+  rescheduledDelivery: `ඔබගේ පැකේජය අද deliver කිරීමට නොහැකි වූ නිසා නැවත delivery සඳහා reschedule කර ඇත. 🙏\nකරුණාකර phone එක ළඟ තබාගන්න. Courier නැවත ඔබව සම්බන්ධ කරයි. 📞\n📦 Tracking: {{tracking}}`,
+
   deliveredThanks: `ඔබගේ පැකේජය ලැබුණා! 🎉\nDaily Cart එක්ක order කළාට බොහෝම ස්තූතියි 💚\nමොනවා හරි ප්‍රශ්නයක් තියෙනවා නම් මේ chat එකට reply කරන්න.`,
 
   returnedApology: `ඔබගේ පැකේජය deliver කරන්න බැරි වුණා 😔\nතවමත් ඕන නම් නැවත යවන්න පුළුවන් — *OK* කියලා reply කරන්න, අපි redeliver කරන්නම්! 🚚`,
@@ -128,6 +135,8 @@ export function makeTemplates(overrides: MessageTemplates = {}) {
     followUpConfirm: () => renderTemplate(src("followUpConfirm"), {}),
     outForDelivery: (trackingId: string) =>
       renderTemplate(src("outForDelivery"), { tracking: trackingId }),
+    rescheduledDelivery: (trackingId: string) =>
+      renderTemplate(src("rescheduledDelivery"), { tracking: trackingId }),
     deliveredThanks: () => renderTemplate(src("deliveredThanks"), {}),
     returnedApology: () => renderTemplate(src("returnedApology"), {}),
   };

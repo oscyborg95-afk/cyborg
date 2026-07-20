@@ -224,6 +224,7 @@ export type TemplateKey =
   | "followUpAddress"
   | "followUpConfirm"
   | "outForDelivery"
+  | "rescheduledDelivery"
   | "deliveredThanks"
   | "returnedApology";
 

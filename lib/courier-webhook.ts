@@ -95,9 +95,6 @@ export function webhookCheckpoint(event: ParsedCourierWebhook): string {
 }
 
 export function customerWebhookMessage(event: ParsedCourierWebhook): string | null {
-  if (event.status === "rescheduled" || event.status === "failed_to_deliver") {
-    return `ඔබගේ පැකේජය අද deliver කිරීමට නොහැකි වූ නිසා නැවත delivery සඳහා reschedule කර ඇත. 🙏\nකරුණාකර phone එක ළඟ තබාගන්න. Courier නැවත ඔබව සම්බන්ධ කරයි. 📞\n📦 Tracking: ${event.trackingId}`;
-  }
   if (event.status === "redelivery") {
     return `ඔබගේ පැකේජය නැවත delivery සඳහා පිටත් කර ඇත. 🚚\nකරුණාකර phone එක ළඟ තබාගන්න. 📞\n📦 Tracking: ${event.trackingId}`;
   }
