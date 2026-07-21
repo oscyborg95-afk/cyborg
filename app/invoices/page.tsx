@@ -1,6 +1,6 @@
 "use client";
 
-// Batch invoice printing: pick a day, get every booked order as 8-up A4 sheets
+// Batch invoice printing: pick a day or range, get every booked order as 8-up A4 sheets
 // (2 × 4 per page), each with the business block, customer block, item, COD
 // breakdown and a scannable Code-128 barcode of the courier tracking ID.
 // Browser print → save the whole batch as one PDF or send straight to paper.
@@ -14,6 +14,8 @@ import { Button, Card } from "../components/ui";
 const rs = (n: number) => `Rs. ${Math.round(n).toLocaleString("en-LK")}`;
 const localDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA"); // YYYY-MM-DD
 
+type DateFilterMode = "single" | "range" | "all";
+
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -21,11 +23,14 @@ function chunk<T>(arr: T[], size: number): T[][] {
 }
 
 export default function InvoicesPage() {
+  const today = useMemo(() => new Date().toLocaleDateString("en-CA"), []);
   const [orders, setOrders] = useState<Order[]>([]);
   const [manifests, setManifests] = useState<ShippingManifest[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
-  const [date, setDate] = useState(() => new Date().toLocaleDateString("en-CA"));
-  const [allDates, setAllDates] = useState(false);
+  const [filterMode, setFilterMode] = useState<DateFilterMode>("single");
+  const [date, setDate] = useState(today);
+  const [rangeFrom, setRangeFrom] = useState(today);
+  const [rangeTo, setRangeTo] = useState(today);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [loaded, setLoaded] = useState(false);
 
@@ -54,14 +59,22 @@ export default function InvoicesPage() {
     return map;
   }, [manifests]);
 
+  const rangeIsValid = Boolean(rangeFrom && rangeTo && rangeFrom <= rangeTo);
+
   // Printable = has a tracking ID (was actually handed to the courier).
   const eligible = useMemo(
     () =>
       orders
         .filter((o) => manifestByOrder.has(o.id))
-        .filter((o) => allDates || localDay(o.created_at) === date)
+        .filter((o) => {
+          if (filterMode === "all") return true;
+
+          const orderDay = localDay(o.created_at);
+          if (filterMode === "single") return orderDay === date;
+          return rangeIsValid && orderDay >= rangeFrom && orderDay <= rangeTo;
+        })
         .sort((a, b) => a.created_at.localeCompare(b.created_at)),
-    [orders, manifestByOrder, allDates, date]
+    [orders, manifestByOrder, filterMode, date, rangeFrom, rangeTo, rangeIsValid]
   );
 
   const selected = eligible.filter((o) => !excluded.has(o.id));
@@ -87,7 +100,7 @@ export default function InvoicesPage() {
           <div>
             <h1 className="font-display text-2xl font-extrabold text-ink">Invoice printer</h1>
             <p className="font-display text-sm font-bold text-ink-soft">
-              8 invoices per A4 sheet · print or save the whole day as one PDF
+              8 invoices per A4 sheet · print or save the selected batch as one PDF
             </p>
           </div>
         </div>
@@ -101,26 +114,85 @@ export default function InvoicesPage() {
           </Card>
         )}
 
-        <Card className="flex min-w-0 flex-wrap items-center gap-4 p-4">
-          <label className="font-display text-sm font-bold text-ink-soft">
-            Day
-            <input
-              type="date"
-              value={date}
-              disabled={allDates}
-              onChange={(e) => setDate(e.target.value)}
-              className="ml-2 rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog disabled:opacity-40"
-            />
-          </label>
-          <label className="flex items-center gap-2 font-display text-sm font-bold text-ink-soft">
-            <input
-              type="checkbox"
-              checked={allDates}
-              onChange={(e) => setAllDates(e.target.checked)}
-              className="h-4 w-4 accent-[var(--color-frog)]"
-            />
-            All days
-          </label>
+        <Card className="flex min-w-0 flex-wrap items-end gap-4 p-4">
+          <fieldset className="min-w-0 space-y-3">
+            <legend className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
+              Invoice dates
+            </legend>
+            <div className="flex flex-wrap gap-2">
+              {([
+                ["single", "Single day"],
+                ["range", "Date range"],
+                ["all", "All days"],
+              ] as const).map(([mode, label]) => (
+                <label
+                  key={mode}
+                  className={`cursor-pointer rounded-xl border-2 px-3 py-2 font-display text-sm font-extrabold transition-colors focus-within:ring-2 focus-within:ring-frog focus-within:ring-offset-2 ${
+                    filterMode === mode
+                      ? "border-frog bg-pond text-ink"
+                      : "border-cardline bg-cream/60 text-ink-soft hover:border-frog/60"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="invoice-date-filter"
+                    value={mode}
+                    checked={filterMode === mode}
+                    onChange={() => setFilterMode(mode)}
+                    className="sr-only"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          {filterMode === "single" && (
+            <label className="font-display text-sm font-bold text-ink-soft">
+              Day
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="ml-2 rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+              />
+            </label>
+          )}
+
+          {filterMode === "range" && (
+            <div className="flex min-w-0 flex-wrap items-start gap-3">
+              <label className="font-display text-sm font-bold text-ink-soft">
+                From
+                <input
+                  type="date"
+                  value={rangeFrom}
+                  max={rangeTo || undefined}
+                  aria-describedby={!rangeIsValid ? "invoice-range-error" : undefined}
+                  aria-invalid={!rangeIsValid}
+                  onChange={(e) => setRangeFrom(e.target.value)}
+                  className="ml-2 rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+                />
+              </label>
+              <label className="font-display text-sm font-bold text-ink-soft">
+                To
+                <input
+                  type="date"
+                  value={rangeTo}
+                  min={rangeFrom || undefined}
+                  aria-describedby={!rangeIsValid ? "invoice-range-error" : undefined}
+                  aria-invalid={!rangeIsValid}
+                  onChange={(e) => setRangeTo(e.target.value)}
+                  className="ml-2 rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+                />
+              </label>
+              {!rangeIsValid && (
+                <p id="invoice-range-error" role="alert" className="basis-full font-display text-xs font-extrabold text-flame-dark">
+                  Choose a From date on or before the To date.
+                </p>
+              )}
+            </div>
+          )}
+
           <span className="font-display text-sm font-bold text-ink">
             {selected.length} of {eligible.length} shipments selected · {sheets.length}{" "}
             {sheets.length === 1 ? "sheet" : "sheets"}
@@ -139,7 +211,13 @@ export default function InvoicesPage() {
           <Card className="flex flex-col items-center gap-3 p-10 text-center">
             <Froggy mood="sleepy" size={90} />
             <p className="font-display text-lg font-extrabold text-ink">
-              No shipped orders {allDates ? "yet" : "on this day"}
+              {filterMode === "all"
+                ? "No shipped orders yet"
+                : filterMode === "range"
+                  ? rangeIsValid
+                    ? "No shipped orders in this date range"
+                    : "This date range is invalid"
+                  : "No shipped orders on this day"}
             </p>
             <p className="font-display text-sm font-bold text-ink-soft">
               Invoices appear here once orders are dispatched with a tracking ID.
