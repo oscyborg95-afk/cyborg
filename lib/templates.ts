@@ -58,7 +58,7 @@ export const TEMPLATE_META: Record<
   },
   rescheduledDelivery: {
     label: "📅 Rescheduled delivery",
-    hint: "Auto-sent when delivery is rescheduled or the courier could not deliver the parcel.",
+    hint: "Auto-sent when the courier confirms that delivery has been rescheduled.",
     placeholders: ["{{tracking}}"],
   },
   deliveredThanks: {

@@ -94,7 +94,13 @@ export function webhookCheckpoint(event: ParsedCourierWebhook): string {
     .join(" — ");
 }
 
-export function customerWebhookMessage(event: ParsedCourierWebhook): string | null {
+export function customerWebhookMessage(
+  event: ParsedCourierWebhook,
+  rescheduledDeliveryMessage?: string
+): string | null {
+  if (event.status === "rescheduled") {
+    return rescheduledDeliveryMessage ?? null;
+  }
   if (event.status === "redelivery") {
     return `ඔබගේ පැකේජය නැවත delivery සඳහා පිටත් කර ඇත. 🚚\nකරුණාකර phone එක ළඟ තබාගන්න. 📞\n📦 Tracking: ${event.trackingId}`;
   }

@@ -82,9 +82,7 @@ export async function POST(req: NextRequest) {
   const templates = makeTemplates(settings.templates);
   const customerMessage = standardKind
     ? alertBodyFor(templates, standardKind, event.trackingId)
-    : event.status === "rescheduled" || event.status === "failed_to_deliver"
-      ? templates.rescheduledDelivery(event.trackingId)
-      : customerWebhookMessage(event);
+    : customerWebhookMessage(event, templates.rescheduledDelivery(event.trackingId));
   if (customerMessage && (!standardKind || !(await hasSentAlert(tracked.order.id, standardKind)))) {
     notifications.push({
       recipient: "customer", alert_kind: standardKind,

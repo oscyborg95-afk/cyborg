@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  customerWebhookMessage,
   inspectCourierWebhook,
   parseCourierWebhook,
   webhookCheckpoint,
@@ -39,4 +40,17 @@ test("accepts alternative waybill and mapped-status keys", () => {
     parseCourierWebhook({ tracking_number: "AT123456", mapped_status: "failed_to_deliver" })?.status,
     "failed_to_deliver"
   );
+});
+
+test("only a rescheduled event sends the rescheduled-delivery customer message", () => {
+  const rescheduled = {
+    trackingId: "AT123456",
+    status: "rescheduled",
+    remarks: "",
+    attempt: 1,
+  };
+  const failed = { ...rescheduled, status: "failed_to_deliver" };
+
+  assert.equal(customerWebhookMessage(rescheduled, "Delivery rescheduled"), "Delivery rescheduled");
+  assert.equal(customerWebhookMessage(failed, "Delivery rescheduled"), null);
 });
