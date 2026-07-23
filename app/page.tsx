@@ -6,7 +6,7 @@ import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
 import { chatIdToPhone } from "@/lib/phone";
 import { makeTemplates } from "@/lib/templates";
 import { itemsSubtotal } from "@/lib/items";
-import { customerRisk } from "@/lib/risk";
+import { customerRisk, phoneKey } from "@/lib/risk";
 import type { Metrics } from "@/lib/metrics";
 import type {
   BusinessSettings,
@@ -285,6 +285,7 @@ export default function Workspace() {
   const prevWaReadyRef = useRef<boolean | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const deepLinkHandledRef = useRef(false);
   // Typing-presence throttle: at most one "composing" ping per 4s, "paused" after 3s idle.
   const typingRef = useRef<{ last: number; timer: ReturnType<typeof setTimeout> | null }>({
     last: 0,
@@ -294,7 +295,12 @@ export default function Workspace() {
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
   const activePhone = activeChatId ? chatIdToPhone(activeChatId) : null;
   const activeState: ChatStateValue = (activePhone && states[activePhone]?.state) || "NEW";
-  const activeOrders = orders.filter((o) => o.phone_number === activePhone);
+  const activeOrders = orders.filter(
+    (order) =>
+      activePhone &&
+      (phoneKey(order.phone_number) === phoneKey(activePhone) ||
+        (order.phone_2 && phoneKey(order.phone_2) === phoneKey(activePhone)))
+  );
   const activeRisk = activePhone ? customerRisk(orders, activePhone) : null;
   const latestManifest = manifests
     .filter((m) => activeOrders.some((o) => o.id === m.order_id))
@@ -304,7 +310,33 @@ export default function Workspace() {
     const res = await fetch("/api/whatsapp/chats");
     const data = await res.json();
     if (res.ok) {
-      setChats(data.chats);
+      const requested = deepLinkHandledRef.current
+        ? null
+        : new URLSearchParams(window.location.search).get("chat");
+      const hasRequested =
+        requested && (data.chats as WaChat[]).some((chat) => chat.id === requested);
+      setChats(
+        hasRequested
+          ? (data.chats as WaChat[]).map((chat) =>
+              chat.id === requested ? { ...chat, unreadCount: 0 } : chat
+            )
+          : data.chats
+      );
+      if (hasRequested && requested) {
+        deepLinkHandledRef.current = true;
+        setActiveChatId(requested);
+        fetch(`${WORKER_URL}/read`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chatId: requested }),
+        }).catch(() => {});
+        fetch(`/api/whatsapp/messages/${encodeURIComponent(requested)}`)
+          .then(async (messageRes) => {
+            const payload = await messageRes.json();
+            if (messageRes.ok) setMessages(payload.messages);
+          })
+          .catch(() => {});
+      }
       setWorkerOffline(false);
     } else if (data.offline) {
       setWorkerOffline(true);

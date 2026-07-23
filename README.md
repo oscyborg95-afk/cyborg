@@ -10,6 +10,9 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 |---|---|
 | `/` | **Three-panel workspace** — searchable inbox (`/` to search, `j`/`k` to move) with triage filters and a follow-up queue for chats stuck mid-order, live chat with a state-aware quick-action bar, and the logistics copilot (parse from chat → COD risk check → dispatch → auto-message the customer) |
 | `/orders` | Manual fallback flow (paste → parse → book → copy), order status bookkeeping, courier invoice upload and net-payout reconciliation, returned-order redelivery flow, CSV export |
+| `/attention` | **Attention Center** — ranked unreplied leads, stalled confirmations, AI handoffs, ready-to-dispatch orders, and delivery problems |
+| `/customers` | Customer 360 directory with lifetime value, delivery history, AI memory, language, tags, notes, and per-customer autonomy controls |
+| `/ai` | Autonomous salesperson control room — off/draft/auto mode, knowledge, tone, confidence threshold, quiet hours, and full decision audit |
 | `/broadcast` | Rate-limited WhatsApp blast to past customers (launches/restocks) |
 | `/analytics` | High-score board — levels, dispatch streak, net worth — plus return rates by district/product and an ad-spend/ROAS tracker |
 | `/login` | Operator login (only when `APP_PASSWORD` is set) |
@@ -24,6 +27,8 @@ parsing, one-click courier dispatch, and a gamified high-score board.
      needed). Scan the QR once at http://localhost:3001/qr — or just open the
      Workspace at :3000, which shows it inline. With `DATABASE_URL` set the session
      is stored in Postgres, so restarts and redeploys never need a re-scan.
+   The worker calls `APP_URL/api/agent/inbound` for autonomous replies. In
+   production set the same strong `AGENT_WEBHOOK_SECRET` on the web app and worker.
 3. Optional — Supabase: run `supabase/schema.sql` in the SQL editor, set `SUPABASE_URL`
    and `SUPABASE_SERVICE_ROLE_KEY`. Without these the app uses an in-memory store.
 4. Optional — courier: set `COURIER_API_URL` / `COURIER_API_KEY` and adjust the payload
@@ -67,6 +72,9 @@ the same `CRON_SECRET` value used by Vercel.
 | Operator auth gate (`APP_PASSWORD`) | `proxy.ts`, `lib/auth.ts`, `app/login` |
 | One-click dispatch (book + track + auto-message + state) | `app/api/dispatch/route.ts` |
 | Chat state machine (drives the dynamic action bar) | `lib/db.ts`, `app/api/chat-state/route.ts` |
+| Autonomous AI salesperson (catalog-grounded decisions, multilingual replies, confidence gates, handoff) | `lib/sales-agent.ts`, `lib/agent-runtime.ts`, `app/api/agent/*` |
+| Customer 360, AI memory, event history, and decision audit | `lib/crm-db.ts`, `lib/customers.ts`, `app/api/customers/*` |
+| Ranked Attention Center (sales, AI, and delivery exceptions) | `lib/attention.ts`, `app/api/attention/*` |
 | Message templates (Sinhala) | `lib/templates.ts` |
 | Gamified metrics (levels, streak, net worth) | `lib/metrics.ts`, `app/api/metrics/route.ts` |
 | Products + physical stock (presets, auto restock on returns) | `app/api/products/*`, managed on `/analytics` |

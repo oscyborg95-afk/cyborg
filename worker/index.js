@@ -84,6 +84,41 @@ function emitMessage(msg) {
   io.emit("wa:message", msg);
 }
 
+// Debounce bursty customer messages into one autonomous-agent turn. Customers
+// often send name, phone, and address as separate bubbles; one reply after the
+// burst feels natural and prevents contradictory decisions.
+const agentTimers = new Map();
+function scheduleSalesAgent(msg) {
+  if (msg.fromMe) return;
+  const baseUrl = process.env.APP_URL || "http://localhost:3000";
+  const delay = Math.max(500, Number(process.env.AI_REPLY_DEBOUNCE_MS || 1200));
+  const old = agentTimers.get(msg.chatId);
+  if (old) clearTimeout(old);
+  agentTimers.set(
+    msg.chatId,
+    setTimeout(async () => {
+      agentTimers.delete(msg.chatId);
+      try {
+        const response = await fetch(`${baseUrl}/api/agent/inbound`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-agent-secret": process.env.AGENT_WEBHOOK_SECRET || "",
+          },
+          body: JSON.stringify(msg),
+        });
+        if (!response.ok) {
+          console.error(
+            `[cyborg-wa-worker] sales agent webhook failed (${response.status}): ${(await response.text()).slice(0, 180)}`
+          );
+        }
+      } catch (err) {
+        console.error("[cyborg-wa-worker] sales agent webhook offline:", err.message);
+      }
+    }, delay)
+  );
+}
+
 function setReady(value) {
   ready = value;
   io.emit("wa:status", { ready });
@@ -263,6 +298,7 @@ if (MOCK) {
     };
     chat.messages.push(msg);
     emitMessage(msg);
+    scheduleSalesAgent(msg);
     res.json({ ok: true });
   });
 
@@ -673,6 +709,7 @@ async function connectToWhatsApp() {
         const isNew = await saveMessage(msg);
         if (isNew) {
           emitMessage(msg);
+          scheduleSalesAgent(msg);
           // Voice notes and photos often ARE the address — capture the bytes
           // so the AI parser can read them. Fire-and-forget; never blocks chat.
           captureMedia(m, msg).catch((err) =>
@@ -725,7 +762,7 @@ app.get("/messages/:chatId", async (req, res) => {
   if (!ready) return res.status(503).json({ error: "WhatsApp not linked yet — scan the QR at /qr" });
   try {
     const messages = await listMessages(req.params.chatId);
-    await resetUnread(req.params.chatId);
+    if (req.query.peek !== "1") await resetUnread(req.params.chatId);
     res.json(messages);
   } catch (err) {
     res.status(500).json({ error: String(err) });

@@ -5,6 +5,9 @@ import { usePathname } from "next/navigation";
 
 const TABS = [
   { href: "/", label: "Workspace", emoji: "💬" },
+  { href: "/attention", label: "Attention", emoji: "🔥" },
+  { href: "/customers", label: "Customers", emoji: "👥" },
+  { href: "/ai", label: "AI", emoji: "✨" },
   { href: "/orders", label: "Orders", emoji: "📦" },
   { href: "/invoices", label: "Invoices", emoji: "🖨️" },
   { href: "/broadcast", label: "Blast", emoji: "📣" },

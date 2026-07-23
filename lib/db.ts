@@ -77,6 +77,18 @@ if (DATABASE_URL) {
 // BEGIN/COMMIT; default to the pool for standalone, auto-committed queries.
 type Queryable = Pick<Pool, "query">;
 
+// Narrow escape hatch for bounded feature modules that share this pool. New
+// domains (CRM, attention, AI agent) keep their queries out of this already
+// large operational data file while still reusing one hot-reload-safe pool.
+export async function queryDatabase<T extends Record<string, unknown> = Record<string, unknown>>(
+  text: string,
+  values: unknown[] = []
+): Promise<{ rows: T[]; rowCount: number }> {
+  if (!pool) throw new Error("Database is not configured");
+  const result = await pool.query(text, values);
+  return { rows: result.rows as T[], rowCount: result.rowCount ?? 0 };
+}
+
 // Run `fn` inside a single Postgres transaction. In memory-fallback mode (no
 // pool) there is nothing to transact, so it just runs the body with a null
 // executor and the data functions hit their in-memory maps as usual.

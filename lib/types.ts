@@ -282,3 +282,144 @@ export interface WaMessage {
   // ("image" | "audio" | "sticker"), "" / undefined for plain text.
   media?: string;
 }
+
+// --- Customer intelligence + autonomous sales agent ------------------------
+
+export type CustomerLanguage = "auto" | "si" | "ta" | "en";
+export type AgentMode = "off" | "draft" | "auto";
+export type AgentRunStatus =
+  | "processing"
+  | "drafted"
+  | "sent"
+  | "skipped"
+  | "handoff"
+  | "failed";
+
+export interface CustomerProfile {
+  phone_key: string;
+  primary_phone: string;
+  display_name: string;
+  preferred_language: CustomerLanguage;
+  tags: string[];
+  notes: string;
+  ai_enabled: boolean;
+  ai_paused_until: string | null;
+  last_inbound_at: string | null;
+  last_outbound_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomerSummary extends CustomerProfile {
+  chat_id: string | null;
+  chat_state: ChatStateValue | null;
+  delivered_orders: number;
+  returned_orders: number;
+  active_orders: number;
+  lifetime_revenue: number;
+  last_order_at: string | null;
+  latest_message: string;
+  latest_message_at: number | null;
+  unread_count: number;
+}
+
+export type CustomerEventKind =
+  | "message_in"
+  | "message_out"
+  | "ai_reply"
+  | "ai_handoff"
+  | "state_changed"
+  | "order_ready"
+  | "profile_updated"
+  | "attention_created"
+  | "attention_resolved";
+
+export interface CustomerEvent {
+  id: string;
+  phone_key: string;
+  chat_id: string | null;
+  kind: CustomerEventKind;
+  source: "customer" | "operator" | "agent" | "system";
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export type AttentionKind =
+  | "unreplied"
+  | "stale_address"
+  | "stale_confirmation"
+  | "order_ready"
+  | "ai_handoff"
+  | "failed_message"
+  | "delivery_problem";
+export type AttentionPriority = "low" | "medium" | "high" | "urgent";
+export type AttentionStatus = "open" | "snoozed" | "resolved";
+
+export interface AttentionItem {
+  id: string;
+  unique_key: string;
+  phone_key: string;
+  chat_id: string | null;
+  kind: AttentionKind;
+  priority: AttentionPriority;
+  title: string;
+  summary: string;
+  status: AttentionStatus;
+  due_at: string | null;
+  snoozed_until: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+  customer?: CustomerSummary | null;
+}
+
+export interface AgentConfig {
+  mode: AgentMode;
+  min_confidence: number;
+  reply_delay_seconds: number;
+  business_context: string;
+  personality: string;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  updated_at: string;
+}
+
+export interface AgentDecision {
+  intent:
+    | "greeting"
+    | "product_question"
+    | "price_question"
+    | "availability"
+    | "order"
+    | "address"
+    | "confirmation"
+    | "tracking"
+    | "complaint"
+    | "other";
+  language: Exclude<CustomerLanguage, "auto">;
+  confidence: number;
+  reply: string;
+  next_state: ChatStateValue;
+  action: "reply" | "handoff" | "skip";
+  handoff_reason: string;
+  customer_name: string;
+  order_ready: boolean;
+  summary: string;
+}
+
+export interface AgentRun {
+  id: string;
+  trigger_message_id: string;
+  phone_key: string;
+  chat_id: string;
+  intent: AgentDecision["intent"] | null;
+  language: Exclude<CustomerLanguage, "auto"> | null;
+  confidence: number;
+  decision: AgentDecision | null;
+  reply: string;
+  status: AgentRunStatus;
+  error: string;
+  created_at: string;
+  completed_at: string | null;
+}

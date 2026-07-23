@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendWhatsAppMessage, WorkerOfflineError } from "@/lib/wa";
+import { ensureCustomerProfile, recordCustomerEvent } from "@/lib/crm-db";
+import { chatIdToPhone } from "@/lib/phone";
+import { phoneKey } from "@/lib/risk";
 
 export async function POST(req: NextRequest) {
   const { chatId, text, media } = await req.json();
@@ -8,6 +11,22 @@ export async function POST(req: NextRequest) {
   }
   try {
     await sendWhatsAppMessage(chatId, text ?? "", media);
+    const phone = chatIdToPhone(chatId);
+    const key = phoneKey(phone);
+    if (key.length >= 9) {
+      await ensureCustomerProfile({
+        phone_key: key,
+        primary_phone: phone,
+        direction: "outbound",
+      }).catch(() => {});
+      await recordCustomerEvent({
+        phone_key: key,
+        chat_id: chatId,
+        kind: "message_out",
+        source: "operator",
+        payload: { body: String(text ?? "").slice(0, 1000), has_media: Boolean(media?.data) },
+      }).catch(() => {});
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     const offline = err instanceof WorkerOfflineError;

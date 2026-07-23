@@ -87,6 +87,89 @@ create table if not exists chat_states (
   updated_at   timestamptz not null default now()
 );
 
+-- Customer intelligence. phone_key is the stable last nine digits used across
+-- local and international WhatsApp number formats.
+create table if not exists customer_profiles (
+  phone_key           varchar(9) primary key,
+  primary_phone       varchar not null,
+  display_name        varchar not null default '',
+  preferred_language  varchar not null default 'auto',
+  tags                jsonb not null default '[]'::jsonb,
+  notes               text not null default '',
+  ai_enabled          boolean not null default true,
+  ai_paused_until     timestamptz,
+  last_inbound_at     timestamptz,
+  last_outbound_at    timestamptz,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
+);
+
+create table if not exists customer_events (
+  id          uuid primary key default gen_random_uuid(),
+  phone_key   varchar(9) not null,
+  chat_id     varchar,
+  kind        varchar not null,
+  source      varchar not null,
+  payload     jsonb not null default '{}'::jsonb,
+  created_at  timestamptz not null default now()
+);
+create index if not exists idx_customer_events_phone
+  on customer_events(phone_key, created_at desc);
+
+-- Durable exception queue. unique_key lets repeated syncs refresh an open item
+-- instead of flooding the operator with duplicates.
+create table if not exists attention_items (
+  id              uuid primary key default gen_random_uuid(),
+  unique_key      varchar not null unique,
+  phone_key       varchar(9) not null,
+  chat_id         varchar,
+  kind            varchar not null,
+  priority        varchar not null default 'medium',
+  title           varchar not null,
+  summary         text not null default '',
+  status          varchar not null default 'open',
+  due_at          timestamptz,
+  snoozed_until   timestamptz,
+  payload         jsonb not null default '{}'::jsonb,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  resolved_at     timestamptz
+);
+create index if not exists idx_attention_open
+  on attention_items(status, priority, updated_at desc);
+
+create table if not exists ai_agent_config (
+  id                  int primary key default 1,
+  mode                varchar not null default 'draft',
+  min_confidence      numeric not null default 0.78,
+  reply_delay_seconds int not null default 6,
+  business_context    text not null default '',
+  personality         text not null default
+    'Warm, concise, helpful Sri Lankan ecommerce salesperson. Never pressure the customer.',
+  quiet_hours_start   varchar not null default '22:00',
+  quiet_hours_end     varchar not null default '07:00',
+  updated_at          timestamptz not null default now()
+);
+insert into ai_agent_config (id) values (1) on conflict do nothing;
+
+create table if not exists ai_agent_runs (
+  id                 uuid primary key default gen_random_uuid(),
+  trigger_message_id varchar not null unique,
+  phone_key          varchar(9) not null,
+  chat_id            varchar not null,
+  intent             varchar,
+  language           varchar,
+  confidence         numeric not null default 0,
+  decision           jsonb,
+  reply              text not null default '',
+  status             varchar not null default 'processing',
+  error              text not null default '',
+  created_at         timestamptz not null default now(),
+  completed_at       timestamptz
+);
+create index if not exists idx_ai_agent_runs_phone
+  on ai_agent_runs(phone_key, created_at desc);
+
 -- Cyborg OS: single-row settings for the gamified net-worth counter.
 create table if not exists business_settings (
   id               int primary key default 1,
