@@ -12,6 +12,7 @@ import {
   withExclusiveTrackingSync,
 } from "@/lib/db";
 import { getTrackingStatus } from "@/lib/couriers";
+import { isTemporaryCourierReturn } from "@/lib/courier-status";
 import { alertBodyFor, makeTemplates } from "@/lib/templates";
 import { phoneToChatId } from "@/lib/phone";
 import { sendWhatsAppMessage } from "@/lib/wa";
@@ -48,7 +49,14 @@ export async function runTrackingSync() {
   const manifestByOrder = new Map(manifests.map((m) => [m.order_id, m]));
 
   const inFlight = orders.filter(
-    (o) => o.order_status === "booked" && manifestByOrder.has(o.id)
+    (o) => {
+      const manifest = manifestByOrder.get(o.id);
+      if (!manifest) return false;
+      return (
+        o.order_status === "booked" ||
+        (o.order_status === "returned" && isTemporaryCourierReturn(manifest.last_checkpoint))
+      );
+    }
   );
 
   let delivered = 0;
@@ -92,6 +100,11 @@ export async function runTrackingSync() {
         await updateOrderStatus(order.id, "returned");
         returned++;
       } else {
+        // Repair orders that older status matching incorrectly finalized when
+        // the courier only meant "returned to branch for rescheduling".
+        if (order.order_status === "returned") {
+          await updateOrderStatus(order.id, "booked");
+        }
         inTransit++;
       }
       if (changed) {

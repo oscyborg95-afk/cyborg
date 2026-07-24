@@ -7,6 +7,7 @@ import type {
   TrackingEvent,
 } from "./types";
 import { courierCostFor } from "./districts";
+import { isTerminalCourierReturn } from "./courier-status";
 import { phoneKey } from "./risk";
 
 // Level thresholds by cumulative SHIPPED orders (anything handed to a courier).
@@ -234,6 +235,7 @@ export function computeMetrics(
   events: TrackingEvent[] = [],
   adSpend: AdSpend[] = []
 ): Metrics {
+  const orderById = new Map(orders.map((o) => [o.id, o]));
   const delivered = orders.filter((o) => o.order_status === "delivered").length;
   const totalPackages = orders.filter((o) => o.order_status !== "pending").length;
   const cashInFlight = orders
@@ -354,6 +356,12 @@ export function computeMetrics(
   const returnedPerDay = new Map<string, number>();
   for (const e of events) {
     if (e.outcome !== "delivered" && e.outcome !== "returned") continue;
+    if (
+      e.outcome === "returned" &&
+      !isTerminalCourierReturn(orderById.get(e.order_id)?.order_status, e.checkpoint)
+    ) {
+      continue;
+    }
     const bucket = e.outcome === "delivered" ? deliveredPerDay : returnedPerDay;
     const key = dayKey(new Date(e.created_at));
     bucket.set(key, (bucket.get(key) ?? 0) + 1);
@@ -459,11 +467,17 @@ export function computeMetrics(
   // returned) — the same when-cash-becomes-real timing the ROAS card uses.
   const returnedDayByOrder = new Map<string, string>();
   for (const e of events) {
-    if (e.outcome === "returned" && !returnedDayByOrder.has(e.order_id)) {
+    // A temporary "Returned to Branch Rescheduled" checkpoint used to be
+    // stored as a return. Only count a terminal event for an order that still
+    // has a returned outcome, so later-delivered parcels do not inflate P&L.
+    if (
+      e.outcome === "returned" &&
+      isTerminalCourierReturn(orderById.get(e.order_id)?.order_status, e.checkpoint) &&
+      !returnedDayByOrder.has(e.order_id)
+    ) {
       returnedDayByOrder.set(e.order_id, dayKey(new Date(e.created_at)));
     }
   }
-  const orderById = new Map(orders.map((o) => [o.id, o]));
   const monthPrefix = today.slice(0, 7); // "YYYY-MM" in Colombo time
   const from7 = addDays(today, -6);
   const inMonth = (day: string) => day.slice(0, 7) === monthPrefix;

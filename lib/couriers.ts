@@ -1,4 +1,5 @@
 import type { Order } from "./types";
+import { classifyCourierStatus } from "./courier-status";
 
 // Trans Express courier integration (https://portal.transexpress.lk/api).
 //
@@ -193,17 +194,6 @@ interface TxTrackingResponse {
   };
 }
 
-/** Map a courier status line to our order outcome. */
-function classifyStatus(text: string): TrackingResult["outcome"] {
-  const t = text.toLowerCase();
-  if (t.includes("deliver") && !t.includes("out for deliver")) return "delivered";
-  // Canceled parcels never leave (or come back) — either way the unit is
-  // physically back in the shed, which is what "returned" means to stock.
-  if (t.includes("return") || t.includes("reject") || t.includes("refus") || t.includes("cancel"))
-    return "returned";
-  return "in_transit";
-}
-
 /** Pull the most recent status string out of whatever shape the API returns. */
 function extractStatus(data: unknown): string | null {
   if (data == null) return null;
@@ -264,7 +254,7 @@ export async function getTrackingStatus(
   // and a remark change re-triggers the timeline + customer alert correctly.
   const checkpoint =
     latest?.remarks && latest.name === status ? `${status} — ${latest.remarks}` : status;
-  return { outcome: classifyStatus(status), checkpoint };
+  return { outcome: classifyCourierStatus(status), checkpoint };
 }
 
 // Mock tracking so the whole loop works before credentials arrive:
