@@ -23,6 +23,7 @@ import {
   canAutoSendDecision,
   insideQuietHours,
   needsAgentHandoff,
+  shouldPauseCustomer,
 } from "./agent-policy";
 import { sendWhatsAppMessage, workerFetch } from "./wa";
 import type { AgentRun, WaMessage } from "./types";
@@ -150,31 +151,35 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       config.min_confidence
     );
     if (needsHandoff) {
-      await updateCustomerProfile(key, {
-        ai_paused_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      });
+      const pauseCustomer = shouldPauseCustomer(decision);
+      if (pauseCustomer) {
+        await updateCustomerProfile(key, {
+          ai_paused_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        });
+      }
       await upsertAttention({
         unique_key: `ai-handoff:${key}`,
         phone_key: key,
         chat_id: trigger.chatId,
         kind: "ai_handoff",
-        priority: decision.intent === "complaint" ? "urgent" : "high",
-        title: decision.intent === "complaint" ? "Customer needs help now" : "AI needs a decision",
+        priority: pauseCustomer ? "urgent" : "high",
+        title: pauseCustomer ? "Customer needs help now" : "AI reply needs review",
         summary:
           decision.handoff_reason ||
           `Confidence ${Math.round(decision.confidence * 100)}% — review this conversation.`,
-        payload: { decision, trigger_message_id: trigger.id },
+        payload: { decision, trigger_message_id: trigger.id, customer_paused: pauseCustomer },
       });
       await recordCustomerEvent({
         phone_key: key,
         chat_id: trigger.chatId,
         kind: "ai_handoff",
         source: "agent",
-        payload: { decision },
+        payload: { decision, customer_paused: pauseCustomer },
       });
       // A confident complaint acknowledgement is safe and avoids leaving an
       // upset customer on read; the AI then pauses until the exception clears.
       if (
+        pauseCustomer &&
         config.mode === "auto" &&
         decision.confidence >= config.min_confidence &&
         decision.reply
@@ -187,7 +192,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
         });
       }
       return finishAgentRun(trigger.id, {
-        status: "handoff",
+        status: pauseCustomer ? "handoff" : "drafted",
         decision,
         reply: decision.reply,
       });

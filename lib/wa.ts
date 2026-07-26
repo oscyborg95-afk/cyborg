@@ -1,6 +1,10 @@
 // Server-side bridge to the headless WhatsApp worker (worker/index.js).
 
 const WA_WORKER_URL = process.env.WA_WORKER_URL || "http://localhost:3001";
+const configuredWorkerTimeout = Number(process.env.WA_WORKER_TIMEOUT_MS || 10_000);
+const WA_WORKER_TIMEOUT_MS = Number.isFinite(configuredWorkerTimeout)
+  ? Math.max(1_000, Math.min(30_000, configuredWorkerTimeout))
+  : 10_000;
 
 export class WorkerOfflineError extends Error {
   constructor() {
@@ -8,14 +12,41 @@ export class WorkerOfflineError extends Error {
   }
 }
 
-export async function workerFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`${WA_WORKER_URL}${path}`, { ...init, cache: "no-store" });
-  } catch {
-    throw new WorkerOfflineError();
+export class WorkerTimeoutError extends Error {
+  constructor() {
+    super(`WhatsApp worker did not respond within ${WA_WORKER_TIMEOUT_MS / 1000} seconds`);
   }
-  const data = await res.json();
+}
+
+export async function workerFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const callerSignal = init?.signal;
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, WA_WORKER_TIMEOUT_MS);
+
+  let res: Response;
+  let data: { error?: string };
+  try {
+    res = await fetch(`${WA_WORKER_URL}${path}`, {
+      ...init,
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    data = await res.json();
+  } catch (error) {
+    if (timedOut) throw new WorkerTimeoutError();
+    if (callerSignal?.aborted) throw error;
+    throw new WorkerOfflineError();
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  }
   if (!res.ok) throw new Error(data.error || `Worker error ${res.status}`);
   return data as T;
 }

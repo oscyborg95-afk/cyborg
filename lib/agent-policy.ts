@@ -24,6 +24,20 @@ export function needsAgentHandoff(
   return action === "handoff" || confidence < minimumConfidence;
 }
 
+export function shouldPauseCustomer(
+  decision: Pick<AgentDecision, "action" | "intent" | "handoff_reason">
+): boolean {
+  if (decision.action !== "handoff") return false;
+  if (decision.intent === "complaint") return true;
+
+  // The planner writes handoff reasons in English even when the customer is
+  // chatting in Sinhala or Tamil. Only explicit safety/support escalations
+  // pause the conversation; ordinary uncertainty remains a reviewable draft.
+  return /\b(refund|fraud|scam|unsafe|legal|police|human (?:agent|support)|speak to (?:a )?(?:human|person|manager))\b/i.test(
+    decision.handoff_reason
+  );
+}
+
 export function canAutoSendDecision(
   decision: Pick<AgentDecision, "intent" | "sales_stage" | "language_confidence">
 ): boolean {

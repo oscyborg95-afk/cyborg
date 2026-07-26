@@ -341,7 +341,15 @@ let pool = null;
 if (DATABASE_URL) {
   const { Pool, types } = require("pg");
   types.setTypeParser(20, Number); // bigint → number (our timestamps fit safely)
-  pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 3 });
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    max: 3,
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 10_000,
+    statement_timeout: 10_000,
+    idle_in_transaction_session_timeout: 15_000,
+  });
 }
 
 const memChats = new Map(); // jid -> { name, unread, lastTs, lastMessage }

@@ -69,6 +69,10 @@ if (DATABASE_URL) {
     connectionString: DATABASE_URL,
     ssl: { rejectUnauthorized: false },
     max: 5,
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 10_000,
+    statement_timeout: 10_000,
+    idle_in_transaction_session_timeout: 15_000,
   });
 }
 
