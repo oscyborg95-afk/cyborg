@@ -506,14 +506,22 @@ export async function claimAgentRun(input: {
     await ensureCrmSchema();
     const { rows } = await queryDatabase(
       `insert into ai_agent_runs (trigger_message_id, phone_key, chat_id)
-       values ($1,$2,$3) on conflict (trigger_message_id) do nothing returning *`,
+       values ($1,$2,$3)
+       on conflict (trigger_message_id) do update set
+         intent=null, language=null, confidence=0, decision=null, reply='',
+         status='processing', error='', feedback_status='none',
+         feedback_reason='', final_reply='', reviewed_at=null,
+         created_at=now(), completed_at=null
+       where ai_agent_runs.status='failed'
+       returning *`,
       [input.trigger_message_id, input.phone_key, input.chat_id]
     );
     return (rows[0] as unknown as AgentRun | undefined) ?? null;
   }
-  if (memRuns.has(input.trigger_message_id)) return null;
+  const existing = memRuns.get(input.trigger_message_id);
+  if (existing && existing.status !== "failed") return null;
   const run: AgentRun = {
-    id: randomUUID(),
+    id: existing?.id ?? randomUUID(),
     trigger_message_id: input.trigger_message_id,
     phone_key: input.phone_key,
     chat_id: input.chat_id,
@@ -585,7 +593,39 @@ export async function finishAgentRun(
   return next;
 }
 
+export async function expireStaleAgentRuns(maxAgeSeconds = 90): Promise<number> {
+  const safeAge = Math.max(30, Math.min(600, Math.round(maxAgeSeconds)));
+  const timeoutError =
+    "Agent execution timed out before completion. This run is safe to retry.";
+  if (usingSupabase) {
+    await ensureCrmSchema();
+    const { rows } = await queryDatabase(
+      `update ai_agent_runs set
+         status='failed', error=$2, completed_at=now()
+       where status='processing'
+         and created_at < now() - ($1::double precision * interval '1 second')
+       returning id`,
+      [safeAge, timeoutError]
+    );
+    return rows.length;
+  }
+  const cutoff = Date.now() - safeAge * 1000;
+  let expired = 0;
+  for (const [triggerId, run] of memRuns) {
+    if (run.status !== "processing" || new Date(run.created_at).getTime() >= cutoff) continue;
+    memRuns.set(triggerId, {
+      ...run,
+      status: "failed",
+      error: timeoutError,
+      completed_at: nowIso(),
+    });
+    expired += 1;
+  }
+  return expired;
+}
+
 export async function listAgentRuns(phoneKey?: string, limit = 100): Promise<AgentRun[]> {
+  await expireStaleAgentRuns();
   if (usingSupabase) {
     await ensureCrmSchema();
     const { rows } = await queryDatabase(

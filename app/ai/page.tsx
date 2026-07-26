@@ -120,6 +120,30 @@ export default function AiPage() {
     }
   }
 
+  async function retryRun(run: AgentRun) {
+    setReviewingId(run.id);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(
+        `/api/agent/runs/${encodeURIComponent(run.id)}/retry`,
+        { method: "POST" }
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not retry agent run");
+      if (data.run) {
+        setRuns((current) =>
+          current.map((entry) => entry.id === run.id ? data.run : entry)
+        );
+      }
+      setNotice("Agent run retried.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not retry agent run");
+    } finally {
+      setReviewingId("");
+    }
+  }
+
   if (loading) {
     return <main className="mx-auto max-w-6xl space-y-4 p-4 sm:p-6">{[100, 180, 460].map((height) => <div key={height} className="animate-pulse rounded-2xl border-2 border-cardline bg-surface-soft" style={{ height }} />)}</main>;
   }
@@ -338,6 +362,15 @@ export default function AiPage() {
                   )}
                   {run.reply && <p className="mt-2 line-clamp-3 rounded-xl bg-grape-tint p-2.5 text-xs font-semibold text-ink">“{run.reply}”</p>}
                   {(run.error || run.decision?.handoff_reason) && <p className="mt-2 text-xs font-bold text-danger-ink">{run.error || run.decision?.handoff_reason}</p>}
+                  {run.status === "failed" && (
+                    <button
+                      onClick={() => void retryRun(run)}
+                      disabled={reviewingId === run.id}
+                      className="mt-2 rounded-lg bg-sky px-3 py-2 font-display text-[11px] font-extrabold text-white disabled:opacity-50"
+                    >
+                      {reviewingId === run.id ? "Retrying…" : "Retry latest message"}
+                    </button>
+                  )}
                   {run.status === "drafted" && run.feedback_status === "pending" && (
                     <div className="mt-3 space-y-2 rounded-xl border-2 border-grape/20 bg-surface p-2.5">
                       <p className="text-[11px] font-extrabold text-ink">Teach the agent from this draft</p>

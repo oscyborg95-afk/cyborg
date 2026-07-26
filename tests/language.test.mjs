@@ -24,6 +24,13 @@ test("multiple romanized markers identify Singlish while short text stays ambigu
   assert.equal(detectLanguageHeuristic("price?"), null);
 });
 
+test("a conventional English greeting can be answered autonomously", () => {
+  const greeting = detectLanguageHeuristic("hi");
+  assert.equal(greeting?.language, "en");
+  assert.equal(greeting?.style, "en");
+  assert.ok(greeting?.confidence >= 0.9);
+});
+
 test("a manually selected language is authoritative without forcing the wrong script", () => {
   const selected = detectLanguageHeuristic("price kiyanna", "si");
   assert.equal(selected?.language, "si");

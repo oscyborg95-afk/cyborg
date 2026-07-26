@@ -55,6 +55,16 @@ export function detectLanguageHeuristic(
     };
   }
 
+  if (/^(hi|hello|hey|good\s+(morning|afternoon|evening))[!.?\s]*$/i.test(normalized)) {
+    return {
+      language: "en",
+      style: "en",
+      confidence: 0.94,
+      explicit: false,
+      evidence: "The customer used a conventional English greeting.",
+    };
+  }
+
   const sinhala = countMatches(normalized, SINHALA);
   const tamil = countMatches(normalized, TAMIL);
   const latin = countMatches(normalized, /[A-Za-z]/g);

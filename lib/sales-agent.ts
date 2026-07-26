@@ -14,16 +14,24 @@ import {
 export { insideQuietHours } from "./agent-policy";
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-
-const LanguageSchema = z.object({
-  language: z.enum(["si", "ta", "en"]),
-  style: z.enum(["si_native", "si_latin", "ta_native", "ta_latin", "en", "mixed"]),
-  confidence: z.number().min(0).max(1),
-  explicit: z.boolean(),
-  evidence: z.string(),
-});
+const GEMINI_REQUEST_TIMEOUT_MS = Math.min(
+  20_000,
+  Math.max(5_000, Number(process.env.GEMINI_REQUEST_TIMEOUT_MS) || 18_000)
+);
 
 const PlanSchema = z.object({
+  language: z.enum(["si", "ta", "en"]),
+  language_style: z.enum([
+    "si_native",
+    "si_latin",
+    "ta_native",
+    "ta_latin",
+    "en",
+    "mixed",
+  ]),
+  language_confidence: z.number().min(0).max(1),
+  language_explicit: z.boolean(),
+  language_evidence: z.string(),
   intent: z.enum([
     "greeting",
     "product_question",
@@ -63,28 +71,8 @@ const PlanSchema = z.object({
 });
 
 const ReplySchema = z.object({ reply: z.string() });
-const ValidationSchema = z.object({
-  matches_language: z.boolean(),
-  confidence: z.number().min(0).max(1),
-  reason: z.string(),
-});
 
 type SalesPlan = z.infer<typeof PlanSchema>;
-
-const LANGUAGE_RESPONSE_SCHEMA = {
-  type: "OBJECT",
-  properties: {
-    language: { type: "STRING", enum: ["si", "ta", "en"] },
-    style: {
-      type: "STRING",
-      enum: ["si_native", "si_latin", "ta_native", "ta_latin", "en", "mixed"],
-    },
-    confidence: { type: "NUMBER", minimum: 0, maximum: 1 },
-    explicit: { type: "BOOLEAN" },
-    evidence: { type: "STRING" },
-  },
-  required: ["language", "style", "confidence", "explicit", "evidence"],
-};
 
 function splitKeys(raw?: string | null): string[] {
   if (!raw) return [];
@@ -95,6 +83,26 @@ function apiKeys(raw?: string): string[] {
   const keys = splitKeys(raw);
   if (process.env.GEMINI_API_KEY) keys.push(...splitKeys(process.env.GEMINI_API_KEY));
   return [...new Set(keys)];
+}
+
+function googleRequestForKey(key: string): {
+  url: string;
+  headers: Record<string, string>;
+} {
+  if (key.startsWith("AQ.")) {
+    return {
+      url:
+        `https://aiplatform.googleapis.com/v1/publishers/google/models/` +
+        `${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(key)}`,
+      headers: { "Content-Type": "application/json" },
+    };
+  }
+  return {
+    url:
+      `https://generativelanguage.googleapis.com/v1beta/models/` +
+      `${encodeURIComponent(GEMINI_MODEL)}:generateContent`,
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+  };
 }
 
 async function generateStructured<T>(input: {
@@ -124,21 +132,33 @@ async function generateStructured<T>(input: {
   });
 
   let lastError = "Gemini request failed";
+  const deadline = Date.now() + GEMINI_REQUEST_TIMEOUT_MS;
   for (const key of input.keys) {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    const request = googleRequestForKey(key);
+    let response: Response;
+    try {
+      response = await fetch(request.url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        headers: request.headers,
         body,
-      }
-    );
+        signal: AbortSignal.timeout(remainingMs),
+      });
+    } catch (error) {
+      lastError =
+        error instanceof Error && error.name === "TimeoutError"
+          ? `Google AI request timed out after ${GEMINI_REQUEST_TIMEOUT_MS / 1000} seconds`
+          : "Google AI request failed before receiving a response";
+      continue;
+    }
     if (response.status === 429) {
-      lastError = "Gemini key is rate-limited";
+      lastError = "Google AI key is rate-limited";
       continue;
     }
     if (!response.ok) {
-      lastError = `Gemini request failed (${response.status}): ${(await response.text()).slice(0, 220)}`;
+      const detail = (await response.text()).replaceAll(key, "[redacted]").slice(0, 220);
+      lastError = `Google AI request failed (${response.status}): ${detail}`;
       continue;
     }
     const payload = (await response.json()) as {
@@ -183,27 +203,18 @@ function latestCustomerMessage(messages: WaMessage[]): string {
   return [...messages].reverse().find((message) => !message.fromMe)?.body.trim() ?? "";
 }
 
-async function classifyLanguage(input: {
-  keys: string[];
+function languageHint(input: {
   profile: CustomerProfile;
   memory: LeadMemory | null;
   messages: WaMessage[];
-}): Promise<LanguageAssessment> {
+}): LanguageAssessment | null {
   const latest = latestCustomerMessage(input.messages);
   const heuristic = detectLanguageHeuristic(
     latest,
     input.profile.language_locked ? input.profile.preferred_language : "auto"
   );
-  if (heuristic && (heuristic.explicit || heuristic.confidence >= 0.88)) return heuristic;
-
-  const customerMessages = input.messages
-    .filter((message) => !message.fromMe && message.body.trim())
-    .slice(-6)
-    .map((message) => message.body);
-
+  if (heuristic) return heuristic;
   if (
-    !heuristic &&
-    customerMessages.length === 1 &&
     latest.length <= 8 &&
     input.memory?.detected_language &&
     input.memory.language_style &&
@@ -218,33 +229,7 @@ async function classifyLanguage(input: {
       evidence: "A short ambiguous message inherits a strong established conversation language.",
     };
   }
-
-  return generateStructured({
-    keys: input.keys,
-    system: `You are a conservative Sri Lankan WhatsApp language router.
-Classify the language the CUSTOMER expects the shop to reply in, using only customer messages.
-si_native means Sinhala written in Sinhala script. si_latin means romanized Sinhala/Singlish.
-ta_native means Tamil written in Tamil script. ta_latin means romanized Tamil/Tanglish.
-en means English. mixed is only for a genuinely mixed style, not a few loan words.
-Short messages such as "ok", "price", numbers, names, and emoji are ambiguous. Use established
-conversation memory for them and lower confidence. An explicit request to use a language wins.
-Do not interpret SHOP messages as the customer's preferred language.`,
-    content: {
-      customer_messages: customerMessages,
-      heuristic,
-      established_memory: input.memory
-        ? {
-            language: input.memory.detected_language,
-            style: input.memory.language_style,
-            confidence: input.memory.language_confidence,
-            observations: input.memory.language_observations,
-          }
-        : null,
-    },
-    responseSchema: LANGUAGE_RESPONSE_SCHEMA,
-    parser: LanguageSchema,
-    temperature: 0,
-  });
+  return null;
 }
 
 async function planSalesTurn(input: {
@@ -256,12 +241,23 @@ async function planSalesTurn(input: {
   orders: Order[];
   messages: WaMessage[];
   currentState: string;
-  language: LanguageAssessment;
+  languageHint: LanguageAssessment | null;
 }): Promise<SalesPlan> {
   return generateStructured({
     keys: input.keys,
     system: `You are the sales planner for a Sri Lankan cash-on-delivery WhatsApp shop.
-You do not write the customer reply. Decide the safest, most useful next sales action.
+You do not write the customer reply. Classify the reply language and decide the safest,
+most useful next sales action in one analysis.
+
+LANGUAGE ROUTING
+- Classify the language the CUSTOMER expects the shop to reply in, using customer messages only.
+- si_native is Sinhala script; si_latin is romanized Sinhala/Singlish.
+- ta_native is Tamil script; ta_latin is romanized Tamil/Tanglish.
+- en is English. mixed is only for genuinely mixed writing, not a few loan words.
+- A manually locked language or explicit customer request wins.
+- Short messages such as "hi", "ok", numbers, names, and emoji are ambiguous. Use the
+  supplied language hint or established lead memory and lower confidence when neither exists.
+- Never infer the customer's language from SHOP messages.
 
 SALES METHOD
 - First answer the customer's actual question.
@@ -290,7 +286,7 @@ ${input.config.business_context || "Use only the supplied product catalog and or
         notes: input.profile.notes,
         tags: input.profile.tags,
       },
-      language: input.language,
+      language_hint: input.languageHint,
       current_operational_state: input.currentState,
       lead_memory: input.memory,
       products: compactProducts(input.products),
@@ -300,6 +296,14 @@ ${input.config.business_context || "Use only the supplied product catalog and or
     responseSchema: {
       type: "OBJECT",
       properties: {
+        language: { type: "STRING", enum: ["si", "ta", "en"] },
+        language_style: {
+          type: "STRING",
+          enum: ["si_native", "si_latin", "ta_native", "ta_latin", "en", "mixed"],
+        },
+        language_confidence: { type: "NUMBER", minimum: 0, maximum: 1 },
+        language_explicit: { type: "BOOLEAN" },
+        language_evidence: { type: "STRING" },
         intent: {
           type: "STRING",
           enum: [
@@ -331,6 +335,8 @@ ${input.config.business_context || "Use only the supplied product catalog and or
         facts_to_use: { type: "ARRAY", items: { type: "STRING" } },
       },
       required: [
+        "language", "language_style", "language_confidence", "language_explicit",
+        "language_evidence",
         "intent", "confidence", "sales_stage", "next_state", "action", "handoff_reason",
         "customer_name", "order_ready", "summary", "next_action", "objection",
         "customer_need", "interested_product", "quantity", "buying_intent",
@@ -365,7 +371,6 @@ async function writeReply(input: {
   plan: SalesPlan;
   language: LanguageAssessment;
   messages: WaMessage[];
-  retryReason?: string;
 }): Promise<string> {
   const result = await generateStructured({
     keys: input.keys,
@@ -382,7 +387,7 @@ ${languageWritingRule(input.language)}
 - Avoid headings, markdown, canned phrases, excessive emoji, fake urgency, and pressure.
 - Mention only facts_to_use. Never invent a product benefit, claim, testimonial, price, stock,
   discount, delivery date, guarantee, or policy.
-${input.retryReason ? `The previous reply failed validation: ${input.retryReason}. Correct it.` : ""}`,
+- Before returning, silently verify that the reply uses the requested language and writing style.`,
     content: {
       language: input.language,
       sales_plan: input.plan,
@@ -399,39 +404,6 @@ ${input.retryReason ? `The previous reply failed validation: ${input.retryReason
   return result.reply.trim().slice(0, 1600);
 }
 
-async function validateReplyLanguage(input: {
-  keys: string[];
-  reply: string;
-  language: LanguageAssessment;
-}): Promise<{ valid: boolean; reason: string }> {
-  const scriptCheck = validateReplyScript(input.reply, input.language.style);
-  if (!scriptCheck.valid) return scriptCheck;
-
-  const validation = await generateStructured({
-    keys: input.keys,
-    system: `You are a strict language QA checker for Sri Lankan WhatsApp messages.
-Check only whether the proposed shop reply matches the requested language and writing style.
-Common product names, COD, prices, place names, and a few normal loan words are allowed.
-Reject an English sentence presented as Singlish/Tanglish and reject unnecessary language switching.`,
-    content: { expected: input.language, proposed_reply: input.reply },
-    responseSchema: {
-      type: "OBJECT",
-      properties: {
-        matches_language: { type: "BOOLEAN" },
-        confidence: { type: "NUMBER", minimum: 0, maximum: 1 },
-        reason: { type: "STRING" },
-      },
-      required: ["matches_language", "confidence", "reason"],
-    },
-    parser: ValidationSchema,
-    temperature: 0,
-  });
-  return {
-    valid: validation.matches_language && validation.confidence >= 0.8,
-    reason: validation.reason || "Reply language could not be verified confidently.",
-  };
-}
-
 export async function decideSalesReply(input: {
   config: AgentConfig;
   profile: CustomerProfile;
@@ -443,8 +415,7 @@ export async function decideSalesReply(input: {
   geminiApiKey?: string;
 }): Promise<AgentDecision> {
   const keys = apiKeys(input.geminiApiKey);
-  const language = await classifyLanguage({
-    keys,
+  const hint = languageHint({
     profile: input.profile,
     memory: input.leadMemory,
     messages: input.messages,
@@ -453,31 +424,26 @@ export async function decideSalesReply(input: {
     keys,
     ...input,
     memory: input.leadMemory,
-    language,
+    languageHint: hint,
   });
+  const language: LanguageAssessment =
+    hint && (hint.explicit || hint.confidence >= 0.88)
+      ? hint
+      : {
+          language: plan.language,
+          style: plan.language_style,
+          confidence: plan.language_confidence,
+          explicit: plan.language_explicit,
+          evidence: plan.language_evidence,
+        };
 
   let reply = "";
-  let validationFailure = "";
   if (plan.action !== "skip") {
     reply = await writeReply({ keys, config: input.config, plan, language, messages: input.messages });
-    let validation = await validateReplyLanguage({ keys, reply, language });
-    if (!validation.valid) {
-      validationFailure = validation.reason;
-      reply = await writeReply({
-        keys,
-        config: input.config,
-        plan,
-        language,
-        messages: input.messages,
-        retryReason: validation.reason,
-      });
-      validation = await validateReplyLanguage({ keys, reply, language });
-      if (!validation.valid) validationFailure = validation.reason;
-      else validationFailure = "";
-    }
   }
 
-  const validationFailed = Boolean(validationFailure);
+  const validation = validateReplyScript(reply, language.style);
+  const validationFailed = plan.action !== "skip" && !validation.valid;
   return {
     intent: plan.intent,
     language: language.language,
@@ -490,7 +456,7 @@ export async function decideSalesReply(input: {
     next_state: plan.next_state,
     action: validationFailed ? "handoff" : plan.action,
     handoff_reason: validationFailed
-      ? `Reply language validation failed: ${validationFailure}`
+      ? `Reply language validation failed: ${validation.reason}`
       : plan.handoff_reason.trim().slice(0, 500),
     customer_name: plan.customer_name.trim().slice(0, 120),
     order_ready: plan.order_ready,

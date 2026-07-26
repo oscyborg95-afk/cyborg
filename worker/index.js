@@ -106,6 +106,7 @@ function scheduleSalesAgent(msg) {
             "x-agent-secret": process.env.AGENT_WEBHOOK_SECRET || "",
           },
           body: JSON.stringify(msg),
+          signal: AbortSignal.timeout(55_000),
         });
         if (!response.ok) {
           console.error(
