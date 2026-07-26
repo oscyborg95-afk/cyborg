@@ -230,7 +230,7 @@ if (MOCK) {
   });
 
   app.post("/send", (req, res) => {
-    const { chatId, text, media } = req.body;
+    const { chatId, text, media, expectedLatestMessageId } = req.body;
     // Live WhatsApp JIDs end in @s.whatsapp.net; the mock seeds use @c.us.
     // Match by phone digits so server-side sends (alerts, broadcast) work here.
     let chat = chats.get(chatId);
@@ -240,6 +240,13 @@ if (MOCK) {
     }
     if (!chat || (!text && !media?.data)) {
       return res.status(400).json({ error: "unknown chatId or empty text" });
+    }
+    const latest = chat.messages[chat.messages.length - 1];
+    if (
+      expectedLatestMessageId &&
+      (!latest || latest.fromMe || latest.id !== expectedLatestMessageId)
+    ) {
+      return res.status(409).json({ error: "A newer message superseded this AI reply" });
     }
     const msg = {
       id: `${chat.id}-${chat.messages.length}`,
@@ -857,11 +864,18 @@ app.post("/send", async (req, res) => {
   if (!ready || !sock) {
     return res.status(503).json({ error: "WhatsApp not linked yet — scan the QR at /qr" });
   }
-  const { chatId, text, media } = req.body;
+  const { chatId, text, media, expectedLatestMessageId } = req.body;
   if (!chatId || (!text && !media?.data)) {
     return res.status(400).json({ error: "chatId and text (or media) required" });
   }
   try {
+    if (expectedLatestMessageId) {
+      const messages = await listMessages(chatId);
+      const latest = messages[messages.length - 1];
+      if (!latest || latest.fromMe || latest.id !== expectedLatestMessageId) {
+        return res.status(409).json({ error: "A newer message superseded this AI reply" });
+      }
+    }
     let sent;
     let mediaBuffer = null;
     if (media?.data) {

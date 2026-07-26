@@ -596,7 +596,7 @@ export async function finishAgentRun(
 export async function expireStaleAgentRuns(maxAgeSeconds = 90): Promise<number> {
   const safeAge = Math.max(30, Math.min(600, Math.round(maxAgeSeconds)));
   const timeoutError =
-    "Agent execution timed out before completion. This run is safe to retry.";
+    "The server stopped this run before recording a result. Check the latest conversation before retrying.";
   if (usingSupabase) {
     await ensureCrmSchema();
     const { rows } = await queryDatabase(

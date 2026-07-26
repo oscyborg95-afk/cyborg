@@ -112,6 +112,7 @@ async function generateStructured<T>(input: {
   responseSchema: Record<string, unknown>;
   parser: { parse(value: unknown): T };
   temperature?: number;
+  signal?: AbortSignal;
 }): Promise<T> {
   if (input.keys.length === 0) {
     throw new Error("No Gemini API key is configured for the sales agent.");
@@ -139,15 +140,20 @@ async function generateStructured<T>(input: {
     const request = googleRequestForKey(key);
     let response: Response;
     try {
+      const timeoutSignal = AbortSignal.timeout(remainingMs);
       response = await fetch(request.url, {
         method: "POST",
         headers: request.headers,
         body,
-        signal: AbortSignal.timeout(remainingMs),
+        signal: input.signal
+          ? AbortSignal.any([input.signal, timeoutSignal])
+          : timeoutSignal,
       });
     } catch (error) {
+      if (input.signal?.aborted) throw input.signal.reason;
       lastError =
-        error instanceof Error && error.name === "TimeoutError"
+        error instanceof Error &&
+        (error.name === "TimeoutError" || error.name === "AbortError")
           ? `Google AI request timed out after ${GEMINI_REQUEST_TIMEOUT_MS / 1000} seconds`
           : "Google AI request failed before receiving a response";
       continue;
@@ -242,6 +248,7 @@ async function planSalesTurn(input: {
   messages: WaMessage[];
   currentState: string;
   languageHint: LanguageAssessment | null;
+  signal?: AbortSignal;
 }): Promise<SalesPlan> {
   return generateStructured({
     keys: input.keys,
@@ -345,6 +352,7 @@ ${input.config.business_context || "Use only the supplied product catalog and or
     },
     parser: PlanSchema,
     temperature: 0.15,
+    signal: input.signal,
   });
 }
 
@@ -371,6 +379,7 @@ async function writeReply(input: {
   plan: SalesPlan;
   language: LanguageAssessment;
   messages: WaMessage[];
+  signal?: AbortSignal;
 }): Promise<string> {
   const result = await generateStructured({
     keys: input.keys,
@@ -400,6 +409,7 @@ ${languageWritingRule(input.language)}
     },
     parser: ReplySchema,
     temperature: 0.45,
+    signal: input.signal,
   });
   return result.reply.trim().slice(0, 1600);
 }
@@ -413,6 +423,7 @@ export async function decideSalesReply(input: {
   messages: WaMessage[];
   currentState: string;
   geminiApiKey?: string;
+  signal?: AbortSignal;
 }): Promise<AgentDecision> {
   const keys = apiKeys(input.geminiApiKey);
   const hint = languageHint({
@@ -439,7 +450,14 @@ export async function decideSalesReply(input: {
 
   let reply = "";
   if (plan.action !== "skip") {
-    reply = await writeReply({ keys, config: input.config, plan, language, messages: input.messages });
+    reply = await writeReply({
+      keys,
+      config: input.config,
+      plan,
+      language,
+      messages: input.messages,
+      signal: input.signal,
+    });
   }
 
   const validation = validateReplyScript(reply, language.style);

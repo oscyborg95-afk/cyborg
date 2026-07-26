@@ -28,6 +28,15 @@ import {
 import { sendWhatsAppMessage, workerFetch } from "./wa";
 import type { AgentRun, WaMessage } from "./types";
 
+const configuredExecutionTimeout = Number(process.env.AGENT_EXECUTION_TIMEOUT_MS || 40_000);
+const AGENT_EXECUTION_TIMEOUT_MS = Number.isFinite(configuredExecutionTimeout)
+  ? Math.max(20_000, Math.min(50_000, configuredExecutionTimeout))
+  : 40_000;
+const configuredMessageAge = Number(process.env.AGENT_MAX_MESSAGE_AGE_MS || 3 * 60_000);
+const AGENT_MAX_MESSAGE_AGE_MS = Number.isFinite(configuredMessageAge)
+  ? Math.max(30_000, Math.min(15 * 60_000, configuredMessageAge))
+  : 3 * 60_000;
+
 export interface AgentTrigger {
   id: string;
   chatId: string;
@@ -37,36 +46,80 @@ export interface AgentTrigger {
   senderName?: string;
 }
 
+function messageTimestampMs(timestamp: number): number {
+  return timestamp > 0 && timestamp < 1_000_000_000_000
+    ? timestamp * 1000
+    : timestamp;
+}
+
+function waitForReplyDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (milliseconds <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason);
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
 export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | null> {
   if (trigger.fromMe || !trigger.id || !trigger.chatId) return null;
   const phone = chatIdToPhone(trigger.chatId);
   const key = phoneKey(phone);
   if (key.length < 9) return null;
 
-  const claimed = await claimAgentRun({
-    trigger_message_id: trigger.id,
-    phone_key: key,
-    chat_id: trigger.chatId,
-  });
-  if (!claimed) return null;
-
-  const occurredAt = new Date(trigger.timestamp || Date.now()).toISOString();
-  let profile = await ensureCustomerProfile({
-    phone_key: key,
-    primary_phone: phone,
-    display_name: trigger.senderName ?? "",
-    direction: "inbound",
-    occurred_at: occurredAt,
-  });
-  await recordCustomerEvent({
-    phone_key: key,
-    chat_id: trigger.chatId,
-    kind: "message_in",
-    source: "customer",
-    payload: { message_id: trigger.id, body: trigger.body.slice(0, 1000) },
-  });
-
+  const controller = new AbortController();
+  let executionTimedOut = false;
+  let stage = "claiming the run";
+  let claimed: AgentRun | null = null;
+  let replySent = false;
+  const executionTimer = setTimeout(() => {
+    executionTimedOut = true;
+    controller.abort(new Error("Agent execution deadline reached"));
+  }, AGENT_EXECUTION_TIMEOUT_MS);
   try {
+    claimed = await claimAgentRun({
+      trigger_message_id: trigger.id,
+      phone_key: key,
+      chat_id: trigger.chatId,
+    });
+    if (!claimed) return null;
+    controller.signal.throwIfAborted();
+
+    const occurredAtMs = messageTimestampMs(trigger.timestamp || Date.now());
+    if (Date.now() - occurredAtMs > AGENT_MAX_MESSAGE_AGE_MS) {
+      return finishAgentRun(trigger.id, {
+        status: "skipped",
+        error: "Message is too old for an autonomous reply",
+      });
+    }
+
+    stage = "loading the customer profile";
+    let profile = await ensureCustomerProfile({
+      phone_key: key,
+      primary_phone: phone,
+      display_name: trigger.senderName ?? "",
+      direction: "inbound",
+      occurred_at: new Date(occurredAtMs).toISOString(),
+    });
+    await recordCustomerEvent({
+      phone_key: key,
+      chat_id: trigger.chatId,
+      kind: "message_in",
+      source: "customer",
+      payload: { message_id: trigger.id, body: trigger.body.slice(0, 1000) },
+    });
+    controller.signal.throwIfAborted();
+
+    stage = "loading AI settings";
     const config = await getAgentConfig();
     if (config.mode === "off") {
       return finishAgentRun(trigger.id, { status: "skipped", error: "Agent is off" });
@@ -100,14 +153,18 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
     // A short human-like delay also gives multi-bubble addresses time to land.
     // The latest-message check below makes older overlapping turns harmless.
     if (config.reply_delay_seconds > 0) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.min(config.reply_delay_seconds, 45) * 1000)
+      stage = "waiting for the reply delay";
+      await waitForReplyDelay(
+        Math.min(config.reply_delay_seconds, 15) * 1000,
+        controller.signal
       );
     }
 
+    stage = "loading conversation context";
     const [messages, orders, products, states, settings, leadMemory] = await Promise.all([
       workerFetch<WaMessage[]>(
-        `/messages/${encodeURIComponent(trigger.chatId)}?peek=1`
+        `/messages/${encodeURIComponent(trigger.chatId)}?peek=1`,
+        { signal: controller.signal }
       ),
       listOrders(true),
       listProducts(),
@@ -129,6 +186,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
         (order.phone_2 && phoneKey(order.phone_2) === key)
     );
     const state = states.find((entry) => phoneKey(entry.phone_number) === key);
+    stage = "generating the sales reply";
     const decision = await decideSalesReply({
       config,
       profile,
@@ -138,8 +196,28 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       messages,
       currentState: state?.state ?? "NEW",
       geminiApiKey: settings.gemini_api_key,
+      signal: controller.signal,
     });
+    controller.signal.throwIfAborted();
 
+    // AI generation is the slowest step. Re-read the conversation after it
+    // finishes so a reply for an older bubble can never be sent over a newer
+    // customer message or a human operator reply.
+    stage = "checking for a newer message";
+    const currentMessages = await workerFetch<WaMessage[]>(
+      `/messages/${encodeURIComponent(trigger.chatId)}?peek=1`,
+      { signal: controller.signal }
+    );
+    const currentLatest = currentMessages[currentMessages.length - 1];
+    if (!currentLatest || currentLatest.fromMe || currentLatest.id !== trigger.id) {
+      return finishAgentRun(trigger.id, {
+        status: "skipped",
+        decision,
+        error: "A newer message arrived while the AI was preparing this reply",
+      });
+    }
+
+    stage = "saving the AI decision";
     if (decision.customer_name && !profile.display_name) {
       profile = await updateCustomerProfile(key, { display_name: decision.customer_name });
     }
@@ -184,7 +262,15 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
         decision.confidence >= config.min_confidence &&
         decision.reply
       ) {
-        await sendWhatsAppMessage(trigger.chatId, decision.reply);
+        stage = "sending the escalation acknowledgement";
+        await sendWhatsAppMessage(
+          trigger.chatId,
+          decision.reply,
+          undefined,
+          trigger.id,
+          controller.signal
+        );
+        replySent = true;
         await ensureCustomerProfile({
           phone_key: key,
           primary_phone: phone,
@@ -223,7 +309,17 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       });
     }
 
-    await sendWhatsAppMessage(trigger.chatId, decision.reply);
+    stage = "sending the WhatsApp reply";
+    await sendWhatsAppMessage(
+      trigger.chatId,
+      decision.reply,
+      undefined,
+      trigger.id,
+      controller.signal
+    );
+    replySent = true;
+    controller.signal.throwIfAborted();
+    stage = "saving the sent reply";
     await ensureCustomerProfile({
       phone_key: key,
       primary_phone: phone,
@@ -268,20 +364,32 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       reply: decision.reply,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Sales agent failed";
-    await upsertAttention({
-      unique_key: `agent-failed:${key}`,
-      phone_key: key,
-      chat_id: trigger.chatId,
-      kind: "failed_message",
-      priority: "high",
-      title: "AI reply failed",
-      summary: message,
-      payload: { trigger_message_id: trigger.id },
-    }).catch(() => {});
-    return finishAgentRun(trigger.id, {
-      status: "failed",
+    if (!claimed) throw error;
+    const message = executionTimedOut
+      ? replySent
+        ? `WhatsApp accepted the reply, but the run exceeded ${AGENT_EXECUTION_TIMEOUT_MS / 1000} seconds while ${stage}. Do not retry this message.`
+        : `Agent exceeded ${AGENT_EXECUTION_TIMEOUT_MS / 1000} seconds while ${stage}. No reply was sent.`
+      : error instanceof Error
+        ? error.message
+        : "Sales agent failed";
+    const finished = await finishAgentRun(trigger.id, {
+      status: replySent ? "sent" : "failed",
       error: message,
     });
+    if (!executionTimedOut) {
+      await upsertAttention({
+        unique_key: `agent-failed:${key}`,
+        phone_key: key,
+        chat_id: trigger.chatId,
+        kind: "failed_message",
+        priority: "high",
+        title: "AI reply failed",
+        summary: message,
+        payload: { trigger_message_id: trigger.id, stage },
+      }).catch(() => {});
+    }
+    return finished;
+  } finally {
+    clearTimeout(executionTimer);
   }
 }

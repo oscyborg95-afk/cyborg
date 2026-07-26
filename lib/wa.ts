@@ -57,11 +57,18 @@ export interface WaOutboundMedia {
   data: string;
 }
 
-export function sendWhatsAppMessage(chatId: string, text: string, media?: WaOutboundMedia) {
+export function sendWhatsAppMessage(
+  chatId: string,
+  text: string,
+  media?: WaOutboundMedia,
+  expectedLatestMessageId?: string,
+  signal?: AbortSignal
+) {
   return workerFetch<{ ok: boolean }>("/send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chatId, text, media }),
+    body: JSON.stringify({ chatId, text, media, expectedLatestMessageId }),
+    signal,
   });
 }
 
