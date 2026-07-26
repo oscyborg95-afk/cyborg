@@ -333,6 +333,7 @@ const {
   downloadMediaMessage,
   isJidGroup,
   isJidBroadcast,
+  isJidNewsletter,
   isJidStatusBroadcast,
   proto,
 } = require("baileys");
@@ -597,7 +598,15 @@ function unwrap(content) {
 /** WebMessageInfo → our wire format, or null if it isn't a displayable chat message. */
 function normalize(m) {
   const jid = m.key?.remoteJid;
-  if (!jid || isJidGroup(jid) || isJidBroadcast(jid) || isJidStatusBroadcast(jid)) return null;
+  if (
+    !jid ||
+    isJidGroup(jid) ||
+    isJidBroadcast(jid) ||
+    isJidNewsletter(jid) ||
+    isJidStatusBroadcast(jid)
+  ) {
+    return null;
+  }
   const content = unwrap(m.message);
   if (!content || content.protocolMessage || content.reactionMessage) return null;
   const body =
@@ -716,8 +725,10 @@ async function connectToWhatsApp() {
     }
   });
 
-  // Live messages: inbound AND outbound (including ones sent from your phone).
-  sock.ev.on("messages.upsert", async ({ messages }) => {
+  // Baileys also emits `append` upserts while restoring history after a
+  // reconnect. Persist those for the inbox, but only `notify` represents a new
+  // live message that is allowed to trigger the autonomous agent.
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
     for (const m of messages) {
       const msg = normalize(m);
       if (!msg) continue;
@@ -725,7 +736,7 @@ async function connectToWhatsApp() {
         const isNew = await saveMessage(msg);
         if (isNew) {
           emitMessage(msg);
-          scheduleSalesAgent(msg);
+          if (type === "notify") scheduleSalesAgent(msg);
           // Voice notes and photos often ARE the address — capture the bytes
           // so the AI parser can read them. Fire-and-forget; never blocks chat.
           captureMedia(m, msg).catch((err) =>

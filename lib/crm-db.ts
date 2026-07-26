@@ -558,8 +558,8 @@ export async function finishAgentRun(
     const { rows } = await queryDatabase(
       `update ai_agent_runs set
          intent=$2, language=$3, confidence=$4, decision=$5, reply=$6,
-         status=$7, error=$8,
-         feedback_status=case when $7='drafted' then 'pending' else feedback_status end,
+         status=$7::varchar, error=$8,
+         feedback_status=case when $7::varchar='drafted' then 'pending' else feedback_status end,
          completed_at=now()
        where trigger_message_id=$1 returning *`,
       [

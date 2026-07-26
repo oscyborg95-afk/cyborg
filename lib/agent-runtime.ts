@@ -72,6 +72,13 @@ function waitForReplyDelay(milliseconds: number, signal: AbortSignal): Promise<v
 
 export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | null> {
   if (trigger.fromMe || !trigger.id || !trigger.chatId) return null;
+  if (
+    trigger.chatId.endsWith("@newsletter") ||
+    trigger.chatId.endsWith("@g.us") ||
+    trigger.chatId === "status@broadcast"
+  ) {
+    return null;
+  }
   const phone = chatIdToPhone(trigger.chatId);
   const key = phoneKey(phone);
   if (key.length < 9) return null;
