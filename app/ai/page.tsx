@@ -333,7 +333,7 @@ export default function AiPage() {
                   <p className="mt-0.5 text-xs font-bold capitalize text-ink-soft">{run.intent?.replaceAll("_", " ") || "Analysing"} · {Math.round(run.confidence * 100)}%</p>
                   {run.decision && (
                     <p className="mt-1 text-[11px] font-bold text-ink-soft">
-                      {run.decision.language_style.replaceAll("_", " ")} · {run.decision.sales_stage.replaceAll("_", " ")} · {run.decision.buying_intent} intent
+                      {(run.decision.language_style ?? run.language ?? "unknown").replaceAll("_", " ")} · {(run.decision.sales_stage ?? "unclassified").replaceAll("_", " ")} · {run.decision.buying_intent ?? "unknown"} intent
                     </p>
                   )}
                   {run.reply && <p className="mt-2 line-clamp-3 rounded-xl bg-grape-tint p-2.5 text-xs font-semibold text-ink">“{run.reply}”</p>}
