@@ -10,14 +10,20 @@ import {
   ensureCustomerProfile,
   finishAgentRun,
   getAgentConfig,
+  getLeadMemory,
   recordCustomerEvent,
   updateCustomerProfile,
+  updateLeadMemoryFromDecision,
   upsertAttention,
 } from "./crm-db";
 import { chatIdToPhone } from "./phone";
 import { phoneKey } from "./risk";
 import { decideSalesReply } from "./sales-agent";
-import { insideQuietHours, needsAgentHandoff } from "./agent-policy";
+import {
+  canAutoSendDecision,
+  insideQuietHours,
+  needsAgentHandoff,
+} from "./agent-policy";
 import { sendWhatsAppMessage, workerFetch } from "./wa";
 import type { AgentRun, WaMessage } from "./types";
 
@@ -98,7 +104,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       );
     }
 
-    const [messages, orders, products, states, settings] = await Promise.all([
+    const [messages, orders, products, states, settings, leadMemory] = await Promise.all([
       workerFetch<WaMessage[]>(
         `/messages/${encodeURIComponent(trigger.chatId)}?peek=1`
       ),
@@ -106,6 +112,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       listProducts(),
       listChatStates(),
       getSettings(),
+      getLeadMemory(key),
     ]);
     const latest = messages[messages.length - 1];
     if (!latest || latest.fromMe || latest.id !== trigger.id) {
@@ -124,6 +131,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
     const decision = await decideSalesReply({
       config,
       profile,
+      leadMemory,
       products,
       orders: customerOrders,
       messages,
@@ -134,11 +142,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
     if (decision.customer_name && !profile.display_name) {
       profile = await updateCustomerProfile(key, { display_name: decision.customer_name });
     }
-    if (profile.preferred_language === "auto") {
-      profile = await updateCustomerProfile(key, {
-        preferred_language: decision.language,
-      });
-    }
+    await updateLeadMemoryFromDecision(key, decision);
 
     const needsHandoff = needsAgentHandoff(
       decision.action,
@@ -193,14 +197,17 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       return finishAgentRun(trigger.id, { status: "skipped", decision });
     }
 
-    if (config.mode === "draft") {
+    if (config.mode === "draft" || !canAutoSendDecision(decision)) {
       await upsertAttention({
         unique_key: `ai-draft:${key}`,
         phone_key: key,
         chat_id: trigger.chatId,
         kind: "ai_handoff",
         priority: "medium",
-        title: "AI reply ready for review",
+        title:
+          config.mode === "auto"
+            ? "AI held a sensitive sales step for review"
+            : "AI reply ready for review",
         summary: decision.reply.slice(0, 260),
         payload: { decision, trigger_message_id: trigger.id },
       });

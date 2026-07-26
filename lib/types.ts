@@ -286,7 +286,21 @@ export interface WaMessage {
 // --- Customer intelligence + autonomous sales agent ------------------------
 
 export type CustomerLanguage = "auto" | "si" | "ta" | "en";
+export type CustomerLanguageStyle =
+  | "si_native"
+  | "si_latin"
+  | "ta_native"
+  | "ta_latin"
+  | "en"
+  | "mixed";
 export type AgentMode = "off" | "draft" | "auto";
+export type AgentFeedbackStatus =
+  | "none"
+  | "pending"
+  | "processing"
+  | "approved"
+  | "edited"
+  | "rejected";
 export type AgentRunStatus =
   | "processing"
   | "drafted"
@@ -300,6 +314,7 @@ export interface CustomerProfile {
   primary_phone: string;
   display_name: string;
   preferred_language: CustomerLanguage;
+  language_locked: boolean;
   tags: string[];
   notes: string;
   ai_enabled: boolean;
@@ -328,6 +343,7 @@ export type CustomerEventKind =
   | "message_out"
   | "ai_reply"
   | "ai_handoff"
+  | "ai_feedback"
   | "state_changed"
   | "order_ready"
   | "profile_updated"
@@ -398,6 +414,8 @@ export interface AgentDecision {
     | "complaint"
     | "other";
   language: Exclude<CustomerLanguage, "auto">;
+  language_style: CustomerLanguageStyle;
+  language_confidence: number;
   confidence: number;
   reply: string;
   next_state: ChatStateValue;
@@ -406,6 +424,21 @@ export interface AgentDecision {
   customer_name: string;
   order_ready: boolean;
   summary: string;
+  sales_stage:
+    | "discovery"
+    | "consideration"
+    | "objection"
+    | "checkout_details"
+    | "checkout_confirmation"
+    | "post_purchase"
+    | "support";
+  next_action: string;
+  objection: string;
+  customer_need: string;
+  interested_product: string;
+  quantity: number | null;
+  buying_intent: "low" | "medium" | "high";
+  missing_fields: string[];
 }
 
 export interface AgentRun {
@@ -420,6 +453,35 @@ export interface AgentRun {
   reply: string;
   status: AgentRunStatus;
   error: string;
+  feedback_status: AgentFeedbackStatus;
+  feedback_reason: string;
+  final_reply: string;
+  reviewed_at: string | null;
   created_at: string;
   completed_at: string | null;
+}
+
+export interface LeadMemory {
+  phone_key: string;
+  detected_language: Exclude<CustomerLanguage, "auto"> | null;
+  language_style: CustomerLanguageStyle | null;
+  language_confidence: number;
+  language_observations: number;
+  interested_product: string;
+  quantity: number | null;
+  customer_need: string;
+  objection: string;
+  buying_intent: "low" | "medium" | "high";
+  collected_fields: string[];
+  last_question: string;
+  next_action: string;
+  updated_at: string;
+}
+
+export interface LanguageAssessment {
+  language: Exclude<CustomerLanguage, "auto">;
+  style: CustomerLanguageStyle;
+  confidence: number;
+  explicit: boolean;
+  evidence: string;
 }

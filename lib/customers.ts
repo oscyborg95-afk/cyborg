@@ -30,6 +30,7 @@ function blankProfile(phone_key: string, phone: string, name = ""): CustomerProf
     primary_phone: phone,
     display_name: name,
     preferred_language: "auto",
+    language_locked: false,
     tags: [],
     notes: "",
     ai_enabled: true,

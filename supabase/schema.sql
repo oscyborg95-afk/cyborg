@@ -94,6 +94,7 @@ create table if not exists customer_profiles (
   primary_phone       varchar not null,
   display_name        varchar not null default '',
   preferred_language  varchar not null default 'auto',
+  language_locked     boolean not null default false,
   tags                jsonb not null default '[]'::jsonb,
   notes               text not null default '',
   ai_enabled          boolean not null default true,
@@ -103,6 +104,8 @@ create table if not exists customer_profiles (
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now()
 );
+alter table customer_profiles
+  add column if not exists language_locked boolean not null default false;
 
 create table if not exists customer_events (
   id          uuid primary key default gen_random_uuid(),
@@ -167,8 +170,30 @@ create table if not exists ai_agent_runs (
   created_at         timestamptz not null default now(),
   completed_at       timestamptz
 );
+alter table ai_agent_runs
+  add column if not exists feedback_status varchar not null default 'none',
+  add column if not exists feedback_reason text not null default '',
+  add column if not exists final_reply text not null default '',
+  add column if not exists reviewed_at timestamptz;
 create index if not exists idx_ai_agent_runs_phone
   on ai_agent_runs(phone_key, created_at desc);
+
+create table if not exists ai_lead_memory (
+  phone_key             varchar(9) primary key,
+  detected_language     varchar,
+  language_style        varchar,
+  language_confidence   numeric not null default 0,
+  language_observations int not null default 0,
+  interested_product    varchar not null default '',
+  quantity              int,
+  customer_need         text not null default '',
+  objection             text not null default '',
+  buying_intent         varchar not null default 'low',
+  collected_fields      jsonb not null default '[]'::jsonb,
+  last_question         text not null default '',
+  next_action           text not null default '',
+  updated_at            timestamptz not null default now()
+);
 
 -- Cyborg OS: single-row settings for the gamified net-worth counter.
 create table if not exists business_settings (

@@ -35,6 +35,10 @@ export default function AiPage() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [reviewingId, setReviewingId] = useState("");
+  const [editingId, setEditingId] = useState("");
+  const [editText, setEditText] = useState("");
+  const [feedbackReason, setFeedbackReason] = useState("wrong_language");
 
   const load = useCallback(async () => {
     try {
@@ -83,6 +87,39 @@ export default function AiPage() {
     }
   }
 
+  async function reviewDraft(run: AgentRun, action: "approve" | "edit" | "reject") {
+    setReviewingId(run.id);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(`/api/agent/runs/${encodeURIComponent(run.id)}/feedback`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          ...(action === "edit" ? { text: editText, reason: feedbackReason } : {}),
+          ...(action === "reject" ? { reason: feedbackReason } : {}),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not review draft");
+      setRuns((current) => current.map((entry) => entry.id === run.id ? data.run : entry));
+      setEditingId("");
+      setEditText("");
+      setNotice(
+        action === "reject"
+          ? "Draft rejected — feedback saved for evaluation."
+          : action === "edit"
+            ? "Edited reply sent — correction saved for evaluation."
+            : "Draft approved and sent."
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not review draft");
+    } finally {
+      setReviewingId("");
+    }
+  }
+
   if (loading) {
     return <main className="mx-auto max-w-6xl space-y-4 p-4 sm:p-6">{[100, 180, 460].map((height) => <div key={height} className="animate-pulse rounded-2xl border-2 border-cardline bg-surface-soft" style={{ height }} />)}</main>;
   }
@@ -101,6 +138,13 @@ export default function AiPage() {
   }
 
   const info = MODE_INFO[config.mode];
+  const reviewedRuns = runs.filter((run) =>
+    ["approved", "edited", "rejected"].includes(run.feedback_status)
+  );
+  const approvedRuns = reviewedRuns.filter((run) => run.feedback_status === "approved");
+  const languageCorrections = reviewedRuns.filter(
+    (run) => run.feedback_reason === "wrong_language"
+  );
 
   return (
     <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
@@ -150,6 +194,34 @@ export default function AiPage() {
           <p className="mt-1 max-w-3xl text-sm font-bold leading-relaxed text-ink-soft">{info.description}</p>
         </div>
       </Card>
+
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          {
+            label: "Reviewed",
+            value: reviewedRuns.length,
+            detail: "labelled drafts",
+          },
+          {
+            label: "Clean approval",
+            value: reviewedRuns.length
+              ? `${Math.round((approvedRuns.length / reviewedRuns.length) * 100)}%`
+              : "—",
+            detail: "sent unchanged",
+          },
+          {
+            label: "Language fixes",
+            value: languageCorrections.length,
+            detail: "needs to reach zero",
+          },
+        ].map((metric) => (
+          <Card key={metric.label} className="p-3 text-center sm:p-4">
+            <p className="font-display text-xl font-extrabold text-ink sm:text-2xl">{metric.value}</p>
+            <p className="text-[11px] font-extrabold uppercase text-ink-soft">{metric.label}</p>
+            <p className="mt-1 hidden text-[10px] font-semibold text-ink-soft sm:block">{metric.detail}</p>
+          </Card>
+        ))}
+      </div>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(300px,0.75fr)]">
         <div className="space-y-5">
@@ -259,8 +331,87 @@ export default function AiPage() {
                     {run.phone_key} <span className="text-ink-soft">›</span>
                   </Link>
                   <p className="mt-0.5 text-xs font-bold capitalize text-ink-soft">{run.intent?.replaceAll("_", " ") || "Analysing"} · {Math.round(run.confidence * 100)}%</p>
+                  {run.decision && (
+                    <p className="mt-1 text-[11px] font-bold text-ink-soft">
+                      {run.decision.language_style.replaceAll("_", " ")} · {run.decision.sales_stage.replaceAll("_", " ")} · {run.decision.buying_intent} intent
+                    </p>
+                  )}
                   {run.reply && <p className="mt-2 line-clamp-3 rounded-xl bg-grape-tint p-2.5 text-xs font-semibold text-ink">“{run.reply}”</p>}
                   {(run.error || run.decision?.handoff_reason) && <p className="mt-2 text-xs font-bold text-danger-ink">{run.error || run.decision?.handoff_reason}</p>}
+                  {run.status === "drafted" && run.feedback_status === "pending" && (
+                    <div className="mt-3 space-y-2 rounded-xl border-2 border-grape/20 bg-surface p-2.5">
+                      <p className="text-[11px] font-extrabold text-ink">Teach the agent from this draft</p>
+                      {editingId === run.id ? (
+                        <textarea
+                          className={`${fieldClass} min-h-24 resize-y text-xs`}
+                          value={editText}
+                          onChange={(event) => setEditText(event.target.value)}
+                        />
+                      ) : null}
+                      <select
+                        className={`${fieldClass} py-2 text-xs`}
+                        value={feedbackReason}
+                        onChange={(event) => setFeedbackReason(event.target.value)}
+                        aria-label="Feedback reason"
+                      >
+                        <option value="wrong_language">Wrong language</option>
+                        <option value="robotic">Sounds robotic</option>
+                        <option value="too_pushy">Too pushy</option>
+                        <option value="missed_intent">Missed intent</option>
+                        <option value="incorrect_fact">Incorrect fact</option>
+                        <option value="repeated_question">Repeated question</option>
+                        <option value="other">Other</option>
+                      </select>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => void reviewDraft(run, "approve")}
+                          disabled={reviewingId === run.id}
+                          className="rounded-lg bg-frog px-3 py-2 font-display text-[11px] font-extrabold text-white disabled:opacity-50"
+                        >
+                          Approve & send
+                        </button>
+                        {editingId === run.id ? (
+                          <>
+                            <button
+                              onClick={() => void reviewDraft(run, "edit")}
+                              disabled={reviewingId === run.id || !editText.trim()}
+                              className="rounded-lg bg-grape px-3 py-2 font-display text-[11px] font-extrabold text-white disabled:opacity-50"
+                            >
+                              Send correction
+                            </button>
+                            <button
+                              onClick={() => setEditingId("")}
+                              className="rounded-lg border-2 border-cardline px-3 py-2 font-display text-[11px] font-extrabold text-ink"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setEditingId(run.id);
+                              setEditText(run.reply);
+                            }}
+                            className="rounded-lg bg-grape px-3 py-2 font-display text-[11px] font-extrabold text-white"
+                          >
+                            Edit
+                          </button>
+                        )}
+                        <button
+                          onClick={() => void reviewDraft(run, "reject")}
+                          disabled={reviewingId === run.id}
+                          className="rounded-lg bg-danger-bg px-3 py-2 font-display text-[11px] font-extrabold text-danger-ink disabled:opacity-50"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {run.feedback_status && !["none", "pending", "processing"].includes(run.feedback_status) && (
+                    <p className="mt-2 text-[11px] font-extrabold uppercase text-frog-dark">
+                      Feedback: {run.feedback_status}{run.feedback_reason ? ` · ${run.feedback_reason.replaceAll("_", " ")}` : ""}
+                    </p>
+                  )}
                 </article>
               ))}
             </div>

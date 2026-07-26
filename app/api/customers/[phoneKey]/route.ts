@@ -36,7 +36,12 @@ export async function PATCH(
         ? { display_name: body.display_name.trim().slice(0, 120) }
         : {}),
       ...(body.preferred_language !== undefined
-        ? { preferred_language: sanitizeLanguage(body.preferred_language) }
+        ? {
+            preferred_language: sanitizeLanguage(body.preferred_language),
+            language_locked:
+              sanitizeLanguage(body.preferred_language) !== "auto" &&
+              (typeof body.language_locked === "boolean" ? body.language_locked : true),
+          }
         : {}),
       ...(tags ? { tags } : {}),
       ...(typeof body.notes === "string" ? { notes: body.notes.trim().slice(0, 5000) } : {}),

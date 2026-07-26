@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { insideQuietHours, needsAgentHandoff } from "../lib/agent-policy.ts";
+import {
+  canAutoSendDecision,
+  insideQuietHours,
+  needsAgentHandoff,
+} from "../lib/agent-policy.ts";
 
 test("quiet hours support an overnight Colombo window", () => {
   const config = { quiet_hours_start: "22:00", quiet_hours_end: "07:00" };
@@ -23,4 +27,31 @@ test("handoff policy gates low-confidence autonomous replies", () => {
   assert.equal(needsAgentHandoff("reply", 0.91, 0.78), false);
   assert.equal(needsAgentHandoff("reply", 0.62, 0.78), true);
   assert.equal(needsAgentHandoff("handoff", 0.99, 0.78), true);
+});
+
+test("autonomy starts with high-confidence low-risk sales intents", () => {
+  assert.equal(
+    canAutoSendDecision({
+      intent: "price_question",
+      sales_stage: "consideration",
+      language_confidence: 0.96,
+    }),
+    true
+  );
+  assert.equal(
+    canAutoSendDecision({
+      intent: "order",
+      sales_stage: "checkout_details",
+      language_confidence: 0.98,
+    }),
+    false
+  );
+  assert.equal(
+    canAutoSendDecision({
+      intent: "availability",
+      sales_stage: "consideration",
+      language_confidence: 0.72,
+    }),
+    false
+  );
 });

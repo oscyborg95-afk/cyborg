@@ -1,3 +1,5 @@
+import type { AgentDecision } from "./types";
+
 export function insideQuietHours(
   config: { quiet_hours_start: string; quiet_hours_end: string },
   date = new Date()
@@ -20,4 +22,20 @@ export function needsAgentHandoff(
   minimumConfidence: number
 ): boolean {
   return action === "handoff" || confidence < minimumConfidence;
+}
+
+export function canAutoSendDecision(
+  decision: Pick<AgentDecision, "intent" | "sales_stage" | "language_confidence">
+): boolean {
+  const safeIntent = [
+    "greeting",
+    "product_question",
+    "price_question",
+    "availability",
+  ].includes(decision.intent);
+  return (
+    safeIntent &&
+    ["discovery", "consideration"].includes(decision.sales_stage) &&
+    decision.language_confidence >= 0.9
+  );
 }

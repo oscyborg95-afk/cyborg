@@ -34,6 +34,7 @@ interface Detail {
 type Form = {
   display_name: string;
   preferred_language: CustomerLanguage;
+  language_locked: boolean;
   tags: string;
   notes: string;
   ai_enabled: boolean;
@@ -64,6 +65,7 @@ export default function CustomerDetailPage() {
       setForm({
         display_name: data.customer.display_name,
         preferred_language: data.customer.preferred_language,
+        language_locked: data.customer.language_locked,
         tags: data.customer.tags.join(", "),
         notes: data.customer.notes,
         ai_enabled: data.customer.ai_enabled,
@@ -178,9 +180,15 @@ export default function CustomerDetailPage() {
               </label>
               <label className="block font-display text-xs font-extrabold text-ink-soft">
                 Reply language
-                <select className={`${fieldClass} mt-1`} value={form.preferred_language} onChange={(event) => setForm({ ...form, preferred_language: event.target.value as CustomerLanguage })}>
+                <select className={`${fieldClass} mt-1`} value={form.preferred_language} onChange={(event) => {
+                  const preferred_language = event.target.value as CustomerLanguage;
+                  setForm({ ...form, preferred_language, language_locked: preferred_language !== "auto" });
+                }}>
                   {Object.entries(languageName).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                 </select>
+                <span className="mt-1 block font-body text-[11px] font-semibold">
+                  Auto-detect learns only after repeated high-confidence messages.
+                </span>
               </label>
               <label className="block font-display text-xs font-extrabold text-ink-soft">
                 Tags <span className="font-body font-semibold">(comma separated)</span>

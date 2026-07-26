@@ -13,6 +13,7 @@ import type {
   CustomerEventKind,
   CustomerLanguage,
   CustomerProfile,
+  LeadMemory,
 } from "./types";
 
 const g = globalThis as unknown as {
@@ -22,12 +23,14 @@ const g = globalThis as unknown as {
   __attentionItems?: Map<string, AttentionItem>;
   __agentConfig?: AgentConfig;
   __agentRuns?: Map<string, AgentRun>;
+  __leadMemories?: Map<string, LeadMemory>;
 };
 
 const memProfiles: Map<string, CustomerProfile> = (g.__customerProfiles ??= new Map());
 const memEvents: CustomerEvent[] = (g.__customerEvents ??= []);
 const memAttention: Map<string, AttentionItem> = (g.__attentionItems ??= new Map());
 const memRuns: Map<string, AgentRun> = (g.__agentRuns ??= new Map());
+const memLeadMemories: Map<string, LeadMemory> = (g.__leadMemories ??= new Map());
 
 const DEFAULT_AGENT_CONFIG: AgentConfig = {
   mode: "draft",
@@ -58,6 +61,8 @@ async function ensureCrmSchema(): Promise<void> {
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now()
     );
+    alter table customer_profiles
+      add column if not exists language_locked boolean not null default false;
     create table if not exists customer_events (
       id uuid primary key default gen_random_uuid(),
       phone_key varchar(9) not null,
@@ -116,8 +121,29 @@ async function ensureCrmSchema(): Promise<void> {
       created_at timestamptz not null default now(),
       completed_at timestamptz
     );
+    alter table ai_agent_runs
+      add column if not exists feedback_status varchar not null default 'none',
+      add column if not exists feedback_reason text not null default '',
+      add column if not exists final_reply text not null default '',
+      add column if not exists reviewed_at timestamptz;
     create index if not exists idx_ai_agent_runs_phone
       on ai_agent_runs(phone_key, created_at desc);
+    create table if not exists ai_lead_memory (
+      phone_key varchar(9) primary key,
+      detected_language varchar,
+      language_style varchar,
+      language_confidence numeric not null default 0,
+      language_observations int not null default 0,
+      interested_product varchar not null default '',
+      quantity int,
+      customer_need text not null default '',
+      objection text not null default '',
+      buying_intent varchar not null default 'low',
+      collected_fields jsonb not null default '[]'::jsonb,
+      last_question text not null default '',
+      next_action text not null default '',
+      updated_at timestamptz not null default now()
+    );
   `);
   g.__crmSchemaReady = true;
 }
@@ -165,6 +191,7 @@ export async function ensureCustomerProfile(input: {
     primary_phone: input.primary_phone,
     display_name: input.display_name?.trim() || existing?.display_name || "",
     preferred_language: existing?.preferred_language ?? "auto",
+    language_locked: existing?.language_locked ?? false,
     tags: existing?.tags ?? [],
     notes: existing?.notes ?? "",
     ai_enabled: existing?.ai_enabled ?? true,
@@ -208,7 +235,7 @@ export async function updateCustomerProfile(
   input: Partial<
     Pick<
       CustomerProfile,
-      "display_name" | "preferred_language" | "tags" | "notes" | "ai_enabled" | "ai_paused_until"
+      "display_name" | "preferred_language" | "language_locked" | "tags" | "notes" | "ai_enabled" | "ai_paused_until"
     >
   >
 ): Promise<CustomerProfile> {
@@ -224,13 +251,14 @@ export async function updateCustomerProfile(
   if (usingSupabase) {
     const { rows } = await queryDatabase(
       `update customer_profiles set
-         display_name=$2, preferred_language=$3, tags=$4, notes=$5,
-         ai_enabled=$6, ai_paused_until=$7, updated_at=now()
+         display_name=$2, preferred_language=$3, language_locked=$4, tags=$5, notes=$6,
+         ai_enabled=$7, ai_paused_until=$8, updated_at=now()
        where phone_key=$1 returning *`,
       [
         phoneKey,
         next.display_name,
         next.preferred_language,
+        next.language_locked,
         JSON.stringify(next.tags),
         next.notes,
         next.ai_enabled,
@@ -406,6 +434,26 @@ export async function updateAttention(
   return next;
 }
 
+export async function resolveAttentionByUniqueKey(uniqueKey: string): Promise<void> {
+  if (usingSupabase) {
+    await ensureCrmSchema();
+    await queryDatabase(
+      `update attention_items set status='resolved', resolved_at=now(), updated_at=now()
+       where unique_key=$1 and status <> 'resolved'`,
+      [uniqueKey]
+    );
+    return;
+  }
+  const item = memAttention.get(uniqueKey);
+  if (!item || item.status === "resolved") return;
+  memAttention.set(uniqueKey, {
+    ...item,
+    status: "resolved",
+    resolved_at: nowIso(),
+    updated_at: nowIso(),
+  });
+}
+
 export async function getAgentConfig(): Promise<AgentConfig> {
   if (usingSupabase) {
     await ensureCrmSchema();
@@ -476,6 +524,10 @@ export async function claimAgentRun(input: {
     reply: "",
     status: "processing",
     error: "",
+    feedback_status: "none",
+    feedback_reason: "",
+    final_reply: "",
+    reviewed_at: null,
     created_at: nowIso(),
     completed_at: null,
   };
@@ -498,7 +550,9 @@ export async function finishAgentRun(
     const { rows } = await queryDatabase(
       `update ai_agent_runs set
          intent=$2, language=$3, confidence=$4, decision=$5, reply=$6,
-         status=$7, error=$8, completed_at=now()
+         status=$7, error=$8,
+         feedback_status=case when $7='drafted' then 'pending' else feedback_status end,
+         completed_at=now()
        where trigger_message_id=$1 returning *`,
       [
         triggerMessageId,
@@ -524,6 +578,7 @@ export async function finishAgentRun(
     reply: input.reply ?? decision?.reply ?? "",
     status: input.status,
     error: input.error ?? "",
+    feedback_status: input.status === "drafted" ? "pending" : current.feedback_status,
     completed_at: nowIso(),
   };
   memRuns.set(triggerMessageId, next);
@@ -545,6 +600,181 @@ export async function listAgentRuns(phoneKey?: string, limit = 100): Promise<Age
     .filter((run) => !phoneKey || run.phone_key === phoneKey)
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
     .slice(0, limit);
+}
+
+export async function getAgentRun(id: string): Promise<AgentRun | null> {
+  if (usingSupabase) {
+    await ensureCrmSchema();
+    const { rows } = await queryDatabase("select * from ai_agent_runs where id=$1", [id]);
+    return (rows[0] as unknown as AgentRun | undefined) ?? null;
+  }
+  return [...memRuns.values()].find((run) => run.id === id) ?? null;
+}
+
+export async function claimAgentDraftReview(id: string): Promise<AgentRun | null> {
+  if (usingSupabase) {
+    await ensureCrmSchema();
+    const { rows } = await queryDatabase(
+      `update ai_agent_runs as target set feedback_status='processing'
+       where target.id=$1 and target.status='drafted' and target.feedback_status='pending'
+         and not exists (
+           select 1 from ai_agent_runs newer
+           where newer.phone_key=target.phone_key and newer.created_at > target.created_at
+         )
+       returning *`,
+      [id]
+    );
+    return (rows[0] as unknown as AgentRun | undefined) ?? null;
+  }
+  const run = await getAgentRun(id);
+  if (!run || run.status !== "drafted" || run.feedback_status !== "pending") return null;
+  const hasNewer = [...memRuns.values()].some(
+    (candidate) =>
+      candidate.phone_key === run.phone_key && candidate.created_at > run.created_at
+  );
+  if (hasNewer) return null;
+  const next = { ...run, feedback_status: "processing" as const };
+  memRuns.set(run.trigger_message_id, next);
+  return next;
+}
+
+export async function finishAgentDraftReview(
+  id: string,
+  input: {
+    status: "approved" | "edited" | "rejected" | "pending";
+    reason?: string;
+    finalReply?: string;
+    sent?: boolean;
+  }
+): Promise<AgentRun | null> {
+  if (usingSupabase) {
+    await ensureCrmSchema();
+    const { rows } = await queryDatabase(
+      `update ai_agent_runs set
+         feedback_status=$2, feedback_reason=$3, final_reply=$4,
+         status=case when $5 then 'sent' else status end,
+         reviewed_at=case when $2='pending' then null else now() end
+       where id=$1 returning *`,
+      [id, input.status, input.reason ?? "", input.finalReply ?? "", input.sent ?? false]
+    );
+    return (rows[0] as unknown as AgentRun | undefined) ?? null;
+  }
+  const run = await getAgentRun(id);
+  if (!run) return null;
+  const next: AgentRun = {
+    ...run,
+    feedback_status: input.status,
+    feedback_reason: input.reason ?? "",
+    final_reply: input.finalReply ?? "",
+    status: input.sent ? "sent" : run.status,
+    reviewed_at: input.status === "pending" ? null : nowIso(),
+  };
+  memRuns.set(run.trigger_message_id, next);
+  return next;
+}
+
+export async function getLeadMemory(phoneKey: string): Promise<LeadMemory | null> {
+  if (usingSupabase) {
+    await ensureCrmSchema();
+    const { rows } = await queryDatabase(
+      "select * from ai_lead_memory where phone_key=$1",
+      [phoneKey]
+    );
+    return (rows[0] as unknown as LeadMemory | undefined) ?? null;
+  }
+  return memLeadMemories.get(phoneKey) ?? null;
+}
+
+export async function updateLeadMemoryFromDecision(
+  phoneKey: string,
+  decision: AgentDecision
+): Promise<LeadMemory> {
+  const current = await getLeadMemory(phoneKey);
+  const sameLanguage =
+    current?.detected_language === decision.language &&
+    current?.language_style === decision.language_style;
+  const observations =
+    decision.language_confidence >= 0.88
+      ? sameLanguage
+        ? (current?.language_observations ?? 0) + 1
+        : 1
+      : (current?.language_observations ?? 0);
+  const collectedFields = [
+    ...(current?.collected_fields ?? []),
+    ...[
+      decision.customer_name ? "name" : "",
+      decision.interested_product ? "product" : "",
+      decision.quantity ? "quantity" : "",
+    ].filter(Boolean),
+  ];
+  const next: LeadMemory = {
+    phone_key: phoneKey,
+    detected_language:
+      decision.language_confidence >= 0.75
+        ? decision.language
+        : (current?.detected_language ?? null),
+    language_style:
+      decision.language_confidence >= 0.75
+        ? decision.language_style
+        : (current?.language_style ?? null),
+    language_confidence: Math.max(
+      decision.language_confidence,
+      sameLanguage ? (current?.language_confidence ?? 0) : 0
+    ),
+    language_observations: observations,
+    interested_product: decision.interested_product || current?.interested_product || "",
+    quantity: decision.quantity ?? current?.quantity ?? null,
+    customer_need: decision.customer_need || current?.customer_need || "",
+    objection: decision.objection,
+    buying_intent: decision.buying_intent,
+    collected_fields: [...new Set(collectedFields)],
+    last_question: decision.next_action,
+    next_action: decision.next_action,
+    updated_at: nowIso(),
+  };
+
+  if (usingSupabase) {
+    const { rows } = await queryDatabase(
+      `insert into ai_lead_memory
+         (phone_key, detected_language, language_style, language_confidence,
+          language_observations, interested_product, quantity, customer_need,
+          objection, buying_intent, collected_fields, last_question, next_action, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now())
+       on conflict (phone_key) do update set
+         detected_language=excluded.detected_language,
+         language_style=excluded.language_style,
+         language_confidence=excluded.language_confidence,
+         language_observations=excluded.language_observations,
+         interested_product=excluded.interested_product,
+         quantity=excluded.quantity,
+         customer_need=excluded.customer_need,
+         objection=excluded.objection,
+         buying_intent=excluded.buying_intent,
+         collected_fields=excluded.collected_fields,
+         last_question=excluded.last_question,
+         next_action=excluded.next_action,
+         updated_at=now()
+       returning *`,
+      [
+        phoneKey,
+        next.detected_language,
+        next.language_style,
+        next.language_confidence,
+        next.language_observations,
+        next.interested_product,
+        next.quantity,
+        next.customer_need,
+        next.objection,
+        next.buying_intent,
+        JSON.stringify(next.collected_fields),
+        next.last_question,
+        next.next_action,
+      ]
+    );
+    return rows[0] as unknown as LeadMemory;
+  }
+  memLeadMemories.set(phoneKey, next);
+  return next;
 }
 
 export function sanitizeLanguage(value: unknown): CustomerLanguage {
