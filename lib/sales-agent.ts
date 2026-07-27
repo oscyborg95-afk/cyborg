@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { detectLanguageHeuristic, validateReplyScript } from "./language";
+import { googleGenerateContentRequest, googlePermissionError } from "./google-genai";
 import {
   CHAT_STATES,
   type AgentConfig,
@@ -85,26 +86,6 @@ function apiKeys(raw?: string): string[] {
   return [...new Set(keys)];
 }
 
-function googleRequestForKey(key: string): {
-  url: string;
-  headers: Record<string, string>;
-} {
-  if (key.startsWith("AQ.")) {
-    return {
-      url:
-        `https://aiplatform.googleapis.com/v1/publishers/google/models/` +
-        `${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(key)}`,
-      headers: { "Content-Type": "application/json" },
-    };
-  }
-  return {
-    url:
-      `https://generativelanguage.googleapis.com/v1beta/models/` +
-      `${encodeURIComponent(GEMINI_MODEL)}:generateContent`,
-    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-  };
-}
-
 async function generateStructured<T>(input: {
   keys: string[];
   system: string;
@@ -137,7 +118,7 @@ async function generateStructured<T>(input: {
   for (const key of input.keys) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
-    const request = googleRequestForKey(key);
+    const request = googleGenerateContentRequest(key, GEMINI_MODEL);
     let response: Response;
     try {
       const timeoutSignal = AbortSignal.timeout(remainingMs);
@@ -164,7 +145,9 @@ async function generateStructured<T>(input: {
     }
     if (!response.ok) {
       const detail = (await response.text()).replaceAll(key, "[redacted]").slice(0, 220);
-      lastError = `Google AI request failed (${response.status}): ${detail}`;
+      lastError =
+        googlePermissionError(response.status, request.provider) ??
+        `Google AI request failed (${response.status}): ${detail}`;
       continue;
     }
     const payload = (await response.json()) as {

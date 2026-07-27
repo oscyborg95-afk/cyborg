@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DISTRICTS } from "./districts";
+import { googleGenerateContentRequest, googlePermissionError } from "./google-genai";
 import type { ParsedAddress } from "./types";
 
 // AI address parsing. Provider is picked by which key is set (checked in this order):
@@ -125,14 +126,12 @@ async function parseWithGemini(
     let res: Response | null = null;
     const backoffMs = [600, 1200, 2500];
     for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
-      res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-          body: requestBody,
-        }
-      );
+      const request = googleGenerateContentRequest(apiKey, GEMINI_MODEL);
+      res = await fetch(request.url, {
+        method: "POST",
+        headers: request.headers,
+        body: requestBody,
+      });
       if (res.status !== 503 || attempt === backoffMs.length) break;
       await sleep(backoffMs[attempt]);
     }
@@ -144,7 +143,11 @@ async function parseWithGemini(
   // next, so a single exhausted free-tier key doesn't block parsing when the
   // operator has added spares in Settings.
   let res: Response | null = null;
+  let provider = "";
   for (let i = 0; i < apiKeys.length; i++) {
+    provider = apiKeys[i].startsWith("AQ.")
+      ? "google-cloud-agent-platform"
+      : "gemini-developer-api";
     res = await callOnce(apiKeys[i]);
     if (res.status === 429 && i < apiKeys.length - 1) continue;
     break;
@@ -163,6 +166,8 @@ async function parseWithGemini(
     if (res.status === 503) {
       throw new Error("Gemini is busy right now (high demand) — please tap Parse again.");
     }
+    const permissionError = googlePermissionError(res.status, provider);
+    if (permissionError) throw new Error(permissionError);
     throw new Error(`Gemini request failed (${res.status}): ${body}`);
   }
 
