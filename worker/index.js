@@ -16,6 +16,7 @@
 //   GET  /chats                      → [{ id, name, lastMessage, timestamp, unreadCount }]
 //   GET  /messages/:chatId           → [{ id, chatId, body, fromMe, timestamp, senderName, status, media }]
 //   GET  /media/:id                  → { mime, data } (base64) — captured photos/voice notes/stickers
+//   DELETE /chats/:chatId            → purge this system's stored chat, messages, and media
 //   GET  /avatar/:jid                → { url } — profile picture (null when none/hidden)
 //   POST /send { chatId, text, media? { mime, data } } → { ok }
 //   POST /read { chatId }            → { ok } — mark chat read on the phone (blue ticks)
@@ -228,6 +229,28 @@ if (MOCK) {
   app.get("/messages/:chatId", (req, res) => {
     const chat = chats.get(req.params.chatId);
     res.json(chat ? chat.messages : []);
+  });
+
+  app.delete("/chats/:chatId", (req, res) => {
+    const chatId = req.params.chatId;
+    const timer = agentTimers.get(chatId);
+    if (timer) clearTimeout(timer);
+    agentTimers.delete(chatId);
+    const chat = chats.get(chatId);
+    let media = 0;
+    for (const message of chat?.messages ?? []) {
+      if (mockMedia.delete(message.id)) media += 1;
+    }
+    const deleted = chats.delete(chatId);
+    io.emit("wa:chat-deleted", { chatId });
+    res.json({
+      ok: true,
+      deleted: {
+        chats: Number(deleted),
+        messages: chat?.messages.length ?? 0,
+        media,
+      },
+    });
   });
 
   app.post("/send", (req, res) => {
@@ -520,6 +543,53 @@ async function listMessages(jid) {
   }
   const chatMsgs = memMessages.get(jid);
   return chatMsgs ? [...chatMsgs.values()].sort((a, b) => a.timestamp - b.timestamp) : [];
+}
+
+async function deleteStoredChat(jid) {
+  const timer = agentTimers.get(jid);
+  if (timer) clearTimeout(timer);
+  agentTimers.delete(jid);
+
+  if (pool) {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const messageRows = await client.query(
+        "select id from wa_messages where jid = $1",
+        [jid]
+      );
+      const messageIds = messageRows.rows.map((row) => row.id);
+      const mediaResult = messageIds.length
+        ? await client.query("delete from wa_media where id = any($1::text[])", [messageIds])
+        : { rowCount: 0 };
+      const messageResult = await client.query(
+        "delete from wa_messages where jid = $1",
+        [jid]
+      );
+      const chatResult = await client.query("delete from wa_chats where jid = $1", [jid]);
+      await client.query("commit");
+      return {
+        chats: chatResult.rowCount ?? 0,
+        messages: messageResult.rowCount ?? 0,
+        media: mediaResult.rowCount ?? 0,
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  const chatMsgs = memMessages.get(jid);
+  let media = 0;
+  for (const id of chatMsgs?.keys() ?? []) {
+    if (memMedia.delete(id)) media += 1;
+  }
+  const messages = chatMsgs?.size ?? 0;
+  memMessages.delete(jid);
+  const chats = Number(memChats.delete(jid));
+  return { chats, messages, media };
 }
 
 async function resetUnread(jid) {
@@ -831,6 +901,18 @@ app.get("/messages/:chatId", async (req, res) => {
     const messages = await listMessages(req.params.chatId);
     if (req.query.peek !== "1") await resetUnread(req.params.chatId);
     res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete("/chats/:chatId", async (req, res) => {
+  const chatId = req.params.chatId;
+  try {
+    const deleted = await deleteStoredChat(chatId);
+    avatarCache.delete(chatId);
+    io.emit("wa:chat-deleted", { chatId });
+    res.json({ ok: true, deleted });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

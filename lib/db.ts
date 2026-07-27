@@ -1322,6 +1322,23 @@ export async function upsertChatState(
   return record;
 }
 
+export async function deleteChatState(phoneNumber: string, chatId: string): Promise<number> {
+  if (pool) {
+    const result = await pool.query(
+      "delete from chat_states where phone_number = $1 or chat_id = $2",
+      [phoneNumber, chatId]
+    );
+    return result.rowCount ?? 0;
+  }
+  let deleted = 0;
+  for (const [key, state] of memChatStates) {
+    if (key !== phoneNumber && state.chat_id !== chatId) continue;
+    memChatStates.delete(key);
+    deleted += 1;
+  }
+  return deleted;
+}
+
 // --- Business settings (gamified net-worth counter) -------------------------
 
 export async function getSettings(): Promise<BusinessSettings> {

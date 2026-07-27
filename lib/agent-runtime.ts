@@ -46,6 +46,27 @@ export interface AgentTrigger {
   senderName?: string;
 }
 
+class ChatDeletionAbortError extends Error {
+  constructor() {
+    super("Chat data was deleted");
+    this.name = "ChatDeletionAbortError";
+  }
+}
+
+interface ActiveAgentRun {
+  controller: AbortController;
+  completed: Promise<void>;
+  markCompleted: () => void;
+}
+
+const activeAgentRuns = new Map<string, Set<ActiveAgentRun>>();
+
+export async function cancelSalesAgentRuns(chatId: string): Promise<void> {
+  const runs = [...(activeAgentRuns.get(chatId) ?? [])];
+  for (const run of runs) run.controller.abort(new ChatDeletionAbortError());
+  await Promise.all(runs.map((run) => run.completed));
+}
+
 function messageTimestampMs(timestamp: number): number {
   return timestamp > 0 && timestamp < 1_000_000_000_000
     ? timestamp * 1000
@@ -84,6 +105,14 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
   if (key.length < 9) return null;
 
   const controller = new AbortController();
+  let markCompleted!: () => void;
+  const completed = new Promise<void>((resolve) => {
+    markCompleted = resolve;
+  });
+  const activeRun: ActiveAgentRun = { controller, completed, markCompleted };
+  const runsForChat = activeAgentRuns.get(trigger.chatId) ?? new Set<ActiveAgentRun>();
+  runsForChat.add(activeRun);
+  activeAgentRuns.set(trigger.chatId, runsForChat);
   let executionTimedOut = false;
   let stage = "claiming the run";
   let claimed: AgentRun | null = null;
@@ -371,6 +400,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       reply: decision.reply,
     });
   } catch (error) {
+    if (error instanceof ChatDeletionAbortError) return null;
     if (!claimed) throw error;
     const message = executionTimedOut
       ? replySent
@@ -398,5 +428,8 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
     return finished;
   } finally {
     clearTimeout(executionTimer);
+    runsForChat.delete(activeRun);
+    if (runsForChat.size === 0) activeAgentRuns.delete(trigger.chatId);
+    markCompleted();
   }
 }

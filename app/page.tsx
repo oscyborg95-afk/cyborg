@@ -277,6 +277,7 @@ export default function Workspace() {
   // Photo staged in the composer, ready to send with an optional caption.
   const [attach, setAttach] = useState<{ mime: string; data: string } | null>(null);
   const [sendingPhoto, setSendingPhoto] = useState(false);
+  const [deletingChat, setDeletingChat] = useState(false);
 
   const activeChatIdRef = useRef<string | null>(null);
   const dispatchKeyRef = useRef<{ chatId: string; key: string } | null>(null);
@@ -429,6 +430,16 @@ export default function Workspace() {
     socket.on("disconnect", () => setWorkerOffline(true));
     socket.on("wa:status", ({ ready: r }: { ready: boolean }) => setWaReady(r));
     socket.on("wa:qr", ({ qr }: { qr: string }) => setQrImage(qr));
+    socket.on("wa:chat-deleted", ({ chatId }: { chatId: string }) => {
+      setChats((prev) => prev.filter((chat) => chat.id !== chatId));
+      if (chatId !== activeChatIdRef.current) return;
+      activeChatIdRef.current = null;
+      setActiveChatId(null);
+      setMessages([]);
+      setDraft(null);
+      setConfirmText(null);
+      setAttach(null);
+    });
     // Delivery acks: bump the ticks on our bubbles as WhatsApp confirms them.
     socket.on(
       "wa:update",
@@ -531,6 +542,45 @@ export default function Workspace() {
       body: JSON.stringify({ chatId }),
     }).catch(() => {});
     await loadMessages(chatId);
+  }
+
+  async function deleteActiveChat() {
+    if (!activeChat || !activePhone || deletingChat) return;
+    const confirmed = window.confirm(
+      `Permanently delete ${activeChat.name}'s chat data from this system?\n\n` +
+        "This removes messages, stored media, customer profile, chat state, and AI history. " +
+        "Orders, invoices, courier records, financial history, and both WhatsApp phones are preserved."
+    );
+    if (!confirmed) return;
+
+    const chatId = activeChat.id;
+    const phone = activePhone;
+    setDeletingChat(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/whatsapp/messages/${encodeURIComponent(chatId)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete chat data");
+
+      activeChatIdRef.current = null;
+      setActiveChatId(null);
+      setChats((prev) => prev.filter((chat) => chat.id !== chatId));
+      setMessages([]);
+      setDraft(null);
+      setConfirmText(null);
+      setAttach(null);
+      setStates((prev) => {
+        const next = { ...prev };
+        delete next[phone];
+        return next;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete chat data");
+    } finally {
+      setDeletingChat(false);
+    }
   }
 
   // Show "typing…" on the customer's phone while the operator writes.
@@ -1106,6 +1156,15 @@ export default function Workspace() {
                   </option>
                 ))}
               </select>
+              <Button
+                tone="flame"
+                onClick={deleteActiveChat}
+                disabled={deletingChat}
+                className="!px-2.5 !py-1.5 !text-xs"
+                title="Delete this chat's data from the system"
+              >
+                {deletingChat ? "Deleting…" : "🗑 Delete"}
+              </Button>
             </div>
 
             <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto bg-cream/40 p-4">

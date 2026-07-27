@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { queryDatabase, usingSupabase } from "./db";
+import { queryDatabase, usingSupabase, withTransaction } from "./db";
 import type {
   AgentConfig,
   AgentDecision,
@@ -43,6 +43,14 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
   quiet_hours_end: "07:00",
   updated_at: new Date(0).toISOString(),
 };
+
+export interface PurgedCustomerData {
+  profiles: number;
+  events: number;
+  attentionItems: number;
+  agentRuns: number;
+  leadMemories: number;
+}
 
 async function ensureCrmSchema(): Promise<void> {
   if (!usingSupabase || g.__crmSchemaReady) return;
@@ -150,6 +158,68 @@ async function ensureCrmSchema(): Promise<void> {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+export async function purgeCustomerData(
+  phoneKey: string,
+  chatId: string
+): Promise<PurgedCustomerData> {
+  if (usingSupabase) {
+    await ensureCrmSchema();
+    return withTransaction(async (db) => {
+      if (!db) throw new Error("Database transaction unavailable");
+      const agentRuns = await db.query(
+        "delete from ai_agent_runs where phone_key=$1 or chat_id=$2",
+        [phoneKey, chatId]
+      );
+      const attentionItems = await db.query(
+        "delete from attention_items where phone_key=$1 or chat_id=$2",
+        [phoneKey, chatId]
+      );
+      const events = await db.query(
+        "delete from customer_events where phone_key=$1 or chat_id=$2",
+        [phoneKey, chatId]
+      );
+      const leadMemories = await db.query(
+        "delete from ai_lead_memory where phone_key=$1",
+        [phoneKey]
+      );
+      const profiles = await db.query(
+        "delete from customer_profiles where phone_key=$1",
+        [phoneKey]
+      );
+      return {
+        profiles: profiles.rowCount ?? 0,
+        events: events.rowCount ?? 0,
+        attentionItems: attentionItems.rowCount ?? 0,
+        agentRuns: agentRuns.rowCount ?? 0,
+        leadMemories: leadMemories.rowCount ?? 0,
+      };
+    });
+  }
+
+  const profiles = Number(memProfiles.delete(phoneKey));
+  const leadMemories = Number(memLeadMemories.delete(phoneKey));
+  let events = 0;
+  for (let index = memEvents.length - 1; index >= 0; index -= 1) {
+    const event = memEvents[index];
+    if (event.phone_key !== phoneKey && event.chat_id !== chatId) continue;
+    memEvents.splice(index, 1);
+    events += 1;
+  }
+  let attentionItems = 0;
+  for (const [key, item] of memAttention) {
+    if (item.phone_key !== phoneKey && item.chat_id !== chatId) continue;
+    memAttention.delete(key);
+    attentionItems += 1;
+  }
+  let agentRuns = 0;
+  for (const [triggerId, run] of memRuns) {
+    if (run.phone_key !== phoneKey && run.chat_id !== chatId) continue;
+    memRuns.delete(triggerId);
+    agentRuns += 1;
+  }
+  return { profiles, events, attentionItems, agentRuns, leadMemories };
 }
 
 export async function ensureCustomerProfile(input: {
