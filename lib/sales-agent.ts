@@ -14,7 +14,7 @@ import {
 } from "./types";
 export { insideQuietHours } from "./agent-policy";
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const GEMINI_REQUEST_TIMEOUT_MS = Math.min(
   20_000,
   Math.max(5_000, Number(process.env.GEMINI_REQUEST_TIMEOUT_MS) || 18_000)
@@ -92,7 +92,6 @@ async function generateStructured<T>(input: {
   content: unknown;
   responseSchema: Record<string, unknown>;
   parser: { parse(value: unknown): T };
-  temperature?: number;
   signal?: AbortSignal;
 }): Promise<T> {
   if (input.keys.length === 0) {
@@ -107,7 +106,6 @@ async function generateStructured<T>(input: {
       },
     ],
     generationConfig: {
-      temperature: input.temperature ?? 0.2,
       responseMimeType: "application/json",
       responseSchema: input.responseSchema,
     },
@@ -334,7 +332,6 @@ ${input.config.business_context || "Use only the supplied product catalog and or
       ],
     },
     parser: PlanSchema,
-    temperature: 0.15,
     signal: input.signal,
   });
 }
@@ -391,7 +388,6 @@ ${languageWritingRule(input.language)}
       required: ["reply"],
     },
     parser: ReplySchema,
-    temperature: 0.45,
     signal: input.signal,
   });
   return result.reply.trim().slice(0, 1600);
