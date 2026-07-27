@@ -87,19 +87,76 @@ export default function AttentionPage() {
     }
   }
 
+  const [showGuide, setShowGuide] = useState(true);
+
   return (
     <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
       <header className="flex flex-wrap items-center gap-3">
         <Froggy mood={mode === "auto" ? "happy" : "thinking"} size={60} />
         <div className="min-w-0 flex-1">
           <h1 className="font-display text-2xl font-extrabold text-ink sm:text-3xl">Attention Center</h1>
-          <p className="text-sm font-bold text-ink-soft">Your highest-value next moves, ranked.</p>
+          <p className="text-sm font-bold text-ink-soft">Your highest-value next moves, ranked by urgency and money at risk.</p>
         </div>
         <AiStateBadge mode={mode} />
+        <Button
+          tone="ghost"
+          onClick={() => setShowGuide((prev) => !prev)}
+          className="text-xs"
+        >
+          {showGuide ? "💡 Hide Guide" : "❓ How it works"}
+        </Button>
         <Button tone="ghost" onClick={() => void load()} disabled={loading} aria-label="Refresh Attention Center">
           ↻ <span className="hidden sm:inline">Refresh</span>
         </Button>
       </header>
+
+      {/* Interactive Guide Banner */}
+      {showGuide && (
+        <Card className="animate-pop p-4 sm:p-5 !border-sky bg-sky-tint/30 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2 font-display text-base font-extrabold text-sky-dark">
+              <span>💡</span>
+              <span>What is the Attention Center &amp; how does it work?</span>
+            </div>
+            <button
+              onClick={() => setShowGuide(false)}
+              className="text-xs font-bold text-sky-dark/70 hover:text-sky-dark"
+            >
+              ✕ Dismiss
+            </button>
+          </div>
+          <p className="text-xs font-semibold text-ink-soft leading-relaxed">
+            Instead of manually checking hundreds of chats or courier tracking codes, the Attention Center scans your shop 24/7 and highlights only the <span className="font-bold text-ink">highest-priority actions</span> that protect revenue or boost sales.
+          </p>
+
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4 pt-1">
+            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
+              <div className="font-display font-extrabold text-ink mb-0.5">💬 1. Leads &amp; Address Stale</div>
+              <p className="text-ink-soft font-medium">Unreplied WhatsApp questions or unconfirmed customer addresses needing your quick reply.</p>
+            </div>
+            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
+              <div className="font-display font-extrabold text-ink mb-0.5">📦 2. Ready Orders</div>
+              <p className="text-ink-soft font-medium">Verified orders waiting for courier booking so parcels ship without delay.</p>
+            </div>
+            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
+              <div className="font-display font-extrabold text-ink mb-0.5">🛵 3. Delivery Exceptions</div>
+              <p className="text-ink-soft font-medium">Courier returns or failed deliveries where a 1-click redelivery offer can save the sale.</p>
+            </div>
+            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
+              <div className="font-display font-extrabold text-ink mb-0.5">✨ 4. AI Handoffs</div>
+              <p className="text-ink-soft font-medium">Complex customer requests handed off by the AI assistant for human touch.</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-bold text-sky-dark pt-1 border-t border-sky-dark/15">
+            <span>👉 How to resolve:</span>
+            <span>💬 <b>Open chat</b> to reply</span>
+            <span>👤 <b>View customer</b> for CRM history</span>
+            <span>✓ <b>Done</b> to mark complete</span>
+            <span>1h 💤 <b>Snooze</b> to review later</span>
+          </div>
+        </Card>
+      )}
 
       {error && (
         <Card className="flex flex-wrap items-center justify-between gap-3 !border-danger-line bg-danger-bg p-4">

@@ -7,9 +7,13 @@ import { Froggy } from "../components/froggy";
 import { Card } from "../components/ui";
 import { AiStateBadge, StageBadge, languageName, money, timeAgo } from "../components/crm-ui";
 
+type CustomerFilter = "all" | "leads" | "buyers" | "repeat" | "ai_on" | "ai_off";
+
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [query, setQuery] = useState("");
+  const [stageFilter, setStageFilter] = useState<CustomerFilter>("all");
+  const [showGuide, setShowGuide] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [mountedAt] = useState(() => Date.now());
@@ -34,39 +38,131 @@ export default function CustomersPage() {
   }, [load]);
 
   const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return customers;
-    return customers.filter((customer) =>
-      [customer.display_name, customer.primary_phone, customer.latest_message, ...customer.tags]
+    return customers.filter((customer) => {
+      // Stage filter
+      if (stageFilter === "leads" && customer.delivered_orders > 0) return false;
+      if (stageFilter === "buyers" && customer.delivered_orders === 0) return false;
+      if (stageFilter === "repeat" && customer.delivered_orders <= 1) return false;
+      if (stageFilter === "ai_on" && !customer.ai_enabled) return false;
+      if (stageFilter === "ai_off" && customer.ai_enabled) return false;
+
+      // Text query
+      const needle = query.trim().toLowerCase();
+      if (!needle) return true;
+      return [customer.display_name, customer.primary_phone, customer.latest_message, ...customer.tags]
         .join(" ")
         .toLowerCase()
-        .includes(needle)
-    );
-  }, [customers, query]);
+        .includes(needle);
+    });
+  }, [customers, query, stageFilter]);
 
   const repeatBuyers = customers.filter((customer) => customer.delivered_orders > 1).length;
+  const buyersCount = customers.filter((customer) => customer.delivered_orders > 0).length;
+  const leadsCount = customers.filter((customer) => customer.delivered_orders === 0).length;
   const aiEnabled = customers.filter((customer) => customer.ai_enabled).length;
+  const aiDisabled = customers.length - aiEnabled;
 
   return (
     <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
-      <header className="flex items-center gap-3">
-        <Froggy mood="happy" size={60} />
-        <div>
-          <h1 className="font-display text-2xl font-extrabold text-ink sm:text-3xl">Customers</h1>
-          <p className="text-sm font-bold text-ink-soft">Every conversation, order and AI memory in one place.</p>
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Froggy mood="happy" size={60} />
+          <div>
+            <h1 className="font-display text-2xl font-extrabold text-ink sm:text-3xl">Customers CRM</h1>
+            <p className="text-sm font-bold text-ink-soft">Every conversation, order history, language preference &amp; AI memory.</p>
+          </div>
         </div>
+        <button
+          onClick={() => setShowGuide((prev) => !prev)}
+          className="rounded-xl border-2 border-cardline bg-surface px-3 py-2 font-display text-xs font-extrabold text-ink hover:border-frog transition"
+        >
+          {showGuide ? "💡 Hide Guide" : "❓ How CRM Works"}
+        </button>
       </header>
 
-      <label className="relative block">
-        <span className="sr-only">Search customers</span>
-        <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-lg">🔎</span>
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search name, phone, message or tag..."
-          className="w-full rounded-2xl border-2 border-cardline bg-surface py-3.5 pl-12 pr-4 font-display text-sm font-bold text-ink outline-none transition focus:border-frog focus:ring-2 focus:ring-frog/20"
-        />
-      </label>
+      {/* How CRM Works Guide Banner */}
+      {showGuide && (
+        <Card className="animate-pop p-4 sm:p-5 !border-frog bg-pond/30 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2 font-display text-base font-extrabold text-frog-dark">
+              <span>💡</span>
+              <span>How does the Customer CRM work?</span>
+            </div>
+            <button
+              onClick={() => setShowGuide(false)}
+              className="text-xs font-bold text-frog-dark/70 hover:text-frog-dark"
+            >
+              ✕ Dismiss
+            </button>
+          </div>
+          <p className="text-xs font-semibold text-ink-soft leading-relaxed">
+            The CRM automatically organizes every WhatsApp phone number that interacts with your store into a single unified profile. You never have to manually create customer accounts!
+          </p>
+
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4 pt-1">
+            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
+              <div className="font-display font-extrabold text-ink mb-0.5">👤 1. Auto Profiles</div>
+              <p className="text-ink-soft font-medium">Created instantly from incoming WhatsApp messages, saving phone numbers, names, and districts.</p>
+            </div>
+            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
+              <div className="font-display font-extrabold text-ink mb-0.5">📊 2. Lifecycle Stages</div>
+              <p className="text-ink-soft font-medium">Tracks progress from New Inquiry → Pending Order → Active Buyer → Repeat VIP.</p>
+            </div>
+            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
+              <div className="font-display font-extrabold text-ink mb-0.5">🤖 3. Per-Customer AI</div>
+              <p className="text-ink-soft font-medium">Enable or pause AI auto-replies for individual customers with a single click inside their profile.</p>
+            </div>
+            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
+              <div className="font-display font-extrabold text-ink mb-0.5">📜 4. Complete Audit Trail</div>
+              <p className="text-ink-soft font-medium">Click any customer to inspect complete WhatsApp chat history, past order COD records &amp; AI notes.</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Search & Filters Toolbar */}
+      <div className="space-y-3">
+        <label className="relative block">
+          <span className="sr-only">Search customers</span>
+          <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-lg">🔎</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search name, phone number, message content or tag..."
+            className="w-full rounded-2xl border-2 border-cardline bg-surface py-3 pl-12 pr-4 font-display text-sm font-bold text-ink outline-none transition focus:border-frog focus:ring-2 focus:ring-frog/20"
+          />
+        </label>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft shrink-0">
+            🏷️ Filter:
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(
+              [
+                ["all", `All (${customers.length})`],
+                ["leads", `Leads (${leadsCount})`],
+                ["buyers", `Buyers (${buyersCount})`],
+                ["repeat", `Repeat VIPs (${repeatBuyers})`],
+                ["ai_on", `AI Live (${aiEnabled})`],
+                ["ai_off", `AI Off (${aiDisabled})`],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setStageFilter(key)}
+                className={`rounded-xl border-2 px-3 py-1.5 font-display text-xs font-extrabold transition ${
+                  stageFilter === key
+                    ? "border-frog bg-pond text-frog-dark shadow-xs"
+                    : "border-cardline bg-surface text-ink-soft hover:border-frog/50"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
 
       <section className="grid grid-cols-3 overflow-hidden rounded-2xl border-2 border-cardline border-b-[5px] bg-surface" aria-label="Customer summary">
         {[

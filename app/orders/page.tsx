@@ -147,6 +147,61 @@ function ordersToCsv(orders: Order[], manifests: ShippingManifest[]): string {
   return [header.join(","), ...rows].join("\n");
 }
 
+type DatePreset = "all" | "today" | "yesterday" | "7days" | "month" | "custom";
+type StatusFilter = "all" | "pending" | "booked" | "delivered" | "returned" | "unremitted";
+
+function isSameDay(d1: Date, d2: Date): boolean {
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
+}
+
+function isDateInRange(createdAtIso: string, preset: DatePreset, customStart: string, customEnd: string): boolean {
+  if (preset === "all") return true;
+  const date = new Date(createdAtIso);
+  const now = new Date();
+  
+  if (preset === "today") {
+    return isSameDay(date, now);
+  }
+  
+  if (preset === "yesterday") {
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    return isSameDay(date, yesterday);
+  }
+  
+  if (preset === "7days") {
+    const sevenDaysAgo = new Date(now);
+    sevenDaysAgo.setDate(now.getDate() - 7);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+    return date >= sevenDaysAgo;
+  }
+  
+  if (preset === "month") {
+    return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+  }
+  
+  if (preset === "custom") {
+    let valid = true;
+    if (customStart) {
+      const start = new Date(customStart);
+      start.setHours(0, 0, 0, 0);
+      if (date < start) valid = false;
+    }
+    if (customEnd) {
+      const end = new Date(customEnd);
+      end.setHours(23, 59, 59, 999);
+      if (date > end) valid = false;
+    }
+    return valid;
+  }
+  
+  return true;
+}
+
 export default function OrdersPage() {
   const [rawText, setRawText] = useState("");
   const [parsing, setParsing] = useState(false);
@@ -168,6 +223,10 @@ export default function OrdersPage() {
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [msgTemplates, setMsgTemplates] = useState<MessageTemplates>({});
   const [search, setSearch] = useState("");
+  const [datePreset, setDatePreset] = useState<DatePreset>("all");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [redeliverSentId, setRedeliverSentId] = useState<string | null>(null);
   const [rebookingId, setRebookingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -447,6 +506,79 @@ export default function OrdersPage() {
   const unremitted = orders.filter((o) => o.order_status === "delivered" && !o.remitted_at);
   const unremittedTotal = unremitted.reduce((sum, o) => sum + Number(o.total_cod), 0);
 
+  // --- Filters & Metrics Calculations ---------------------------------------
+
+  const filteredOrders = useMemo(() => {
+    return orders.filter((order) => {
+      // 1. Status Filter
+      if (statusFilter === "pending" && order.order_status !== "pending") return false;
+      if (statusFilter === "booked" && order.order_status !== "booked") return false;
+      if (statusFilter === "delivered" && order.order_status !== "delivered") return false;
+      if (statusFilter === "returned" && order.order_status !== "returned") return false;
+      if (statusFilter === "unremitted" && !(order.order_status === "delivered" && !order.remitted_at)) return false;
+
+      // 2. Date Filter
+      if (!isDateInRange(order.created_at, datePreset, customStart, customEnd)) return false;
+
+      // 3. Search query
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      const manifest = manifests.find((m) => m.order_id === order.id);
+      return [
+        order.customer_name,
+        order.phone_number,
+        order.phone_2,
+        order.city,
+        order.district,
+        order.item_name,
+        order.order_status,
+        manifest?.tracking_id ?? "",
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [orders, manifests, statusFilter, datePreset, customStart, customEnd, search]);
+
+  const filteredTotalCod = useMemo(() => {
+    return filteredOrders.reduce((sum, o) => sum + Number(o.total_cod || 0), 0);
+  }, [filteredOrders]);
+
+  const todayOrders = useMemo(() => {
+    const now = new Date();
+    return orders.filter((o) => isSameDay(new Date(o.created_at), now));
+  }, [orders]);
+
+  const todayCodTotal = useMemo(() => {
+    return todayOrders.reduce((sum, o) => sum + Number(o.total_cod || 0), 0);
+  }, [todayOrders]);
+
+  const pendingCount = useMemo(() => {
+    return orders.filter((o) => o.order_status === "pending").length;
+  }, [orders]);
+
+  const bookedCount = useMemo(() => {
+    return orders.filter((o) => o.order_status === "booked").length;
+  }, [orders]);
+
+  const deliveredCount = useMemo(() => {
+    return orders.filter((o) => o.order_status === "delivered").length;
+  }, [orders]);
+
+  const returnedCount = useMemo(() => {
+    return orders.filter((o) => o.order_status === "returned").length;
+  }, [orders]);
+
+  const isFiltered = statusFilter !== "all" || datePreset !== "all" || Boolean(search.trim()) || Boolean(customStart) || Boolean(customEnd);
+
+  const resetFilters = () => {
+    setStatusFilter("all");
+    setDatePreset("all");
+    setCustomStart("");
+    setCustomEnd("");
+    setSearch("");
+  };
+
   function handleExportCsv() {
     const csv = ordersToCsv(orders, manifests);
     // BOM so Excel opens the Sinhala names correctly.
@@ -697,20 +829,184 @@ export default function OrdersPage() {
         </>
       )}
 
-      <Card className="p-5">
-        <div className="mb-3 flex flex-wrap items-center gap-3">
-          <h2 className="font-display text-lg font-extrabold text-ink">Orders</h2>
-          <input
-            className="ml-auto w-full max-w-xs rounded-xl border-2 border-cardline bg-cream/60 px-3 py-1.5 text-sm font-semibold text-ink outline-none focus:border-frog"
-            placeholder="🔎 Search name, phone, tracking…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+      {/* Summary Metrics Bar */}
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="Orders summary metrics">
+        <Card className="p-3 sm:p-4">
+          <div className="flex items-center justify-between text-xs font-bold text-ink-soft">
+            <span>📦 Total Orders</span>
+            <span className="rounded-full bg-surface-soft px-2 py-0.5 font-mono text-[10px] text-ink">{orders.length}</span>
+          </div>
+          <div className="mt-1 font-display text-lg font-extrabold text-ink sm:text-xl">
+            Rs. {orders.reduce((sum, o) => sum + Number(o.total_cod || 0), 0).toLocaleString("en-LK")}
+          </div>
+          <p className="mt-0.5 text-[11px] font-semibold text-ink-soft">Lifetime COD volume</p>
+        </Card>
+
+        <Card className="p-3 sm:p-4 !border-frog/40 bg-pond/40">
+          <div className="flex items-center justify-between text-xs font-bold text-frog-dark">
+            <span>☀️ Today's Orders</span>
+            <span className="rounded-full bg-frog/20 px-2 py-0.5 font-mono text-[10px] font-extrabold text-frog-dark">{todayOrders.length}</span>
+          </div>
+          <div className="mt-1 font-display text-lg font-extrabold text-frog-dark sm:text-xl">
+            Rs. {todayCodTotal.toLocaleString("en-LK")}
+          </div>
+          <p className="mt-0.5 text-[11px] font-semibold text-frog-dark/80">Placed today</p>
+        </Card>
+
+        <Card className="p-3 sm:p-4 !border-gold/40 bg-gold/10">
+          <div className="flex items-center justify-between text-xs font-bold text-gold-dark">
+            <span>⏳ Ready to Book</span>
+            <span className="rounded-full bg-gold/20 px-2 py-0.5 font-mono text-[10px] font-extrabold text-gold-dark">{pendingCount}</span>
+          </div>
+          <div className="mt-1 font-display text-lg font-extrabold text-gold-dark sm:text-xl">
+            {pendingCount} parcel{pendingCount === 1 ? "" : "s"}
+          </div>
+          <p className="mt-0.5 text-[11px] font-semibold text-gold-dark/80">Awaiting courier dispatch</p>
+        </Card>
+
+        <Card className="p-3 sm:p-4 !border-grape/40 bg-grape-tint/40">
+          <div className="flex items-center justify-between text-xs font-bold text-grape-dark">
+            <span>💰 Unremitted COD</span>
+            <span className="rounded-full bg-grape/20 px-2 py-0.5 font-mono text-[10px] font-extrabold text-grape-dark">{unremitted.length}</span>
+          </div>
+          <div className="mt-1 font-display text-lg font-extrabold text-grape-dark sm:text-xl">
+            Rs. {unremittedTotal.toLocaleString("en-LK")}
+          </div>
+          <p className="mt-0.5 text-[11px] font-semibold text-grape-dark/80">Collected by courier</p>
+        </Card>
+      </section>
+
+      <Card className="p-4 sm:p-5 space-y-4">
+        {/* Header & Search */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-cardline/60 pb-3">
+          <div>
+            <h2 className="font-display text-lg font-extrabold text-ink">
+              Orders List ({filteredOrders.length}{isFiltered ? ` of ${orders.length}` : ""})
+            </h2>
+            {isFiltered && (
+              <p className="text-xs font-bold text-frog-dark">
+                Filtered Total COD: <span className="font-extrabold">Rs. {filteredTotalCod.toLocaleString("en-LK")}</span>
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <input
+              className="w-full sm:w-64 rounded-xl border-2 border-cardline bg-cream/60 px-3 py-1.5 text-sm font-semibold text-ink outline-none focus:border-frog"
+              placeholder="🔎 Search name, phone, city, tracking…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {isFiltered && (
+              <Button tone="ghost" onClick={resetFilters} className="text-xs py-1 px-2.5">
+                ✕ Clear filters
+              </Button>
+            )}
+          </div>
         </div>
+
+        {/* Date Filter Toolbar */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft shrink-0">
+            📅 Date:
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(
+              [
+                ["all", "All Time"],
+                ["today", "Today"],
+                ["yesterday", "Yesterday"],
+                ["7days", "Last 7 Days"],
+                ["month", "This Month"],
+                ["custom", "Custom Range"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setDatePreset(key)}
+                className={`rounded-xl border-2 px-2.5 py-1 font-display text-xs font-extrabold transition ${
+                  datePreset === key
+                    ? "border-frog bg-pond text-frog-dark shadow-xs"
+                    : "border-cardline bg-surface text-ink-soft hover:border-frog/50"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Custom Date Inputs */}
+          {datePreset === "custom" && (
+            <div className="flex flex-wrap items-center gap-2 mt-2 sm:mt-0 sm:ml-2 rounded-xl border-2 border-cardline bg-cream/40 p-1.5">
+              <label className="flex items-center gap-1 text-xs font-bold text-ink-soft">
+                From:
+                <input
+                  type="date"
+                  value={customStart}
+                  onChange={(e) => setCustomStart(e.target.value)}
+                  className="rounded-lg border border-cardline bg-surface px-2 py-0.5 font-display text-xs text-ink outline-none focus:border-frog"
+                />
+              </label>
+              <label className="flex items-center gap-1 text-xs font-bold text-ink-soft">
+                To:
+                <input
+                  type="date"
+                  value={customEnd}
+                  onChange={(e) => setCustomEnd(e.target.value)}
+                  className="rounded-lg border border-cardline bg-surface px-2 py-0.5 font-display text-xs text-ink outline-none focus:border-frog"
+                />
+              </label>
+            </div>
+          )}
+        </div>
+
+        {/* Status Filter Toolbar */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft shrink-0">
+            🏷️ Status:
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(
+              [
+                ["all", `All (${orders.length})`],
+                ["pending", `Pending (${pendingCount})`],
+                ["booked", `Booked (${bookedCount})`],
+                ["delivered", `Delivered (${deliveredCount})`],
+                ["returned", `Returned (${returnedCount})`],
+                ["unremitted", `Unremitted (${unremitted.length})`],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setStatusFilter(key)}
+                className={`rounded-xl border-2 px-2.5 py-1 font-display text-xs font-extrabold transition ${
+                  statusFilter === key
+                    ? "border-grape bg-grape-tint text-grape-dark shadow-xs"
+                    : "border-cardline bg-surface text-ink-soft hover:border-grape/50"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Orders Table or Empty State */}
         {orders.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 p-6 text-center">
+          <div className="flex flex-col items-center gap-2 p-8 text-center">
             <Froggy mood="sleepy" size={72} />
-            <p className="font-display text-sm font-bold text-ink-soft">No orders yet.</p>
+            <p className="font-display text-sm font-bold text-ink-soft">No orders recorded yet.</p>
+          </div>
+        ) : filteredOrders.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 p-8 text-center rounded-2xl border-2 border-dashed border-cardline bg-surface-soft">
+            <Froggy mood="thinking" size={64} />
+            <h3 className="font-display text-base font-extrabold text-ink">No matching orders</h3>
+            <p className="font-display text-xs font-bold text-ink-soft max-w-sm">
+              No orders matched your active date range, status, or search query.
+            </p>
+            <Button tone="ghost" onClick={resetFilters} className="mt-2 text-xs">
+              Clear all filters
+            </Button>
           </div>
         ) : (
           <div className="overflow-x-auto rounded-xl border border-cardline/60" role="region" aria-label="Orders table" tabIndex={0}>
@@ -726,26 +1022,7 @@ export default function OrdersPage() {
                 </tr>
               </thead>
               <tbody>
-                {orders
-                  .filter((order) => {
-                    const q = search.trim().toLowerCase();
-                    if (!q) return true;
-                    const manifest = manifests.find((m) => m.order_id === order.id);
-                    return [
-                      order.customer_name,
-                      order.phone_number,
-                      order.phone_2,
-                      order.city,
-                      order.district,
-                      order.item_name,
-                      order.order_status,
-                      manifest?.tracking_id ?? "",
-                    ]
-                      .join(" ")
-                      .toLowerCase()
-                      .includes(q);
-                  })
-                  .map((order) => {
+                {filteredOrders.map((order) => {
                   const manifest = manifests.find((m) => m.order_id === order.id);
                   const orderEvents = events
                     .filter((e) => e.order_id === order.id)
