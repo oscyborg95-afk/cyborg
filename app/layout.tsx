@@ -5,6 +5,7 @@ import { NavTabs } from "./nav-tabs";
 import { LevelBadge } from "./level-badge";
 import { Froggy } from "./components/froggy";
 import { ThemeToggle } from "./theme-toggle";
+import { WhatsAppAccountControl } from "./whatsapp-account-control";
 
 const themeBootstrap = `(function(){try{var t=localStorage.getItem('daily-cart-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t}catch(e){document.documentElement.dataset.theme='light'}})()`;
 
@@ -42,6 +43,7 @@ export default function RootLayout({
             </span>
           </div>
           <div className="ml-auto flex items-center gap-2 md:order-last md:ml-0">
+            <WhatsAppAccountControl />
             <ThemeToggle />
             <div className="hidden md:block"><LevelBadge /></div>
           </div>

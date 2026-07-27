@@ -20,6 +20,7 @@
 //   POST /send { chatId, text, media? { mime, data } } → { ok }
 //   POST /read { chatId }            → { ok } — mark chat read on the phone (blue ticks)
 //   POST /typing { chatId, state }   → { ok } — "composing" | "paused" presence
+//   POST /logout                     → { ok } — unlink this device and generate a fresh QR
 //   POST /mock/incoming { chatId, body }   (mock mode only)
 // Socket.io events: "wa:message", "wa:update" ({ id, chatId, status }),
 //                   "wa:status" ({ ready }), "wa:qr" ({ qr })
@@ -289,6 +290,11 @@ if (MOCK) {
   });
   app.post("/typing", (_req, res) => res.json({ ok: true }));
   app.get("/avatar/:jid", (_req, res) => res.json({ url: null }));
+  app.post("/logout", (_req, res) =>
+    res.status(409).json({
+      error: "Account switching is unavailable in mock mode because no real WhatsApp account is linked.",
+    })
+  );
 
   app.post("/mock/incoming", (req, res) => {
     const { chatId, body } = req.body;
@@ -662,9 +668,12 @@ async function updateMessageStatus(id, jid, status) {
 // --- Connection ----------------------------------------------------------------
 
 let sock = null;
+let activeAuth = null;
+let switchingAccount = false;
 
 async function connectToWhatsApp() {
   const auth = await getAuthState();
+  activeAuth = auth;
 
   sock = makeWASocket({
     auth: {
@@ -749,6 +758,37 @@ async function connectToWhatsApp() {
     }
   });
 }
+
+// Log out the linked device, then remove only Baileys credentials. Chat
+// history and every business table intentionally remain untouched.
+app.post("/logout", async (_req, res) => {
+  if (switchingAccount) {
+    return res.status(409).json({ error: "A WhatsApp account switch is already in progress." });
+  }
+  if (!ready || !sock || !activeAuth) {
+    return res.status(409).json({ error: "WhatsApp is not currently connected." });
+  }
+
+  switchingAccount = true;
+  const currentSocket = sock;
+  const currentAuth = activeAuth;
+  latestQr = null;
+  setReady(false);
+
+  try {
+    await currentSocket.logout();
+    // The loggedOut connection event also clears auth. Repeating the operation
+    // here is safe and ensures the API never reports success with saved
+    // credentials still present.
+    await currentAuth.clear();
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[cyborg-wa-worker] account switch failed:", err);
+    return res.status(500).json({ error: "Could not log out the linked WhatsApp account." });
+  } finally {
+    switchingAccount = false;
+  }
+});
 
 // Sri Lankan customers frequently send the delivery address as a voice note or
 // a photo of a handwritten note. Store inbound audio/images (base64) so the

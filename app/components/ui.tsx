@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useState,
+  type ButtonHTMLAttributes,
+  type ReactNode,
+} from "react";
 
 // ---- Chunky pressable button -------------------------------------------------
 
@@ -15,18 +21,16 @@ const TONE_CLASS: Record<Tone, string> = {
   ghost: "bg-surface border-cardline text-ink",
 };
 
-export function Button({
-  tone = "frog",
-  className = "",
-  children,
-  ...rest
-}: { tone?: Tone } & ButtonHTMLAttributes<HTMLButtonElement>) {
+export const Button = forwardRef<
+  HTMLButtonElement,
+  { tone?: Tone } & ButtonHTMLAttributes<HTMLButtonElement>
+>(function Button({ tone = "frog", className = "", children, ...rest }, ref) {
   return (
-    <button className={`btn3d ${TONE_CLASS[tone]} ${className}`} {...rest}>
+    <button ref={ref} className={`btn3d ${TONE_CLASS[tone]} ${className}`} {...rest}>
       {children}
     </button>
   );
-}
+});
 
 // ---- Card --------------------------------------------------------------------
 
