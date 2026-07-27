@@ -40,9 +40,9 @@ export default function CustomersPage() {
   const filtered = useMemo(() => {
     return customers.filter((customer) => {
       // Stage filter
-      if (stageFilter === "leads" && customer.delivered_orders > 0) return false;
-      if (stageFilter === "buyers" && customer.delivered_orders === 0) return false;
-      if (stageFilter === "repeat" && customer.delivered_orders <= 1) return false;
+      if (stageFilter === "leads" && customer.total_orders > 0) return false;
+      if (stageFilter === "buyers" && customer.total_orders === 0) return false;
+      if (stageFilter === "repeat" && customer.total_orders <= 1) return false;
       if (stageFilter === "ai_on" && !customer.ai_enabled) return false;
       if (stageFilter === "ai_off" && customer.ai_enabled) return false;
 
@@ -56,9 +56,10 @@ export default function CustomersPage() {
     });
   }, [customers, query, stageFilter]);
 
-  const repeatBuyers = customers.filter((customer) => customer.delivered_orders > 1).length;
-  const buyersCount = customers.filter((customer) => customer.delivered_orders > 0).length;
-  const leadsCount = customers.filter((customer) => customer.delivered_orders === 0).length;
+  const repeatBuyers = customers.filter((customer) => customer.total_orders > 1).length;
+  const buyersCount = customers.filter((customer) => customer.total_orders > 0).length;
+  const leadsCount = customers.filter((customer) => customer.total_orders === 0).length;
+  const activeOrdersCount = customers.filter((customer) => customer.active_orders > 0).length;
   const aiEnabled = customers.filter((customer) => customer.ai_enabled).length;
   const aiDisabled = customers.length - aiEnabled;
 
@@ -164,16 +165,17 @@ export default function CustomersPage() {
         </div>
       </div>
 
-      <section className="grid grid-cols-3 overflow-hidden rounded-2xl border-2 border-cardline border-b-[5px] bg-surface" aria-label="Customer summary">
+      <section className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3" aria-label="Customer summary">
         {[
           [customers.length, "Total customers", "text-ink"],
-          [repeatBuyers, "Repeat buyers", "text-frog-dark"],
-          [aiEnabled, "AI enabled", "text-grape-dark"],
-        ].map(([value, label, style], index) => (
-          <div key={label} className={`p-3 text-center sm:p-5 ${index ? "border-l-2 border-cardline" : ""}`}>
-            <div className={`font-display text-xl font-extrabold sm:text-3xl ${style}`}>{value}</div>
+          [buyersCount, "Customers w/ orders", "text-frog-dark"],
+          [activeOrdersCount, "Active in-flight orders", "text-gold-dark"],
+          [repeatBuyers, "Repeat buyers (2+)", "text-grape-dark"],
+        ].map(([value, label, style]) => (
+          <Card key={label} className="p-3 text-center sm:p-4">
+            <div className={`font-display text-xl font-extrabold sm:text-2xl ${style}`}>{value}</div>
             <div className="font-display text-[10px] font-bold uppercase tracking-wide text-ink-soft sm:text-xs">{label}</div>
-          </div>
+          </Card>
         ))}
       </section>
 
@@ -220,10 +222,36 @@ export default function CustomersPage() {
                     <p className="truncate text-sm font-bold text-ink">{customer.latest_message || "No recent message"}</p>
                     <p className="mt-1 text-xs font-bold text-ink-soft">{timeAgo(customer.latest_message_at)} · {customer.unread_count ? `${customer.unread_count} unread` : "all read"}</p>
                   </div>
-                  <div className="flex items-center justify-between gap-5 sm:justify-end">
-                    <div className="text-left sm:text-right">
-                      <p className="font-display text-base font-extrabold text-frog-dark">{money(customer.lifetime_revenue)}</p>
-                      <p className="text-[11px] font-bold text-ink-soft">{customer.delivered_orders} delivered · {customer.returned_orders} returned</p>
+                  <div className="flex items-center justify-between gap-4 sm:justify-end">
+                    <div className="flex flex-col items-end gap-1 min-w-[130px]">
+                      {customer.active_orders > 0 ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-gold/25 px-2.5 py-0.5 font-display text-xs font-extrabold text-gold-dark border border-gold/40">
+                          📦 {customer.active_orders} active order{customer.active_orders > 1 ? "s" : ""}
+                        </span>
+                      ) : customer.delivered_orders > 0 ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-pond px-2.5 py-0.5 font-display text-xs font-extrabold text-frog-dark border border-frog/30">
+                          ✅ {customer.delivered_orders} delivered
+                        </span>
+                      ) : customer.returned_orders > 0 ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-flame-tint px-2.5 py-0.5 font-display text-xs font-extrabold text-flame-dark border border-flame/30">
+                          ↩️ {customer.returned_orders} returned
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-surface-soft px-2.5 py-0.5 font-display text-xs font-bold text-ink-soft border border-cardline">
+                          💬 Inquiry lead
+                        </span>
+                      )}
+
+                      <div className="text-right text-[11px] font-bold text-ink-soft">
+                        {customer.total_orders > 0 ? (
+                          <span>
+                            {customer.total_orders} order{customer.total_orders > 1 ? "s" : ""}
+                            {customer.lifetime_revenue > 0 ? ` · ${money(customer.lifetime_revenue)}` : customer.active_cod_total > 0 ? ` · ${money(customer.active_cod_total)} COD` : ""}
+                          </span>
+                        ) : (
+                          <span>No orders placed</span>
+                        )}
+                      </div>
                     </div>
                     <AiStateBadge mode={!customer.ai_enabled || paused ? "off" : "auto"} compact />
                     <span className="font-display text-xl font-extrabold text-ink-soft transition group-hover:translate-x-1 group-hover:text-frog-dark">›</span>

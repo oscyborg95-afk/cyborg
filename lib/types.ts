@@ -331,6 +331,8 @@ export interface CustomerSummary extends CustomerProfile {
   delivered_orders: number;
   returned_orders: number;
   active_orders: number;
+  total_orders: number;
+  active_cod_total: number;
   lifetime_revenue: number;
   last_order_at: string | null;
   latest_message: string;
