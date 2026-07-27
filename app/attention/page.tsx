@@ -87,6 +87,21 @@ export default function AttentionPage() {
     }
   }
 
+  async function handleModeChange(newMode: AgentConfig["mode"]) {
+    try {
+      const res = await fetch("/api/agent/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: newMode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setMode(data.config.mode);
+    } catch {
+      setError("Could not update AI mode");
+    }
+  }
+
   const [showGuide, setShowGuide] = useState(true);
 
   return (
@@ -97,7 +112,7 @@ export default function AttentionPage() {
           <h1 className="font-display text-2xl font-extrabold text-ink sm:text-3xl">Attention Center</h1>
           <p className="text-sm font-bold text-ink-soft">Your highest-value next moves, ranked by urgency and money at risk.</p>
         </div>
-        <AiStateBadge mode={mode} />
+        <AiStateBadge mode={mode} onChangeMode={handleModeChange} />
         <Button
           tone="ghost"
           onClick={() => setShowGuide((prev) => !prev)}

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { CustomerSummary } from "@/lib/types";
+import type { AgentConfig, AgentMode, CustomerSummary } from "@/lib/types";
 import { Froggy } from "../components/froggy";
 import { Card } from "../components/ui";
 import { AiStateBadge, StageBadge, languageName, money, timeAgo } from "../components/crm-ui";
@@ -11,6 +11,7 @@ type CustomerFilter = "all" | "leads" | "buyers" | "repeat" | "ai_on" | "ai_off"
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
+  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
   const [query, setQuery] = useState("");
   const [stageFilter, setStageFilter] = useState<CustomerFilter>("all");
   const [showGuide, setShowGuide] = useState(true);
@@ -20,10 +21,15 @@ export default function CustomersPage() {
 
   const load = useCallback(async () => {
     try {
-      const response = await fetch("/api/customers", { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not load customers");
-      setCustomers(data.customers);
+      const [custRes, configRes] = await Promise.all([
+        fetch("/api/customers", { cache: "no-store" }),
+        fetch("/api/agent/config", { cache: "no-store" }),
+      ]);
+      const custData = await custRes.json();
+      const configData = await configRes.json();
+      if (!custRes.ok) throw new Error(custData.error || "Could not load customers");
+      setCustomers(custData.customers);
+      if (configRes.ok) setAgentConfig(configData.config);
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load customers");
@@ -37,14 +43,47 @@ export default function CustomersPage() {
     void load();
   }, [load]);
 
+  async function handleGlobalModeChange(newMode: AgentMode) {
+    try {
+      const res = await fetch("/api/agent/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: newMode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setAgentConfig(data.config);
+    } catch {
+      setError("Could not update Global AI mode");
+    }
+  }
+
+  const globalMode = agentConfig?.mode ?? "off";
+
+  function getCustomerEffectiveAi(customer: CustomerSummary): { mode: AgentMode; title: string } {
+    const paused = customer.ai_paused_until && new Date(customer.ai_paused_until).getTime() > mountedAt;
+    if (globalMode === "off") {
+      return { mode: "off", title: "Global AI is shop-wide OFF" };
+    }
+    if (!customer.ai_enabled || paused) {
+      return { mode: "off", title: paused ? "AI paused 24h for this customer" : "AI disabled for this customer" };
+    }
+    return {
+      mode: globalMode,
+      title: globalMode === "auto" ? "AI is replying live to this customer" : "AI is generating draft suggestions for this customer",
+    };
+  }
+
   const filtered = useMemo(() => {
     return customers.filter((customer) => {
       // Stage filter
       if (stageFilter === "leads" && customer.total_orders > 0) return false;
       if (stageFilter === "buyers" && customer.total_orders === 0) return false;
       if (stageFilter === "repeat" && customer.total_orders <= 1) return false;
-      if (stageFilter === "ai_on" && !customer.ai_enabled) return false;
-      if (stageFilter === "ai_off" && customer.ai_enabled) return false;
+      
+      const effectiveMode = getCustomerEffectiveAi(customer).mode;
+      if (stageFilter === "ai_on" && effectiveMode === "off") return false;
+      if (stageFilter === "ai_off" && effectiveMode !== "off") return false;
 
       // Text query
       const needle = query.trim().toLowerCase();
@@ -54,14 +93,14 @@ export default function CustomersPage() {
         .toLowerCase()
         .includes(needle);
     });
-  }, [customers, query, stageFilter]);
+  }, [customers, query, stageFilter, globalMode, mountedAt]);
 
   const repeatBuyers = customers.filter((customer) => customer.total_orders > 1).length;
   const buyersCount = customers.filter((customer) => customer.total_orders > 0).length;
   const leadsCount = customers.filter((customer) => customer.total_orders === 0).length;
   const activeOrdersCount = customers.filter((customer) => customer.active_orders > 0).length;
-  const aiEnabled = customers.filter((customer) => customer.ai_enabled).length;
-  const aiDisabled = customers.length - aiEnabled;
+  const aiActiveCount = customers.filter((customer) => getCustomerEffectiveAi(customer).mode !== "off").length;
+  const aiDisabledCount = customers.length - aiActiveCount;
 
   return (
     <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
@@ -73,12 +112,15 @@ export default function CustomersPage() {
             <p className="text-sm font-bold text-ink-soft">Every conversation, order history, language preference &amp; AI memory.</p>
           </div>
         </div>
-        <button
-          onClick={() => setShowGuide((prev) => !prev)}
-          className="rounded-xl border-2 border-cardline bg-surface px-3 py-2 font-display text-xs font-extrabold text-ink hover:border-frog transition"
-        >
-          {showGuide ? "💡 Hide Guide" : "❓ How CRM Works"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <AiStateBadge mode={globalMode} onChangeMode={handleGlobalModeChange} title="Global Shop AI Mode" />
+          <button
+            onClick={() => setShowGuide((prev) => !prev)}
+            className="rounded-xl border-2 border-cardline bg-surface px-3 py-2 font-display text-xs font-extrabold text-ink hover:border-frog transition"
+          >
+            {showGuide ? "💡 Hide Guide" : "❓ How CRM Works"}
+          </button>
+        </div>
       </header>
 
       {/* How CRM Works Guide Banner */}
@@ -145,8 +187,8 @@ export default function CustomersPage() {
                 ["leads", `Leads (${leadsCount})`],
                 ["buyers", `Buyers (${buyersCount})`],
                 ["repeat", `Repeat VIPs (${repeatBuyers})`],
-                ["ai_on", `AI Live (${aiEnabled})`],
-                ["ai_off", `AI Off (${aiDisabled})`],
+                ["ai_on", `AI Live (${aiActiveCount})`],
+                ["ai_off", `AI Off (${aiDisabledCount})`],
               ] as const
             ).map(([key, label]) => (
               <button
@@ -199,7 +241,7 @@ export default function CustomersPage() {
       ) : (
         <section className="space-y-3" aria-label={`${filtered.length} customers`}>
           {filtered.map((customer) => {
-            const paused = customer.ai_paused_until && new Date(customer.ai_paused_until).getTime() > mountedAt;
+            const effectiveAi = getCustomerEffectiveAi(customer);
             return (
               <Link key={customer.phone_key} href={`/customers/${encodeURIComponent(customer.phone_key)}`} className="group block">
                 <Card className="grid gap-4 p-4 transition group-hover:-translate-y-0.5 group-hover:!border-frog sm:grid-cols-[minmax(180px,1.2fr)_minmax(180px,1.5fr)_auto] sm:items-center">
@@ -253,7 +295,7 @@ export default function CustomersPage() {
                         )}
                       </div>
                     </div>
-                    <AiStateBadge mode={!customer.ai_enabled || paused ? "off" : "auto"} compact />
+                    <AiStateBadge mode={effectiveAi.mode} title={effectiveAi.title} compact />
                     <span className="font-display text-xl font-extrabold text-ink-soft transition group-hover:translate-x-1 group-hover:text-frog-dark">›</span>
                   </div>
                 </Card>
