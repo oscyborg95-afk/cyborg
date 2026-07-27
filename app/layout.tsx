@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Baloo_2, Nunito } from "next/font/google";
+import Link from "next/link";
 import "./globals.css";
 import { NavTabs } from "./nav-tabs";
 import { LevelBadge } from "./level-badge";
@@ -35,21 +36,36 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
       </head>
       <body className="flex h-dvh min-w-0 flex-col overflow-hidden">
-        <nav className="z-20 flex min-w-0 shrink-0 flex-wrap items-center gap-2 border-b-2 border-cardline bg-surface/80 px-3 py-2 backdrop-blur sm:gap-3 sm:px-4">
-          <div className="flex items-center gap-2">
-            <Froggy mood="happy" size={38} bob={false} />
-            <span className="font-display text-lg font-extrabold tracking-tight text-frog-dark">
-              Daily&nbsp;Cart
-            </span>
+        <header className="z-20 flex min-w-0 shrink-0 items-center justify-between gap-3 border-b-2 border-cardline bg-surface/90 px-3 py-2.5 backdrop-blur-md sm:px-4">
+          {/* Left: Brand Identity & Level Badge */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            <Link
+              href="/"
+              className="flex items-center gap-2 rounded-xl transition hover:opacity-90 focus-visible:outline-2 focus-visible:outline-frog"
+            >
+              <Froggy mood="happy" size={36} bob={false} />
+              <span className="font-display text-lg font-extrabold tracking-tight text-frog-dark">
+                Daily&nbsp;Cart
+              </span>
+            </Link>
+            <div className="hidden xl:block ml-1">
+              <LevelBadge />
+            </div>
           </div>
-          <div className="ml-auto flex items-center gap-2 md:order-last md:ml-0">
+
+          {/* Navigation Links */}
+          <NavTabs />
+
+          {/* Right Utility Cluster */}
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="hidden md:block xl:hidden">
+              <LevelBadge />
+            </div>
             <WhatsAppAccountControl />
             <ThemeToggle />
-            <div className="hidden md:block"><LevelBadge /></div>
           </div>
-          <NavTabs />
-        </nav>
-        <div className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</div>
+        </header>
+        <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
       </body>
     </html>
   );
