@@ -428,12 +428,13 @@ body {
   body {
     display: block !important;
   }
+  header,
   nav,
   .print-hide {
     display: none !important;
   }
   /* The layout's scroll wrapper must not clip pages. */
-  body > div {
+  body > main {
     overflow: visible !important;
     height: auto !important;
   }
