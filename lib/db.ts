@@ -335,6 +335,53 @@ export async function listOrders(includeArchived = false): Promise<Order[]> {
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
+// CRM/reporting queries must never inherit the 200-row operational screen cap.
+// These include archived orders because they remain part of customer history.
+export async function listOrdersForCrm(): Promise<Order[]> {
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    const { rows } = await pool.query("select * from orders order by created_at desc");
+    return rows as Order[];
+  }
+  return [...memOrders.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+export async function listCustomerOrders(phoneKeyValue: string): Promise<Order[]> {
+  const key = phoneKeyValue.replace(/\D/g, "").slice(-9);
+  if (key.length < 9) return [];
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    const { rows } = await pool.query(
+      `select * from orders
+       where right(regexp_replace(coalesce(phone_number, ''), '\\D', '', 'g'), 9) = $1
+          or right(regexp_replace(coalesce(phone_2, ''), '\\D', '', 'g'), 9) = $1
+       order by created_at desc`,
+      [key]
+    );
+    return rows as Order[];
+  }
+  return [...memOrders.values()]
+    .filter(
+      (order) =>
+        order.phone_number.replace(/\D/g, "").slice(-9) === key ||
+        order.phone_2.replace(/\D/g, "").slice(-9) === key
+    )
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+export async function listPendingOrders(): Promise<Order[]> {
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    const { rows } = await pool.query(
+      "select * from orders where archived_at is null and order_status = 'pending' order by created_at asc"
+    );
+    return rows as Order[];
+  }
+  return [...memOrders.values()]
+    .filter((order) => !order.archived_at && order.order_status === "pending")
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
 export async function getOrder(
   id: string,
   db: Queryable | null = pool

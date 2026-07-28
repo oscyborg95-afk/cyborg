@@ -18,7 +18,7 @@ interface ToolGroup {
 
 const PRIMARY_TABS: readonly NavItem[] = [
   { href: "/", label: "Workspace", emoji: "💬", desc: "Live chat & desk" },
-  { href: "/attention", label: "Attention", emoji: "🔥", desc: "Urgent action items" },
+  { href: "/attention", label: "Action Queue", emoji: "⚡", desc: "Human decisions needed now" },
   { href: "/orders", label: "Orders", emoji: "📦", desc: "Fulfillment & dispatches" },
   { href: "/customers", label: "Customers", emoji: "👥", desc: "CRM & profiles" },
 ];
@@ -217,18 +217,18 @@ export function NavTabs() {
       </div>
 
       {/* Mobile / Tablet Controls (< lg) */}
-      <div className="flex lg:hidden items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2 lg:hidden">
         {/* Mobile Menu Button */}
         <button
           type="button"
           onClick={() => setMobileMenuOpen(true)}
           aria-label="Open navigation menu"
-          className="flex items-center gap-2 rounded-xl border-2 border-cardline bg-surface px-3 py-1.5 font-display text-sm font-extrabold text-ink transition hover:bg-pond/60 focus-visible:outline-2 focus-visible:outline-frog"
+          className="flex min-w-0 max-w-[9.5rem] items-center gap-1.5 whitespace-nowrap rounded-xl border-2 border-cardline bg-surface px-2.5 py-1.5 font-display text-sm font-extrabold text-ink transition hover:bg-pond/60 focus-visible:outline-2 focus-visible:outline-frog sm:gap-2 sm:px-3"
         >
-          <span className="text-base leading-none" aria-hidden="true">
+          <span className="hidden text-base leading-none min-[400px]:inline" aria-hidden="true">
             {currentActiveEmoji}
           </span>
-          <span className="font-extrabold">{currentActiveLabel}</span>
+          <span className="truncate font-extrabold">{currentActiveLabel}</span>
           <svg
             className="h-4 w-4 text-ink-soft ml-0.5"
             fill="none"

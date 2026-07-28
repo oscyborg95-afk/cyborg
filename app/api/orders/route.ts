@@ -22,8 +22,11 @@ export async function GET() {
     ]);
     return NextResponse.json({ orders, manifests, events, alerts, deliveryAttempts, usingSupabase });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to load orders";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Orders load failed", err);
+    return NextResponse.json(
+      { error: "Order data could not be loaded. Please try again. If this continues, contact support." },
+      { status: 500 }
+    );
   }
 }
 
@@ -64,7 +67,10 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ order }, { status: 201 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to save order";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Order save failed", err);
+    return NextResponse.json(
+      { error: "The order could not be saved. Please try again." },
+      { status: 500 }
+    );
   }
 }

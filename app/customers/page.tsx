@@ -2,34 +2,54 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AgentConfig, AgentMode, CustomerSummary } from "@/lib/types";
+import type { CustomerSummary } from "@/lib/types";
 import { Froggy } from "../components/froggy";
 import { Card } from "../components/ui";
-import { AiStateBadge, StageBadge, languageName, money, timeAgo } from "../components/crm-ui";
+import { languageName, money, timeAgo } from "../components/crm-ui";
 
-type CustomerFilter = "all" | "leads" | "buyers" | "repeat" | "ai_on" | "ai_off";
+type Segment = "all" | "leads" | "buyers" | "repeat" | "at_risk";
+
+const FILTERS: Array<{ key: Segment; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "leads", label: "Leads" },
+  { key: "buyers", label: "Buyers" },
+  { key: "repeat", label: "Repeat buyers" },
+  { key: "at_risk", label: "At-risk / returns" },
+];
+
+function segmentName(customer: CustomerSummary) {
+  if (customer.returned_orders > 0) return "At-risk";
+  if (customer.total_orders > 1) return "Repeat buyer";
+  if (customer.total_orders > 0) return "Buyer";
+  return "Lead";
+}
+
+function matchesSegment(customer: CustomerSummary, segment: Segment) {
+  if (segment === "leads") return customer.total_orders === 0;
+  if (segment === "buyers") return customer.total_orders > 0;
+  if (segment === "repeat") return customer.total_orders > 1;
+  if (segment === "at_risk") return customer.returned_orders > 0;
+  return true;
+}
+
+function csvCell(value: unknown) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
-  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
   const [query, setQuery] = useState("");
-  const [stageFilter, setStageFilter] = useState<CustomerFilter>("all");
-  const [showGuide, setShowGuide] = useState(true);
+  const [segment, setSegment] = useState<Segment>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [mountedAt] = useState(() => Date.now());
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
-      const [custRes, configRes] = await Promise.all([
-        fetch("/api/customers", { cache: "no-store" }),
-        fetch("/api/agent/config", { cache: "no-store" }),
-      ]);
-      const custData = await custRes.json();
-      const configData = await configRes.json();
-      if (!custRes.ok) throw new Error(custData.error || "Could not load customers");
-      setCustomers(custData.customers);
-      if (configRes.ok) setAgentConfig(configData.config);
+      const response = await fetch("/api/customers", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not load customers");
+      setCustomers(data.customers);
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load customers");
@@ -43,263 +63,191 @@ export default function CustomersPage() {
     void load();
   }, [load]);
 
-  async function handleGlobalModeChange(newMode: AgentMode) {
-    try {
-      const res = await fetch("/api/agent/config", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: newMode }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setAgentConfig(data.config);
-    } catch {
-      setError("Could not update Global AI mode");
-    }
-  }
-
-  const globalMode = agentConfig?.mode ?? "off";
-
-  function getCustomerEffectiveAi(customer: CustomerSummary): { mode: AgentMode; title: string } {
-    const paused = customer.ai_paused_until && new Date(customer.ai_paused_until).getTime() > mountedAt;
-    if (globalMode === "off") {
-      return { mode: "off", title: "Global AI is shop-wide OFF" };
-    }
-    if (!customer.ai_enabled || paused) {
-      return { mode: "off", title: paused ? "AI paused 24h for this customer" : "AI disabled for this customer" };
-    }
-    return {
-      mode: globalMode,
-      title: globalMode === "auto" ? "AI is replying live to this customer" : "AI is generating draft suggestions for this customer",
-    };
-  }
-
   const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
     return customers.filter((customer) => {
-      // Stage filter
-      if (stageFilter === "leads" && customer.total_orders > 0) return false;
-      if (stageFilter === "buyers" && customer.total_orders === 0) return false;
-      if (stageFilter === "repeat" && customer.total_orders <= 1) return false;
-      
-      const effectiveMode = getCustomerEffectiveAi(customer).mode;
-      if (stageFilter === "ai_on" && effectiveMode === "off") return false;
-      if (stageFilter === "ai_off" && effectiveMode !== "off") return false;
-
-      // Text query
-      const needle = query.trim().toLowerCase();
+      if (!matchesSegment(customer, segment)) return false;
       if (!needle) return true;
       return [customer.display_name, customer.primary_phone, customer.latest_message, ...customer.tags]
         .join(" ")
         .toLowerCase()
         .includes(needle);
     });
-  }, [customers, query, stageFilter, globalMode, mountedAt]);
+  }, [customers, query, segment]);
 
-  const repeatBuyers = customers.filter((customer) => customer.total_orders > 1).length;
-  const buyersCount = customers.filter((customer) => customer.total_orders > 0).length;
-  const leadsCount = customers.filter((customer) => customer.total_orders === 0).length;
-  const activeOrdersCount = customers.filter((customer) => customer.active_orders > 0).length;
-  const aiActiveCount = customers.filter((customer) => getCustomerEffectiveAi(customer).mode !== "off").length;
-  const aiDisabledCount = customers.length - aiActiveCount;
+  const counts = useMemo(
+    () => ({
+      buyers: customers.filter((customer) => customer.total_orders > 0).length,
+      repeat: customers.filter((customer) => customer.total_orders > 1).length,
+      revenue: customers.reduce((sum, customer) => sum + customer.lifetime_revenue, 0),
+    }),
+    [customers]
+  );
+
+  function exportCsv() {
+    const rows = [
+      ["Name", "Phone", "Customer type", "Total orders", "Delivered orders", "Returned orders", "Delivered revenue", "Last order", "Tags"],
+      ...filtered.map((customer) => [
+        customer.display_name,
+        customer.primary_phone,
+        segmentName(customer),
+        customer.total_orders,
+        customer.delivered_orders,
+        customer.returned_orders,
+        customer.lifetime_revenue,
+        customer.last_order_at ?? "",
+        customer.tags.join("; "),
+      ]),
+    ];
+    const blob = new Blob([`\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\n")}`], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `customers-${segment}-${new Date().toISOString().slice(0, 10)}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Froggy mood="happy" size={60} />
-          <div>
-            <h1 className="font-display text-2xl font-extrabold text-ink sm:text-3xl">Customers CRM</h1>
-            <p className="text-sm font-bold text-ink-soft">Every conversation, order history, language preference &amp; AI memory.</p>
+      <header className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="flex min-w-0 items-start gap-3 sm:contents">
+          <Froggy mood="happy" size={52} />
+          <div className="min-w-0 flex-1">
+            <h1 className="font-display text-2xl font-extrabold leading-tight text-ink sm:text-3xl">Customers you can campaign to</h1>
+            <p className="mt-1 text-sm font-bold text-ink-soft">Complete purchase history and useful customer segments in one place.</p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <AiStateBadge mode={globalMode} onChangeMode={handleGlobalModeChange} title="Global Shop AI Mode" />
-          <button
-            onClick={() => setShowGuide((prev) => !prev)}
-            className="rounded-xl border-2 border-cardline bg-surface px-3 py-2 font-display text-xs font-extrabold text-ink hover:border-frog transition"
-          >
-            {showGuide ? "💡 Hide Guide" : "❓ How CRM Works"}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={exportCsv}
+          disabled={loading || filtered.length === 0}
+          className="w-full rounded-xl border-2 border-grape bg-grape-tint px-4 py-2 font-display text-xs font-extrabold text-grape-dark transition hover:bg-grape hover:text-white focus:outline-none focus:ring-2 focus:ring-grape disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+        >
+          ↓ Export {filtered.length} to CSV
+        </button>
       </header>
-
-      {/* How CRM Works Guide Banner */}
-      {showGuide && (
-        <Card className="animate-pop p-4 sm:p-5 !border-frog bg-pond/30 space-y-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-2 font-display text-base font-extrabold text-frog-dark">
-              <span>💡</span>
-              <span>How does the Customer CRM work?</span>
-            </div>
-            <button
-              onClick={() => setShowGuide(false)}
-              className="text-xs font-bold text-frog-dark/70 hover:text-frog-dark"
-            >
-              ✕ Dismiss
-            </button>
-          </div>
-          <p className="text-xs font-semibold text-ink-soft leading-relaxed">
-            The CRM automatically organizes every WhatsApp phone number that interacts with your store into a single unified profile. You never have to manually create customer accounts!
-          </p>
-
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4 pt-1">
-            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
-              <div className="font-display font-extrabold text-ink mb-0.5">👤 1. Auto Profiles</div>
-              <p className="text-ink-soft font-medium">Created instantly from incoming WhatsApp messages, saving phone numbers, names, and districts.</p>
-            </div>
-            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
-              <div className="font-display font-extrabold text-ink mb-0.5">📊 2. Lifecycle Stages</div>
-              <p className="text-ink-soft font-medium">Tracks progress from New Inquiry → Pending Order → Active Buyer → Repeat VIP.</p>
-            </div>
-            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
-              <div className="font-display font-extrabold text-ink mb-0.5">🤖 3. Per-Customer AI</div>
-              <p className="text-ink-soft font-medium">Enable or pause AI auto-replies for individual customers with a single click inside their profile.</p>
-            </div>
-            <div className="rounded-xl border border-cardline/60 bg-surface p-3 text-xs">
-              <div className="font-display font-extrabold text-ink mb-0.5">📜 4. Complete Audit Trail</div>
-              <p className="text-ink-soft font-medium">Click any customer to inspect complete WhatsApp chat history, past order COD records &amp; AI notes.</p>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {/* Search & Filters Toolbar */}
-      <div className="space-y-3">
-        <label className="relative block">
-          <span className="sr-only">Search customers</span>
-          <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-lg">🔎</span>
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search name, phone number, message content or tag..."
-            className="w-full rounded-2xl border-2 border-cardline bg-surface py-3 pl-12 pr-4 font-display text-sm font-bold text-ink outline-none transition focus:border-frog focus:ring-2 focus:ring-frog/20"
-          />
-        </label>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft shrink-0">
-            🏷️ Filter:
-          </span>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {(
-              [
-                ["all", `All (${customers.length})`],
-                ["leads", `Leads (${leadsCount})`],
-                ["buyers", `Buyers (${buyersCount})`],
-                ["repeat", `Repeat VIPs (${repeatBuyers})`],
-                ["ai_on", `AI Live (${aiActiveCount})`],
-                ["ai_off", `AI Off (${aiDisabledCount})`],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setStageFilter(key)}
-                className={`rounded-xl border-2 px-3 py-1.5 font-display text-xs font-extrabold transition ${
-                  stageFilter === key
-                    ? "border-frog bg-pond text-frog-dark shadow-xs"
-                    : "border-cardline bg-surface text-ink-soft hover:border-frog/50"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
 
       <section className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3" aria-label="Customer summary">
         {[
-          [customers.length, "Total customers", "text-ink"],
-          [buyersCount, "Customers w/ orders", "text-frog-dark"],
-          [activeOrdersCount, "Active in-flight orders", "text-gold-dark"],
-          [repeatBuyers, "Repeat buyers (2+)", "text-grape-dark"],
-        ].map(([value, label, style]) => (
-          <Card key={label} className="p-3 text-center sm:p-4">
-            <div className={`font-display text-xl font-extrabold sm:text-2xl ${style}`}>{value}</div>
-            <div className="font-display text-[10px] font-bold uppercase tracking-wide text-ink-soft sm:text-xs">{label}</div>
+          [error ? "—" : customers.length, "Customer profiles", "text-ink"],
+          [error ? "—" : counts.buyers, "Purchased", "text-frog-dark"],
+          [error ? "—" : counts.repeat, "Repeat buyers", "text-grape-dark"],
+          [error ? "—" : money(counts.revenue), "Delivered revenue", "text-frog-dark"],
+        ].map(([value, label, color]) => (
+          <Card key={label} className="p-3 sm:p-4">
+            <div className={`font-display text-xl font-extrabold sm:text-2xl ${color}`}>{value}</div>
+            <div className="mt-1 font-display text-[10px] font-bold uppercase tracking-wide text-ink-soft sm:text-xs">{label}</div>
           </Card>
         ))}
       </section>
 
+      <section className="space-y-3" aria-label="Find customer segments">
+        <label className="relative block">
+          <span className="sr-only">Search customers</span>
+          <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2">🔎</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search name, phone, message or tag"
+            className="w-full rounded-2xl border-2 border-cardline bg-surface py-3 pl-11 pr-4 font-display text-sm font-bold text-ink outline-none transition focus:border-grape focus:ring-2 focus:ring-grape/20"
+          />
+        </label>
+        <div className="flex flex-wrap gap-2" aria-label="Customer segment filters">
+          {FILTERS.map((filter) => {
+            const count = customers.filter((customer) => matchesSegment(customer, filter.key)).length;
+            return (
+              <button
+                type="button"
+                key={filter.key}
+                onClick={() => setSegment(filter.key)}
+                className={`shrink-0 rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold transition focus:outline-none focus:ring-2 focus:ring-grape ${
+                  segment === filter.key
+                    ? "border-grape bg-grape-tint text-grape-dark"
+                    : "border-cardline bg-surface text-ink-soft hover:border-grape"
+                }`}
+              >
+                {filter.label} · {count}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
       {error && (
-        <Card className="!border-danger-line bg-danger-bg p-5 text-center">
+        <Card className="flex flex-wrap items-center justify-between gap-3 !border-danger-line bg-danger-bg p-4">
           <p className="font-display text-sm font-bold text-danger-ink">⚠️ {error}</p>
-          <button onClick={() => void load()} className="mt-2 font-display text-sm font-extrabold text-danger-ink underline">Try again</button>
+          <button type="button" onClick={() => void load()} className="font-display text-sm font-extrabold text-danger-ink underline">Try again</button>
         </Card>
       )}
 
-      {loading ? (
-        <div className="space-y-3">
-          {[0, 1, 2, 3].map((item) => <div key={item} className="h-28 animate-pulse rounded-2xl border-2 border-cardline bg-surface-soft" />)}
+      {error ? null : loading ? (
+        <div className="space-y-3" aria-label="Loading customers">
+          {[0, 1, 2].map((item) => (
+            <div key={item} className="flex h-20 animate-pulse items-center gap-3 rounded-2xl border-2 border-cardline bg-surface p-4">
+              <span className="h-10 w-10 shrink-0 rounded-xl bg-surface-soft" />
+              <span className="flex-1 space-y-2">
+                <span className="block h-3 w-40 max-w-full rounded bg-surface-soft" />
+                <span className="block h-2 w-28 max-w-full rounded bg-surface-soft" />
+              </span>
+            </div>
+          ))}
         </div>
       ) : filtered.length === 0 ? (
-        <Card className="py-14 text-center">
-          <div className="text-4xl">🔎</div>
-          <h2 className="mt-3 font-display text-xl font-extrabold">{query ? "No matching customers" : "No customers yet"}</h2>
-          <p className="mt-1 text-sm font-bold text-ink-soft">{query ? "Try a name, phone number or tag." : "Profiles appear when customers message or place orders."}</p>
+        <Card className="py-12 text-center">
+          <h2 className="font-display text-xl font-extrabold text-ink">{query ? "No matching customers" : "This segment is empty"}</h2>
+          <p className="mt-1 text-sm font-bold text-ink-soft">Try another segment or search term.</p>
         </Card>
       ) : (
         <section className="space-y-3" aria-label={`${filtered.length} customers`}>
           {filtered.map((customer) => {
-            const effectiveAi = getCustomerEffectiveAi(customer);
+            const customerSegment = segmentName(customer);
+            const segmentColor =
+              customerSegment === "At-risk"
+                ? "bg-gold/20 text-gold-dark"
+                : customerSegment === "Lead"
+                  ? "bg-sky-tint text-sky-dark"
+                  : "bg-grape-tint text-grape-dark";
             return (
-              <Link key={customer.phone_key} href={`/customers/${encodeURIComponent(customer.phone_key)}`} className="group block">
-                <Card className="grid gap-4 p-4 transition group-hover:-translate-y-0.5 group-hover:!border-frog sm:grid-cols-[minmax(180px,1.2fr)_minmax(180px,1.5fr)_auto] sm:items-center">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-pond font-display text-lg font-extrabold text-frog-dark">
-                        {(customer.display_name || "?").slice(0, 1).toUpperCase()}
-                      </div>
-                      <div className="min-w-0">
-                        <h2 className="truncate font-display text-base font-extrabold text-ink">{customer.display_name}</h2>
-                        <p className="truncate text-xs font-bold text-ink-soft">{customer.primary_phone} · {languageName[customer.preferred_language]}</p>
-                      </div>
+              <Card key={customer.phone_key} className="p-4 transition hover:!border-grape sm:p-5">
+                <div className="grid gap-4 sm:grid-cols-[minmax(180px,1fr)_minmax(240px,1.4fr)_auto] sm:items-center">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-pond font-display text-lg font-extrabold text-frog-dark">
+                      {(customer.display_name || "?").slice(0, 1).toUpperCase()}
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      <StageBadge stage={customer.chat_state} />
-                      {customer.tags.slice(0, 3).map((tag) => <span key={tag} className="rounded-lg bg-surface-soft px-2 py-1 text-[10px] font-extrabold text-ink-soft">#{tag}</span>)}
+                    <div className="min-w-0">
+                      <h2 className="truncate font-display text-base font-extrabold text-ink">{customer.display_name}</h2>
+                      <p className="truncate text-xs font-bold text-ink-soft">{customer.primary_phone} · {languageName[customer.preferred_language]}</p>
+                      <span className={`mt-1 inline-block rounded-lg px-2 py-1 font-display text-[10px] font-extrabold uppercase ${segmentColor}`}>{customerSegment}</span>
                     </div>
                   </div>
-                  <div className="min-w-0 border-y-2 border-cardline py-3 sm:border-x-2 sm:border-y-0 sm:px-4 sm:py-1">
-                    <p className="truncate text-sm font-bold text-ink">{customer.latest_message || "No recent message"}</p>
-                    <p className="mt-1 text-xs font-bold text-ink-soft">{timeAgo(customer.latest_message_at)} · {customer.unread_count ? `${customer.unread_count} unread` : "all read"}</p>
-                  </div>
-                  <div className="flex items-center justify-between gap-4 sm:justify-end">
-                    <div className="flex flex-col items-end gap-1 min-w-[130px]">
-                      {customer.active_orders > 0 ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-gold/25 px-2.5 py-0.5 font-display text-xs font-extrabold text-gold-dark border border-gold/40">
-                          📦 {customer.active_orders} active order{customer.active_orders > 1 ? "s" : ""}
-                        </span>
-                      ) : customer.delivered_orders > 0 ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-pond px-2.5 py-0.5 font-display text-xs font-extrabold text-frog-dark border border-frog/30">
-                          ✅ {customer.delivered_orders} delivered
-                        </span>
-                      ) : customer.returned_orders > 0 ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-flame-tint px-2.5 py-0.5 font-display text-xs font-extrabold text-flame-dark border border-flame/30">
-                          ↩️ {customer.returned_orders} returned
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-surface-soft px-2.5 py-0.5 font-display text-xs font-bold text-ink-soft border border-cardline">
-                          💬 Inquiry lead
-                        </span>
-                      )}
-
-                      <div className="text-right text-[11px] font-bold text-ink-soft">
-                        {customer.total_orders > 0 ? (
-                          <span>
-                            {customer.total_orders} order{customer.total_orders > 1 ? "s" : ""}
-                            {customer.lifetime_revenue > 0 ? ` · ${money(customer.lifetime_revenue)}` : customer.active_cod_total > 0 ? ` · ${money(customer.active_cod_total)} COD` : ""}
-                          </span>
-                        ) : (
-                          <span>No orders placed</span>
-                        )}
-                      </div>
+                  <div className="grid grid-cols-3 gap-2 text-center sm:text-left">
+                    <div>
+                      <p className="font-display text-sm font-extrabold text-frog-dark">{money(customer.lifetime_revenue)}</p>
+                      <p className="text-[10px] font-bold uppercase text-ink-soft">Delivered</p>
                     </div>
-                    <AiStateBadge mode={effectiveAi.mode} title={effectiveAi.title} compact />
-                    <span className="font-display text-xl font-extrabold text-ink-soft transition group-hover:translate-x-1 group-hover:text-frog-dark">›</span>
+                    <div>
+                      <p className="font-display text-sm font-extrabold text-ink">{customer.total_orders} orders</p>
+                      <p className="text-[10px] font-bold uppercase text-ink-soft">{customer.returned_orders} returned</p>
+                    </div>
+                    <div>
+                      <p className="font-display text-sm font-extrabold text-ink">{customer.last_order_at ? timeAgo(customer.last_order_at) : "Never"}</p>
+                      <p className="text-[10px] font-bold uppercase text-ink-soft">Last purchase</p>
+                    </div>
+                    {customer.tags.length > 0 && (
+                      <div className="col-span-3 flex flex-wrap gap-1 pt-1">
+                        {customer.tags.slice(0, 4).map((tag) => <span key={tag} className="rounded-md bg-surface-soft px-2 py-1 text-[10px] font-extrabold text-ink-soft">#{tag}</span>)}
+                      </div>
+                    )}
                   </div>
-                </Card>
-              </Link>
+                  <div className="flex gap-2 sm:flex-col">
+                    <Link href={`/customers/${encodeURIComponent(customer.phone_key)}`} className="flex-1 rounded-xl border-2 border-grape bg-grape px-3 py-2 text-center font-display text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-grape">View profile</Link>
+                    {customer.chat_id && <Link href={`/?chat=${encodeURIComponent(customer.chat_id)}`} className="flex-1 rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-center font-display text-xs font-extrabold text-ink hover:border-grape focus:outline-none focus:ring-2 focus:ring-grape">Open chat</Link>}
+                  </div>
+                </div>
+              </Card>
             );
           })}
         </section>

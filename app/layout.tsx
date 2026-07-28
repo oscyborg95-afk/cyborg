@@ -36,7 +36,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
       </head>
       <body className="flex h-dvh min-w-0 flex-col overflow-hidden">
-        <header className="z-20 flex min-w-0 shrink-0 items-center justify-between gap-3 border-b-2 border-cardline bg-surface/90 px-3 py-2.5 backdrop-blur-md sm:px-4">
+        <header className="z-20 flex min-w-0 shrink-0 items-center justify-between gap-1.5 border-b-2 border-cardline bg-surface/90 px-2 py-2.5 backdrop-blur-md sm:gap-3 sm:px-4">
           {/* Left: Brand Identity & Level Badge */}
           <div className="flex items-center gap-2.5 shrink-0">
             <Link
@@ -44,7 +44,7 @@ export default function RootLayout({
               className="flex items-center gap-2 rounded-xl transition hover:opacity-90 focus-visible:outline-2 focus-visible:outline-frog"
             >
               <Froggy mood="happy" size={36} bob={false} />
-              <span className="font-display text-lg font-extrabold tracking-tight text-frog-dark">
+              <span className="hidden font-display text-lg font-extrabold tracking-tight text-frog-dark sm:inline">
                 Daily&nbsp;Cart
               </span>
             </Link>

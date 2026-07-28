@@ -93,7 +93,10 @@ export async function POST() {
       skipped: false,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Tracking sync failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Tracking sync failed", error);
+    return NextResponse.json(
+      { error: "Courier tracking could not be refreshed. Please try again shortly." },
+      { status: 500 }
+    );
   }
 }

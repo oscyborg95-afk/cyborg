@@ -10,6 +10,8 @@ import {
   filterInvoiceToOwnedWaybills,
   type InvoiceCell,
 } from "@/lib/remittance-invoice";
+import { summarizeRemittances } from "@/lib/remittance-summary";
+import { operatorDataError } from "@/lib/operator-error";
 
 export const runtime = "nodejs";
 const MAX_INVOICE_BYTES = 3 * 1024 * 1024;
@@ -53,10 +55,14 @@ async function preview(form: FormData) {
 
 export async function GET() {
   try {
-    return NextResponse.json({ remittances: await listCourierRemittances() });
+    const remittances = await listCourierRemittances();
+    return NextResponse.json({
+      remittances,
+      summary: summarizeRemittances(remittances),
+    });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to load courier payouts";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Courier payout history load failed", err);
+    return NextResponse.json({ error: operatorDataError("payouts") }, { status: 500 });
   }
 }
 

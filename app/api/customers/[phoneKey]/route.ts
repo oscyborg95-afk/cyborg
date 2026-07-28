@@ -6,6 +6,7 @@ import {
   updateCustomerProfile,
 } from "@/lib/crm-db";
 import { phoneKey } from "@/lib/risk";
+import { operatorDataError } from "@/lib/operator-error";
 
 export async function GET(
   _req: NextRequest,
@@ -15,8 +16,8 @@ export async function GET(
   try {
     return NextResponse.json(await getCustomerDetail(value));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to load customer";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Customer detail load failed", error);
+    return NextResponse.json({ error: operatorDataError("customer") }, { status: 500 });
   }
 }
 
@@ -58,7 +59,10 @@ export async function PATCH(
     });
     return NextResponse.json({ customer });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to update customer";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("Customer detail update failed", error);
+    return NextResponse.json(
+      { error: "Customer details could not be saved. Please try again." },
+      { status: 500 }
+    );
   }
 }

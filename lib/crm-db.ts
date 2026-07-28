@@ -413,7 +413,12 @@ export async function upsertAttention(input: {
          chat_id=excluded.chat_id, kind=excluded.kind, priority=excluded.priority,
          title=excluded.title, summary=excluded.summary, due_at=excluded.due_at,
          payload=excluded.payload,
-         status=case when attention_items.status='resolved' then attention_items.status else 'open' end,
+         status=case
+           when attention_items.status='resolved' then 'resolved'
+           when attention_items.status='snoozed'
+             and attention_items.snoozed_until > now() then 'snoozed'
+           else 'open'
+         end,
          updated_at=now()
        returning *`,
       [
@@ -441,7 +446,14 @@ export async function upsertAttention(input: {
     priority: input.priority,
     title: input.title,
     summary: input.summary ?? "",
-    status: old?.status ?? "open",
+    status:
+      old?.status === "resolved"
+        ? "resolved"
+        : old?.status === "snoozed" &&
+            old.snoozed_until &&
+            new Date(old.snoozed_until).getTime() > Date.now()
+          ? "snoozed"
+          : "open",
     due_at: input.due_at ?? null,
     snoozed_until: old?.snoozed_until ?? null,
     payload: input.payload ?? {},
@@ -451,6 +463,37 @@ export async function upsertAttention(input: {
   };
   memAttention.set(input.unique_key, item);
   return item;
+}
+
+export async function reconcileDerivedAttention(
+  activeUniqueKeys: string[],
+  kinds: AttentionKind[]
+): Promise<number> {
+  const active = new Set(activeUniqueKeys);
+  if (usingSupabase) {
+    await ensureCrmSchema();
+    const { rowCount } = await queryDatabase(
+      `update attention_items
+       set status='resolved', resolved_at=now(), updated_at=now()
+       where kind = any($1::varchar[])
+         and status in ('open', 'snoozed')
+         and not (unique_key = any($2::varchar[]))`,
+      [kinds, activeUniqueKeys]
+    );
+    return rowCount ?? 0;
+  }
+  let resolved = 0;
+  for (const [key, item] of memAttention) {
+    if (!kinds.includes(item.kind) || !["open", "snoozed"].includes(item.status) || active.has(key)) continue;
+    memAttention.set(key, {
+      ...item,
+      status: "resolved",
+      resolved_at: nowIso(),
+      updated_at: nowIso(),
+    });
+    resolved++;
+  }
+  return resolved;
 }
 
 export async function listAttention(status?: AttentionStatus): Promise<AttentionItem[]> {
