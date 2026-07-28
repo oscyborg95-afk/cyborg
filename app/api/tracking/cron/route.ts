@@ -12,10 +12,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   try {
-    const [sync, notifications] = await Promise.all([
-      withExclusiveTrackingSync(runTrackingSync),
-      processTrackingNotificationQueue(50),
-    ]);
+    const sync = await withExclusiveTrackingSync(runTrackingSync);
+    const notifications = await processTrackingNotificationQueue(100);
     return NextResponse.json({ ok: true, sync, notifications });
   } catch (err) {
     return NextResponse.json(

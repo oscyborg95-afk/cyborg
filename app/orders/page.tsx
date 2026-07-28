@@ -15,6 +15,7 @@ import {
 import type {
   AlertKind,
   CustomerAlert,
+  DeliveryAttempt,
   MessageTemplates,
   Order,
   OrderItem,
@@ -231,28 +232,43 @@ export default function OrdersPage() {
   const [rebookingId, setRebookingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [trackingHealth, setTrackingHealth] = useState<TrackingHealth | null>(null);
+  const [deliveryAttempts, setDeliveryAttempts] = useState<DeliveryAttempt[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(true);
+  const [deliveryLoadError, setDeliveryLoadError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [ordersRes, productsRes, settingsRes, healthRes] = await Promise.all([
-      fetch("/api/orders"),
-      fetch("/api/products"),
-      fetch("/api/settings"),
-      fetch("/api/tracking/health"),
-    ]);
-    const data = await ordersRes.json();
-    if (ordersRes.ok) {
-      setOrders(data.orders);
-      setManifests(data.manifests);
-      setEvents(data.events ?? []);
-      setAlerts(data.alerts ?? []);
-      setUsingSupabase(data.usingSupabase);
+    try {
+      const [ordersRes, productsRes, settingsRes, healthRes] = await Promise.all([
+        fetch("/api/orders"),
+        fetch("/api/products"),
+        fetch("/api/settings"),
+        fetch("/api/tracking/health"),
+      ]);
+      const data = await ordersRes.json();
+      if (ordersRes.ok) {
+        setOrders(data.orders);
+        setManifests(data.manifests);
+        setEvents(data.events ?? []);
+        setAlerts(data.alerts ?? []);
+        setDeliveryAttempts(data.deliveryAttempts ?? []);
+        setUsingSupabase(data.usingSupabase);
+        setDeliveryLoadError(null);
+      } else {
+        setDeliveryLoadError(data.error || "Could not load delivery attempts");
+      }
+      const productsData = await productsRes.json();
+      if (productsRes.ok) setProducts(productsData.products);
+      const settingsData = await settingsRes.json();
+      if (settingsRes.ok) setMsgTemplates(settingsData.settings?.templates ?? {});
+      const healthData = await healthRes.json();
+      if (healthRes.ok) setTrackingHealth(healthData.health);
+    } catch (err) {
+      setDeliveryLoadError(
+        err instanceof Error ? err.message : "Could not connect to the delivery service"
+      );
+    } finally {
+      setOrdersLoading(false);
     }
-    const productsData = await productsRes.json();
-    if (productsRes.ok) setProducts(productsData.products);
-    const settingsData = await settingsRes.json();
-    if (settingsRes.ok) setMsgTemplates(settingsData.settings?.templates ?? {});
-    const healthData = await healthRes.json();
-    if (healthRes.ok) setTrackingHealth(healthData.health);
   }, []);
 
   const syncTracking = useCallback(async () => {
@@ -652,6 +668,14 @@ export default function OrdersPage() {
 
       {trackingHealth && <TrackingHealthPanel health={trackingHealth} />}
 
+      <DeliveryRescuePanel
+        attempts={deliveryAttempts}
+        orders={orders}
+        loading={ordersLoading}
+        loadError={deliveryLoadError}
+        onUpdated={refresh}
+      />
+
       {syncNote && (
         <Card className="animate-pop p-3">
           <p className="font-display text-sm font-bold text-ink">{syncNote}</p>
@@ -844,7 +868,7 @@ export default function OrdersPage() {
 
         <Card className="p-3 sm:p-4 !border-frog/40 bg-pond/40">
           <div className="flex items-center justify-between text-xs font-bold text-frog-dark">
-            <span>☀️ Today's Orders</span>
+            <span>☀️ Today&apos;s Orders</span>
             <span className="rounded-full bg-frog/20 px-2 py-0.5 font-mono text-[10px] font-extrabold text-frog-dark">{todayOrders.length}</span>
           </div>
           <div className="mt-1 font-display text-lg font-extrabold text-frog-dark sm:text-xl">
@@ -1199,6 +1223,573 @@ export default function OrdersPage() {
         )}
       </Card>
     </main>
+  );
+}
+
+type DeliveryAction = "confirmed" | "no_answer" | "date_change" | "reopen" | "resolve";
+
+const DELIVERY_STATUS_LABEL: Record<DeliveryAttempt["status"], string> = {
+  out_for_delivery: "Out for delivery",
+  rescheduled: "Rescheduled",
+  branch_rescheduled: "Rescheduled · at branch",
+  failed_to_deliver: "Failed delivery",
+  branch_failed: "Failed · at branch",
+  delivered: "Delivered",
+  returned_to_ho: "Returned to HO",
+};
+
+const CALL_STATUS_LABEL: Record<DeliveryAttempt["call_status"], string> = {
+  pending: "Call still open",
+  called_confirmed: "Customer confirmed",
+  called_no_answer: "No answer",
+  date_change_requested: "Needs new date",
+  resolved: "Resolved",
+};
+
+function colomboToday(): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Colombo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
+function deliveryDateState(date: string | null): {
+  label: string;
+  className: string;
+} {
+  if (!date) {
+    return {
+      label: "Date needed",
+      className: "border-flame/40 bg-flame-tint text-flame-dark",
+    };
+  }
+  const today = colomboToday();
+  if (date < today) {
+    return {
+      label: `${date} · overdue`,
+      className: "border-flame bg-flame text-white",
+    };
+  }
+  if (date === today) {
+    return {
+      label: `${date} · today`,
+      className: "border-gold-dark bg-gold text-ink",
+    };
+  }
+  return {
+    label: date,
+    className: "border-frog/40 bg-pond text-frog-dark",
+  };
+}
+
+function whatsappHref(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  return `https://wa.me/${digits.startsWith("0") ? `94${digits.slice(1)}` : digits}`;
+}
+
+function notificationBadge(
+  recipient: "Customer" | "Owner",
+  status: DeliveryAttempt["customer_notification_status"]
+) {
+  const appearance =
+    status === "sent"
+      ? "bg-pond text-frog-dark"
+      : status === "failed"
+        ? "bg-flame-tint text-flame-dark"
+        : status === "processing"
+          ? "bg-sky-tint text-sky-dark"
+          : "bg-gold/20 text-gold-dark";
+  const word =
+    status === "sent"
+      ? "sent"
+      : status === "failed"
+        ? "failed"
+        : status === "processing"
+          ? "sending"
+          : status === "skipped"
+            ? "skipped"
+            : status === "pending"
+              ? "queued"
+              : "not queued";
+  return (
+    <span
+      className={`rounded-lg px-2 py-1 font-display text-[10px] font-extrabold ${appearance}`}
+      title={`${recipient} WhatsApp notification status`}
+    >
+      {recipient === "Customer" ? "💬" : "🔔"} {recipient} {word}
+    </span>
+  );
+}
+
+function AttemptRiskRail({ attempt }: { attempt: number }) {
+  const current = Math.min(Math.max(attempt, 1), 3);
+  const tone =
+    current >= 3
+      ? "text-flame-dark"
+      : current === 2
+        ? "text-gold-dark"
+        : "text-frog-dark";
+  return (
+    <div className="min-w-[112px]" aria-label={`Delivery attempt ${attempt}`}>
+      <div className={`mb-1 font-display text-[10px] font-extrabold uppercase tracking-wider ${tone}`}>
+        {attempt >= 3 ? `Attempt ${attempt} · final risk` : `Attempt ${attempt}`}
+      </div>
+      <div className="flex items-center gap-1">
+        {[1, 2, 3].map((step) => {
+          const reached = step <= current;
+          const colour =
+            step === 3
+              ? "border-flame-dark bg-flame"
+              : step === 2
+                ? "border-gold-dark bg-gold"
+                : "border-frog-dark bg-frog";
+          return (
+            <Fragment key={step}>
+              {step > 1 && (
+                <span
+                  className={`h-1 flex-1 rounded-full ${
+                    reached ? (step === 3 ? "bg-flame" : "bg-gold") : "bg-cardline"
+                  }`}
+                />
+              )}
+              <span
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border-2 font-mono text-[10px] font-black ${
+                  reached ? `${colour} text-white` : "border-cardline bg-surface text-ink-soft"
+                }`}
+              >
+                {step === 3 ? "3+" : step}
+              </span>
+            </Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DeliveryRescuePanel({
+  attempts,
+  orders,
+  loading,
+  loadError,
+  onUpdated,
+}: {
+  attempts: DeliveryAttempt[];
+  orders: Order[];
+  loading: boolean;
+  loadError: string | null;
+  onUpdated: () => Promise<void>;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Record<string, { tone: "ok" | "error"; text: string }>>(
+    {}
+  );
+  const [dateDrafts, setDateDrafts] = useState<Record<string, string>>({});
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+
+  const orderById = useMemo(() => new Map(orders.map((order) => [order.id, order])), [orders]);
+  const sorted = useMemo(
+    () => [...attempts].sort((a, b) => b.last_event_at.localeCompare(a.last_event_at)),
+    [attempts]
+  );
+  const active = sorted.filter(
+    (attempt) =>
+      attempt.call_status !== "resolved" &&
+      attempt.status !== "delivered" &&
+      attempt.status !== "returned_to_ho" &&
+      !(attempt.status === "out_for_delivery" && attempt.attempt_no === 1)
+  );
+  const history = sorted.filter((attempt) => !active.includes(attempt)).slice(0, 20);
+
+  async function patchAttempt(
+    attempt: DeliveryAttempt,
+    payload: {
+      action?: DeliveryAction;
+      next_delivery_date?: string | null;
+      notes?: string;
+    },
+    success: string
+  ) {
+    setBusyId(attempt.id);
+    setFeedback((current) => {
+      const next = { ...current };
+      delete next[attempt.id];
+      return next;
+    });
+    try {
+      const response = await fetch(`/api/orders/${attempt.order_id}/delivery`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attempt_id: attempt.id, ...payload }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Update failed");
+      setFeedback((current) => ({
+        ...current,
+        [attempt.id]: { tone: "ok", text: success },
+      }));
+      await onUpdated();
+    } catch (err) {
+      setFeedback((current) => ({
+        ...current,
+        [attempt.id]: {
+          tone: "error",
+          text: err instanceof Error ? err.message : "Could not save this update",
+        },
+      }));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  if (loading) {
+    return (
+      <Card className="overflow-hidden p-0">
+        <div className="border-b-2 border-cardline bg-pond/40 px-5 py-4">
+          <div className="h-5 w-44 animate-pulse rounded-lg bg-frog/20" />
+          <div className="mt-2 h-3 w-72 max-w-full animate-pulse rounded bg-frog/10" />
+        </div>
+        <div className="space-y-3 p-4" aria-label="Loading delivery rescue">
+          {[0, 1].map((item) => (
+            <div key={item} className="h-28 animate-pulse rounded-2xl bg-cream/80" />
+          ))}
+        </div>
+      </Card>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Card className="!border-flame bg-flame-tint/30 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="font-display text-base font-extrabold text-flame-dark">
+              ⚠ Delivery rescue could not load
+            </h2>
+            <p role="alert" className="mt-1 font-display text-xs font-bold text-ink-soft">
+              {loadError}
+            </p>
+          </div>
+          <Button tone="ghost" onClick={onUpdated} className="!px-3 !py-1.5 !text-xs">
+            Try again
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <section aria-labelledby="delivery-rescue-title">
+      <Card className={`overflow-hidden p-0 ${active.length ? "!border-flame/50" : ""}`}>
+        <header
+          className={`flex flex-wrap items-start justify-between gap-3 border-b-2 border-cardline px-4 py-4 sm:px-5 ${
+            active.length ? "bg-gold/15" : "bg-pond/35"
+          }`}
+        >
+          <div>
+            <div className="flex items-center gap-2">
+              <span
+                className={`flex h-9 w-9 items-center justify-center rounded-xl border-2 font-display text-lg ${
+                  active.length
+                    ? "border-flame-dark bg-flame text-white"
+                    : "border-frog-dark bg-frog text-white"
+                }`}
+                aria-hidden="true"
+              >
+                {active.length ? "☎" : "✓"}
+              </span>
+              <div>
+                <h2
+                  id="delivery-rescue-title"
+                  className="font-display text-lg font-extrabold text-ink"
+                >
+                  Delivery rescue
+                </h2>
+                <p className="font-display text-xs font-bold text-ink-soft">
+                  Call, confirm and protect parcels before the next attempt
+                </p>
+              </div>
+            </div>
+          </div>
+          <span
+            className={`rounded-xl border-2 px-3 py-1 font-display text-xs font-extrabold ${
+              active.length
+                ? "border-flame/40 bg-flame-tint text-flame-dark"
+                : "border-frog/40 bg-pond text-frog-dark"
+            }`}
+          >
+            {active.length ? `${active.length} call${active.length === 1 ? "" : "s"} open` : "All caught up"}
+          </span>
+        </header>
+
+        {active.length === 0 ? (
+          <div className="flex items-center gap-3 px-4 py-5 sm:px-5">
+            <Froggy mood="happy" size={48} />
+            <div>
+              <p className="font-display text-sm font-extrabold text-ink">
+                No parcels need rescuing right now.
+              </p>
+              <p className="font-display text-xs font-bold text-ink-soft">
+                New reschedules and failed attempts will appear here automatically.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3 p-3 sm:p-4">
+            {active.map((attempt) => {
+              const order = orderById.get(attempt.order_id);
+              if (!order) return null;
+              const date = dateDrafts[attempt.id] ?? attempt.next_delivery_date ?? "";
+              const notes = noteDrafts[attempt.id] ?? attempt.call_notes ?? "";
+              const dateState = deliveryDateState(attempt.next_delivery_date);
+              const isBusy = busyId === attempt.id;
+              const riskClass =
+                attempt.attempt_no >= 3
+                  ? "!border-flame bg-flame-tint/35"
+                  : attempt.attempt_no === 2
+                    ? "!border-gold-dark bg-gold/10"
+                    : "bg-surface";
+              return (
+                <article
+                  key={attempt.id}
+                  className={`relative overflow-hidden rounded-2xl border-2 p-3 shadow-[0_3px_0_rgba(71,55,34,0.10)] sm:p-4 ${riskClass}`}
+                >
+                  <div
+                    className={`absolute inset-y-0 left-0 w-1.5 ${
+                      attempt.attempt_no >= 3
+                        ? "bg-flame"
+                        : attempt.attempt_no === 2
+                          ? "bg-gold"
+                          : "bg-frog"
+                    }`}
+                  />
+                  <div className="pl-1.5">
+                    <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-display text-base font-extrabold text-ink">
+                            {order.order_no ?? attempt.tracking_id} · {order.customer_name}
+                          </h3>
+                          <span className="rounded-lg bg-surface-soft px-2 py-1 font-display text-[10px] font-extrabold text-ink">
+                            {DELIVERY_STATUS_LABEL[attempt.status]}
+                          </span>
+                        </div>
+                        <p className="mt-1 font-display text-xs font-bold text-ink-soft">
+                          {attempt.reason || "Courier did not provide a reason"}
+                        </p>
+                        <p className="mt-0.5 font-mono text-[10px] font-bold text-ink-soft">
+                          {attempt.tracking_id} · updated {fmtDateTime(attempt.last_event_at)}
+                        </p>
+                      </div>
+                      <AttemptRiskRail attempt={attempt.attempt_no} />
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <span
+                        className={`rounded-lg border-2 px-2 py-1 font-display text-[10px] font-extrabold ${dateState.className}`}
+                      >
+                        📅 {dateState.label}
+                      </span>
+                      {notificationBadge("Customer", attempt.customer_notification_status)}
+                      {notificationBadge("Owner", attempt.owner_notification_status)}
+                      <span className="rounded-lg bg-cream px-2 py-1 font-display text-[10px] font-extrabold text-ink-soft">
+                        {CALL_STATUS_LABEL[attempt.call_status]}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 grid gap-3 border-t-2 border-cardline/60 pt-3 lg:grid-cols-[auto_1fr]">
+                      <div className="grid grid-cols-2 gap-2 sm:flex">
+                        <a
+                          href={`tel:${order.phone_number}`}
+                          className="btn3d flex min-h-11 items-center justify-center border-frog-dark bg-frog px-4 py-2 font-display text-sm font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-frog focus:ring-offset-2 sm:min-w-32"
+                        >
+                          ☎ Call now
+                        </a>
+                        <a
+                          href={whatsappHref(order.phone_number)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="btn3d flex min-h-11 items-center justify-center border-sky-dark bg-sky px-3 py-2 font-display text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-sky focus:ring-offset-2"
+                        >
+                          💬 WhatsApp
+                        </a>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-[minmax(140px,0.55fr)_1fr]">
+                        <label className="font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft">
+                          Next delivery
+                          <input
+                            type="date"
+                            value={date}
+                            onChange={(event) =>
+                              setDateDrafts((current) => ({
+                                ...current,
+                                [attempt.id]: event.target.value,
+                              }))
+                            }
+                            className="mt-1 min-h-10 w-full rounded-xl border-2 border-cardline bg-cream/50 px-3 py-2 font-display text-xs font-bold text-ink outline-none focus:border-frog"
+                          />
+                        </label>
+                        <label className="font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft">
+                          Call note
+                          <input
+                            value={notes}
+                            maxLength={1000}
+                            placeholder="e.g. Will answer after 10 AM"
+                            onChange={(event) =>
+                              setNoteDrafts((current) => ({
+                                ...current,
+                                [attempt.id]: event.target.value,
+                              }))
+                            }
+                            className="mt-1 min-h-10 w-full rounded-xl border-2 border-cardline bg-cream/50 px-3 py-2 font-display text-xs font-bold text-ink outline-none placeholder:text-ink-soft/60 focus:border-frog"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        tone="frog"
+                        disabled={isBusy}
+                        onClick={() =>
+                          patchAttempt(
+                            attempt,
+                            { action: "confirmed", next_delivery_date: date || null, notes },
+                            "Customer confirmed ✓"
+                          )
+                        }
+                        className="!px-3 !py-1.5 !text-xs"
+                      >
+                        ✓ Confirmed
+                      </Button>
+                      <Button
+                        tone="gold"
+                        disabled={isBusy}
+                        onClick={() =>
+                          patchAttempt(
+                            attempt,
+                            { action: "no_answer", next_delivery_date: date || null, notes },
+                            "No answer recorded"
+                          )
+                        }
+                        className="!px-3 !py-1.5 !text-xs"
+                      >
+                        ☎ No answer
+                      </Button>
+                      <Button
+                        tone="flame"
+                        disabled={isBusy}
+                        onClick={() =>
+                          patchAttempt(
+                            attempt,
+                            { action: "date_change", notes },
+                            "Marked as needing a new date"
+                          )
+                        }
+                        className="!px-3 !py-1.5 !text-xs"
+                      >
+                        📅 Needs new date
+                      </Button>
+                      <Button
+                        tone="ghost"
+                        disabled={isBusy}
+                        onClick={() =>
+                          patchAttempt(
+                            attempt,
+                            { next_delivery_date: date || null, notes },
+                            "Delivery date and reminder saved"
+                          )
+                        }
+                        className="!px-3 !py-1.5 !text-xs"
+                      >
+                        {isBusy ? "Saving…" : "Save date & note"}
+                      </Button>
+                      <Button
+                        tone="ghost"
+                        disabled={isBusy}
+                        onClick={() =>
+                          patchAttempt(attempt, { action: "resolve", notes }, "Moved to history")
+                        }
+                        className="!px-3 !py-1.5 !text-xs"
+                      >
+                        Close task
+                      </Button>
+                    </div>
+                    {feedback[attempt.id] && (
+                      <p
+                        role={feedback[attempt.id].tone === "error" ? "alert" : "status"}
+                        className={`mt-2 rounded-lg px-2.5 py-1.5 font-display text-xs font-extrabold ${
+                          feedback[attempt.id].tone === "error"
+                            ? "bg-flame-tint text-flame-dark"
+                            : "bg-pond text-frog-dark"
+                        }`}
+                      >
+                        {feedback[attempt.id].tone === "error" ? "⚠ " : ""}
+                        {feedback[attempt.id].text}
+                      </p>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+
+        {history.length > 0 && (
+          <details className="group border-t-2 border-cardline">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-display text-xs font-extrabold text-ink outline-none hover:bg-cream/50 focus-visible:bg-cream/50 sm:px-5">
+              <span>🧭 Recent delivery history · {history.length} attempt{history.length === 1 ? "" : "s"}</span>
+              <span className="text-ink-soft group-open:rotate-180" aria-hidden="true">▾</span>
+            </summary>
+            <div className="divide-y divide-cardline/60 border-t border-cardline/60 bg-cream/25">
+              {history.map((attempt) => {
+                const order = orderById.get(attempt.order_id);
+                if (!order) return null;
+                return (
+                  <div
+                    key={attempt.id}
+                    className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1.2fr)_auto_auto] sm:items-center sm:px-5"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-display text-sm font-extrabold text-ink">
+                        {order.order_no ?? attempt.tracking_id} · {order.customer_name}
+                      </p>
+                      <p className="truncate font-display text-[11px] font-bold text-ink-soft">
+                        Attempt {attempt.attempt_no} · {DELIVERY_STATUS_LABEL[attempt.status]} ·{" "}
+                        {attempt.reason || "No courier reason"} · {fmtDateTime(attempt.last_event_at)}
+                      </p>
+                      {attempt.call_notes && (
+                        <p className="mt-0.5 truncate font-display text-[11px] font-semibold text-ink-soft">
+                          Note: {attempt.call_notes}
+                        </p>
+                      )}
+                    </div>
+                    <span className="w-fit rounded-lg bg-surface-soft px-2 py-1 font-display text-[10px] font-extrabold text-ink-soft">
+                      {CALL_STATUS_LABEL[attempt.call_status]}
+                    </span>
+                    <Button
+                      tone="ghost"
+                      disabled={busyId === attempt.id}
+                      onClick={() =>
+                        patchAttempt(attempt, { action: "reopen" }, "Restored to active calls")
+                      }
+                      className="w-fit !px-3 !py-1 !text-[10px]"
+                    >
+                      Reopen
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        )}
+      </Card>
+    </section>
   );
 }
 

@@ -318,6 +318,49 @@ create index if not exists idx_webhook_events_order
 create index if not exists idx_webhook_events_received
   on courier_webhook_events(received_at desc);
 
+-- Canonical courier history. Both webhook and polling feed this append-only
+-- ledger; event_key deduplicates the same courier event across both sources.
+create table if not exists delivery_events (
+  id                 uuid primary key default gen_random_uuid(),
+  event_key          varchar not null unique,
+  order_id           uuid not null references orders(id) on delete cascade,
+  tracking_id        varchar not null,
+  status             varchar not null,
+  attempt_no         int not null,
+  reason             text not null default '',
+  occurred_at        timestamptz not null,
+  next_delivery_date date,
+  source             varchar not null,
+  raw_payload        jsonb not null default '{}'::jsonb,
+  created_at         timestamptz not null default now()
+);
+create index if not exists idx_delivery_events_order
+  on delivery_events(order_id, occurred_at);
+
+-- One operational record per physical delivery attempt. Orders stay "booked"
+-- through reschedules; this projection owns call tasks and next-attempt dates.
+create table if not exists delivery_attempts (
+  id                        uuid primary key default gen_random_uuid(),
+  order_id                  uuid not null references orders(id) on delete cascade,
+  tracking_id               varchar not null,
+  attempt_no                int not null,
+  status                    varchar not null,
+  reason                    text not null default '',
+  first_out_for_delivery_at timestamptz,
+  last_event_at             timestamptz not null,
+  next_delivery_date        date,
+  date_source               varchar not null default 'unknown',
+  call_due_at               timestamptz,
+  call_status               varchar not null default 'pending',
+  called_at                 timestamptz,
+  call_notes                text not null default '',
+  created_at                timestamptz not null default now(),
+  updated_at                timestamptz not null default now(),
+  unique(order_id, attempt_no)
+);
+create index if not exists idx_delivery_attempts_due
+  on delivery_attempts(call_status, call_due_at);
+
 -- Durable WhatsApp outbox. Failed jobs are retried with exponential backoff.
 create table if not exists tracking_notification_jobs (
   id               uuid primary key default gen_random_uuid(),
@@ -332,10 +375,17 @@ create table if not exists tracking_notification_jobs (
   next_attempt_at  timestamptz not null default now(),
   last_error       text not null default '',
   created_at       timestamptz not null default now(),
-  sent_at          timestamptz
+  sent_at          timestamptz,
+  notification_type varchar not null default 'tracking',
+  dedupe_key        varchar,
+  delivery_attempt_id uuid references delivery_attempts(id) on delete cascade,
+  claimed_at        timestamptz
 );
 create unique index if not exists uq_tracking_notification_event_recipient
   on tracking_notification_jobs(webhook_event_id, recipient)
   where webhook_event_id is not null;
 create index if not exists idx_tracking_notification_due
   on tracking_notification_jobs(status, next_attempt_at);
+create unique index if not exists uq_tracking_notification_dedupe
+  on tracking_notification_jobs(dedupe_key)
+  where dedupe_key is not null;

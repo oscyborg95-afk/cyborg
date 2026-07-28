@@ -63,7 +63,59 @@ export interface TrackingEvent {
   created_at: string;
 }
 
-export type TrackingNotificationStatus = "pending" | "processing" | "sent" | "failed";
+export type TrackingNotificationStatus = "pending" | "processing" | "sent" | "failed" | "skipped";
+
+export type DeliveryEventStatus =
+  | "out_for_delivery"
+  | "rescheduled"
+  | "branch_rescheduled"
+  | "failed_to_deliver"
+  | "branch_failed"
+  | "delivered"
+  | "returned_to_ho";
+
+export type DeliveryCallStatus =
+  | "pending"
+  | "called_confirmed"
+  | "called_no_answer"
+  | "date_change_requested"
+  | "resolved";
+
+export interface DeliveryAttempt {
+  id: string;
+  order_id: string;
+  tracking_id: string;
+  attempt_no: number;
+  status: DeliveryEventStatus;
+  reason: string;
+  first_out_for_delivery_at: string | null;
+  last_event_at: string;
+  next_delivery_date: string | null;
+  date_source: "courier" | "manual" | "unknown";
+  call_due_at: string | null;
+  call_status: DeliveryCallStatus;
+  called_at: string | null;
+  call_notes: string;
+  customer_notification_status: TrackingNotificationStatus | null;
+  owner_notification_status: TrackingNotificationStatus | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeliveryEvent {
+  id: string;
+  event_key: string;
+  order_id: string;
+  tracking_id: string;
+  status: DeliveryEventStatus;
+  attempt_no: number;
+  reason: string;
+  occurred_at: string;
+  next_delivery_date: string | null;
+  source: "webhook" | "poll";
+  raw_payload: Record<string, unknown>;
+  created_at: string;
+}
 
 export interface TrackingNotificationJob {
   id: string;
@@ -71,6 +123,9 @@ export interface TrackingNotificationJob {
   order_id: string;
   recipient: "customer" | "owner";
   alert_kind: AlertKind | null;
+  notification_type?: string;
+  dedupe_key?: string | null;
+  delivery_attempt_id?: string | null;
   chat_id: string;
   body: string;
   status: TrackingNotificationStatus;

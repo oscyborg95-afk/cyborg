@@ -7,6 +7,7 @@ export interface ParsedCourierWebhook {
   status: CourierWebhookStatus;
   remarks: string;
   attempt: number | null;
+  occurredAt: string | null;
 }
 
 export interface CourierWebhookParseResult {
@@ -61,11 +62,15 @@ export function parseCourierWebhook(payload: unknown): ParsedCourierWebhook | nu
     "delivery_attempts", "delivery_attempt", "attempt_count", "attempt",
   ]);
   const parsedAttempt = Number.parseInt(attemptText, 10);
+  const occurredAt = firstText(entries, [
+    "status_created_at", "event_created_at", "occurred_at", "added_date", "created_at",
+  ]);
   return {
     trackingId,
     status: normalizeCourierWebhookStatus(rawStatus),
     remarks,
     attempt: Number.isFinite(parsedAttempt) && parsedAttempt > 0 ? parsedAttempt : null,
+    occurredAt: occurredAt || null,
   };
 }
 

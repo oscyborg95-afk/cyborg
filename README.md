@@ -62,9 +62,9 @@ the same `CRON_SECRET` value used by Vercel.
 | AI parsing engine (Gemini free tier, structured JSON; Claude fallback) — reads chat text **and** voice notes / address photos | `lib/parse.ts`, `app/api/parse/route.ts` |
 | COD risk scoring (per-phone delivery history) | `lib/risk.ts` |
 | Follow-up queue (stale AWAITING_* chats → one-tap Sinhala nudge) | `app/page.tsx`, templates `followUpAddress` / `followUpConfirm` |
-| Proactive tracking alerts (out-for-delivery / delivered / returned auto-messages) | `app/api/track/sync/route.ts` |
-| Real-time courier webhooks (including rescheduled / failed delivery alerts) | `app/api/courier/webhook/route.ts` |
-| Durable webhook inbox, retryable WhatsApp outbox, tracking health + protected fallback runner | `lib/db.ts`, `app/api/tracking/*` |
+| Full-history tracking reconciliation (attempts, reschedules, delivered / terminal return) | `app/api/track/sync/route.ts`, `lib/delivery-events.ts` |
+| Real-time courier webhooks feeding the same delivery-event workflow | `app/api/courier/webhook/route.ts`, `lib/delivery-workflow.ts` |
+| Delivery rescue queue, previous-day/morning owner reminders, retryable WhatsApp outbox | `lib/db.ts`, `lib/tracking-notifications.ts`, `app/orders/page.tsx` |
 | Cash reconciliation (XLSX invoice → gross COD, fees, commission, VAT/tax, actual bank receipt, variance) | `app/api/remittance/route.ts`, Orders page |
 | Return workflow (redeliver offer + one-click re-book) | `app/api/orders/[id]/rebook/route.ts` |
 | Ad spend + ROAS (manual daily entry, delivered-revenue attribution) | `app/api/adspend/route.ts`, Quest page |
@@ -89,11 +89,14 @@ the same `CRON_SECRET` value used by Vercel.
    the LLM and the form fills itself.
 3. Set the product price → **DISPATCH**. One click: books the courier, stores the
    tracking ID, marks the chat SHIPPED, and auto-sends the Sinhala confirmation.
-4. Tracking syncs itself: the workspace re-checks every parcel in flight every 10
-   minutes (and `/orders` on every visit) — `delivered` feeds the level counter on
-   `/analytics`, a courier return puts the unit back into product stock automatically,
-   and the customer is auto-messaged on out-for-delivery / delivered / returned.
-   A cron can also drive it: `POST /api/track/sync`.
+4. Tracking syncs itself: the workspace re-checks each parcel's complete courier
+   history every 10 minutes (and `/orders` on every visit). It reconstructs
+   delivery attempt numbers, extracts `Reschedule Date` from courier remarks,
+   auto-messages the customer and owner, and creates a call task in the Orders
+   **Delivery rescue** panel. A future re-attempt schedules an owner reminder at
+   6 PM the previous day and again on delivery morning if the call is unresolved.
+   Only `Delivered` and `Returned to HO` finalize the order; branch reschedules
+   never restock it. A cron can also drive the same flow: `POST /api/track/sync`.
 5. When the Friday courier payout lands, upload its `InvoiceDetails.xlsx` on `/orders`,
    verify delivery/commission/VAT deductions, enter the actual bank receipt, and record it.
    Bank cash increases by the actual net receipt—not gross COD. Disable the bank-cash switch

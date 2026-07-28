@@ -1,5 +1,9 @@
 import type { Order } from "./types";
 import { classifyCourierStatus } from "./courier-status";
+import {
+  extractPublicTrackingHistory,
+  type CourierHistoryRow,
+} from "./delivery-events";
 
 // Trans Express courier integration (https://portal.transexpress.lk/api).
 //
@@ -186,6 +190,9 @@ export interface TrackingResult {
 //   → { data: { current_status, status_history: [{ name, remarks, added_date }, …] } }
 // status_history is newest-first. COURIER_TRACKING_URL overrides the endpoint.
 const TRACKING_URL = process.env.COURIER_TRACKING_URL || `${API_BASE}/tracking`;
+const PUBLIC_TRACKING_URL =
+  process.env.COURIER_PUBLIC_TRACKING_URL ||
+  "https://api.transexpress.lk/api/v1/tracking";
 
 interface TxTrackingResponse {
   data?: {
@@ -255,6 +262,29 @@ export async function getTrackingStatus(
   const checkpoint =
     latest?.remarks && latest.name === status ? `${status} — ${latest.remarks}` : status;
   return { outcome: classifyCourierStatus(status), checkpoint };
+}
+
+export async function getCourierTrackingHistory(
+  trackingId: string
+): Promise<CourierHistoryRow[]> {
+  const url = new URL(PUBLIC_TRACKING_URL);
+  url.searchParams.set("waybill_id", trackingId);
+  const response = await fetch(url, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Public tracking failed for ${trackingId} (${response.status}): ${(await response.text()).slice(0, 160)}`
+    );
+  }
+  const payload = await response.json() as unknown;
+  const history = extractPublicTrackingHistory(payload);
+  if (history.length === 0) {
+    throw new Error(`Public tracking returned no history for ${trackingId}`);
+  }
+  return history;
 }
 
 // Mock tracking so the whole loop works before credentials arrive:

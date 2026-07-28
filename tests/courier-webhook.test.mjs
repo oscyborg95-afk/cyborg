@@ -21,6 +21,7 @@ test("parses nested TransExpress-style reschedule payloads", () => {
     status: "rescheduled",
     remarks: "Customer unavailable",
     attempt: 2,
+    occurredAt: null,
   });
   assert.equal(
     webhookCheckpoint(event),
