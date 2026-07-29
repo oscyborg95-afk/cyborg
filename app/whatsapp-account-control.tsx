@@ -23,7 +23,7 @@ export function WhatsAppAccountControl() {
 
   const loadStatus = useCallback(async () => {
     try {
-      const response = await fetch(`${WORKER_URL}/health`, {
+      const response = await fetch("/api/whatsapp/status", {
         cache: "no-store",
       });
       if (!response.ok) throw new Error("Worker unavailable");
@@ -36,6 +36,7 @@ export function WhatsAppAccountControl() {
 
   useEffect(() => {
     const initialStatusTimer = window.setTimeout(loadStatus, 0);
+    const statusPoll = window.setInterval(loadStatus, 15_000);
     const socket: Socket = io(WORKER_URL, {
       transports: ["websocket", "polling"],
     });
@@ -46,6 +47,7 @@ export function WhatsAppAccountControl() {
     );
     return () => {
       window.clearTimeout(initialStatusTimer);
+      window.clearInterval(statusPoll);
       socket.disconnect();
     };
   }, [loadStatus]);

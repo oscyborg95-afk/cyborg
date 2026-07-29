@@ -396,13 +396,18 @@ export default function Workspace() {
 
   const t = makeTemplates(settings?.templates ?? {});
 
-  // Straight to the worker (not proxied through Next) — same-origin CORS is
-  // already open on it, and it's the only place that knows the live QR.
+  // Fetch status through Next so production browsers do not need direct access
+  // to the worker (and never fall back to their own localhost for the QR).
   const loadWaStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${WORKER_URL}/qr.json`, { cache: "no-store" });
-      if (!res.ok) return;
+      const res = await fetch("/api/whatsapp/status", { cache: "no-store" });
+      if (!res.ok) {
+        const data = await res.json();
+        if (data.offline) setWorkerOffline(true);
+        return;
+      }
       const data = await res.json();
+      setWorkerOffline(false);
       setWaReady(data.ready);
       setQrImage(data.qr);
     } catch {
@@ -420,6 +425,9 @@ export default function Workspace() {
     loadSettings();
     loadMetrics();
 
+    // The socket keeps the UI instant when the worker is publicly reachable.
+    // Polling is the reliable fallback and also refreshes rotating QR codes.
+    const statusPoll = window.setInterval(loadWaStatus, 5_000);
     const socket: Socket = io(WORKER_URL, { transports: ["websocket", "polling"] });
     socket.on("connect", () => {
       setWorkerOffline(false);
@@ -488,6 +496,7 @@ export default function Workspace() {
       });
     });
     return () => {
+      window.clearInterval(statusPoll);
       socket.disconnect();
     };
   }, [loadChats, loadStates, loadOrders, loadProducts, loadWaStatus, loadSettings, loadMetrics]);
