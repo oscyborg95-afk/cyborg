@@ -358,6 +358,7 @@ const {
   initAuthCreds,
   BufferJSON,
   DisconnectReason,
+  fetchLatestBaileysVersion,
   Browsers,
   downloadMediaMessage,
   isJidGroup,
@@ -742,13 +743,39 @@ let activeAuth = null;
 let switchingAccount = false;
 let connectionGeneration = 0;
 let reconnectTimer = null;
+let waVersion = null;
+
+async function getWhatsAppVersion() {
+  if (waVersion) return waVersion;
+  try {
+    const latest = await fetchLatestBaileysVersion();
+    waVersion = latest.version;
+    console.log(
+      `[cyborg-wa-worker] using WhatsApp Web version ${waVersion.join(".")}` +
+        (latest.isLatest ? "" : " (fallback)")
+    );
+  } catch (err) {
+    // Keep the worker reachable if the version endpoint is temporarily down.
+    // A 405 clears this cache and retries the lookup on the next connection.
+    waVersion = [2, 3000, 1043857760];
+    console.warn(
+      `[cyborg-wa-worker] version lookup failed; using fallback ${waVersion.join(".")}:`,
+      err.message
+    );
+  }
+  return waVersion;
+}
 
 async function connectToWhatsApp() {
   const generation = ++connectionGeneration;
-  const auth = await getAuthState();
+  const [auth, version] = await Promise.all([
+    getAuthState(),
+    getWhatsAppVersion(),
+  ]);
   activeAuth = auth;
 
   sock = makeWASocket({
+    version,
     auth: {
       creds: auth.state.creds,
       keys: makeCacheableSignalKeyStore(auth.state.keys, logger),
@@ -783,6 +810,10 @@ async function connectToWhatsApp() {
     if (connection === "close") {
       setReady(false);
       const statusCode = lastDisconnect?.error?.output?.statusCode;
+      // WhatsApp returns 405 when the advertised Web client version is no
+      // longer accepted. Refresh it before reconnecting so QR generation can
+      // recover without another deployment.
+      if (statusCode === 405) waVersion = null;
       if (statusCode === DisconnectReason.loggedOut) {
         console.log("[cyborg-wa-worker] Logged out from the phone — clearing session, new QR incoming");
         await auth.clear();
