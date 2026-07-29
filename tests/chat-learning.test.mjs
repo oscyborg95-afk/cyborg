@@ -3,7 +3,12 @@ import test from "node:test";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url);
-const { extractLearningPairs, rankLearningPairs, scrubLearningText } = await jiti.import(
+const {
+  extractLearningPairs,
+  learningChatPhoneKey,
+  rankLearningPairs,
+  scrubLearningText,
+} = await jiti.import(
   "../lib/chat-learning.ts"
 );
 
@@ -85,4 +90,18 @@ test("retrieval prefers similar questions and caps prompt examples", () => {
   const ranked = rankLearningPairs("price eka kiyanna", pairs, 2);
   assert.equal(ranked.length, 2);
   assert.equal(ranked[0].customer, "price eka keeyada?");
+});
+
+test("learning resolves modern WhatsApp LIDs through their stored phone mapping", () => {
+  assert.equal(
+    learningChatPhoneKey("123456789012345@lid", "94771234567"),
+    "771234567"
+  );
+});
+
+test("standard WhatsApp phone JIDs continue to match directly", () => {
+  assert.equal(
+    learningChatPhoneKey("94771234567@s.whatsapp.net"),
+    "771234567"
+  );
 });

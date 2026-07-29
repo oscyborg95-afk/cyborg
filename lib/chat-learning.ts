@@ -25,6 +25,10 @@ const g = globalThis as unknown as {
   __salesStyleProfile?: SalesStyleProfile | null;
 };
 
+type LearningWaChat = WaChat & {
+  identity_phone_user?: string;
+};
+
 const memConversations = (g.__learningConversations ??= new Map<string, LearningConversation>());
 if (g.__salesStyleProfile === undefined) g.__salesStyleProfile = null;
 
@@ -94,7 +98,15 @@ function unique(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
-async function listAvailableChats(): Promise<WaChat[]> {
+export function learningChatPhoneKey(
+  chatId: string,
+  identityPhoneUser?: string | null
+): string {
+  const resolved = phoneKey(identityPhoneUser ?? "");
+  return resolved.length === 9 ? resolved : phoneKey(chatId);
+}
+
+async function listAvailableChats(): Promise<LearningWaChat[]> {
   if (usingSupabase) {
     try {
       const { rows } = await queryDatabase<{
@@ -103,9 +115,30 @@ async function listAvailableChats(): Promise<WaChat[]> {
         last_message: string;
         last_ts: string | number;
         unread: number;
+        identity_phone_user: string | null;
       }>(
-        `select jid, name, last_message, last_ts, unread
-         from wa_chats order by last_ts desc`
+        `select
+           chats.jid,
+           chats.name,
+           chats.last_message,
+           chats.last_ts,
+           chats.unread,
+           coalesce(
+             regexp_replace(states.phone_number, '\\D', '', 'g'),
+             case
+               when split_part(chats.jid, '@', 2) in ('lid', 'hosted.lid')
+               then mappings.data::jsonb #>> '{}'
+             end
+           ) as identity_phone_user
+         from wa_chats chats
+         left join chat_states states on states.chat_id = chats.jid
+         left join wa_auth mappings
+           on split_part(chats.jid, '@', 2) in ('lid', 'hosted.lid')
+          and mappings.id =
+            'lid-mapping-' ||
+            split_part(split_part(chats.jid, '@', 1), ':', 1) ||
+            '_reverse'
+         order by chats.last_ts desc`
       );
       return rows.map((row) => ({
         id: row.jid,
@@ -113,12 +146,13 @@ async function listAvailableChats(): Promise<WaChat[]> {
         lastMessage: row.last_message,
         timestamp: Number(row.last_ts),
         unreadCount: Number(row.unread),
+        identity_phone_user: row.identity_phone_user ?? undefined,
       }));
     } catch {
       // Older databases may not have worker persistence yet; try its HTTP API.
     }
   }
-  return workerFetch<WaChat[]>("/chats").catch(() => []);
+  return workerFetch<LearningWaChat[]>("/chats").catch(() => []);
 }
 
 async function listStoredMessages(chatId: string): Promise<WaMessage[]> {
@@ -225,7 +259,12 @@ export async function listLearningCandidates(): Promise<LearningCandidate[]> {
     listAvailableChats(),
     approvedKeys(),
   ]);
-  const chatsByPhone = new Map(chats.map((chat) => [phoneKey(chat.id), chat]));
+  const chatsByPhone = new Map(
+    chats.map((chat) => [
+      learningChatPhoneKey(chat.id, chat.identity_phone_user),
+      chat,
+    ])
+  );
   const deliveredGroups = groupOrdersByCustomerIdentity(
     orders.filter((order) => order.order_status === "delivered")
   );
@@ -236,9 +275,11 @@ export async function listLearningCandidates(): Promise<LearningCandidate[]> {
     const keys = unique(group.flatMap(orderIdentityKeys));
     const chat = keys
       .map((key) => chatsByPhone.get(key))
-      .filter((value): value is WaChat => Boolean(value))
+      .filter((value): value is LearningWaChat => Boolean(value))
       .sort((a, b) => b.timestamp - a.timestamp)[0];
-    const key = chat ? phoneKey(chat.id) : keys[0];
+    const key = chat
+      ? learningChatPhoneKey(chat.id, chat.identity_phone_user)
+      : keys[0];
     if (!key || key.length !== 9) continue;
     grouped.push({
       phone_key: key,
