@@ -195,6 +195,34 @@ create table if not exists ai_lead_memory (
   updated_at            timestamptz not null default now()
 );
 
+-- Approved, privacy-scrubbed examples from successful delivered-order chats.
+-- Only customer/reply pairs are retained; raw histories and direct contact data are not copied.
+create table if not exists ai_learning_conversations (
+  id             uuid primary key default gen_random_uuid(),
+  phone_key      varchar(9) not null unique,
+  chat_id        varchar not null,
+  customer_name  varchar not null default '',
+  order_nos      jsonb not null default '[]'::jsonb,
+  products       jsonb not null default '[]'::jsonb,
+  language_style varchar not null default 'en',
+  message_count  int not null default 0,
+  pairs          jsonb not null default '[]'::jsonb,
+  search_text    text not null default '',
+  approved_at    timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+create index if not exists idx_ai_learning_search
+  on ai_learning_conversations using gin (to_tsvector('simple', search_text));
+
+create table if not exists ai_sales_style_profile (
+  id            int primary key default 1,
+  instructions  text not null default '',
+  traits        jsonb not null default '{}'::jsonb,
+  sample_count  int not null default 0,
+  example_count int not null default 0,
+  updated_at    timestamptz not null default now()
+);
+
 -- Cyborg OS: single-row settings for the gamified net-worth counter.
 create table if not exists business_settings (
   id               int primary key default 1,

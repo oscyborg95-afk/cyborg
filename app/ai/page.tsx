@@ -219,6 +219,27 @@ export default function AiPage() {
         </div>
       </Card>
 
+      <Link
+        href="/ai/learning"
+        className="group flex items-center gap-3 rounded-[1.25rem] border-2 border-b-[5px] border-grape bg-grape-tint p-4 transition hover:-translate-y-0.5 hover:bg-surface focus:outline-none focus:ring-2 focus:ring-grape focus:ring-offset-2 sm:p-5"
+      >
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-grape text-xl text-white shadow-sm" aria-hidden>
+          🎙️
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="font-display text-[10px] font-extrabold uppercase tracking-widest text-grape-dark">
+            Levels 1 + 2
+          </p>
+          <h2 className="font-display text-base font-extrabold text-ink">Teach from successful chats</h2>
+          <p className="hidden text-xs font-bold text-ink-soft sm:block">
+            Learn your team voice and retrieve similar winning replies.
+          </p>
+        </div>
+        <span className="font-display text-xl font-extrabold text-grape-dark transition group-hover:translate-x-1" aria-hidden>
+          →
+        </span>
+      </Link>
+
       <div className="grid grid-cols-3 gap-3">
         {[
           {

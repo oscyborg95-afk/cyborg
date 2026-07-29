@@ -19,6 +19,7 @@ import {
 import { chatIdToPhone } from "./phone";
 import { phoneKey } from "./risk";
 import { decideSalesReply } from "./sales-agent";
+import { getSalesLearningContext } from "./chat-learning";
 import {
   canAutoSendDecision,
   insideQuietHours,
@@ -197,7 +198,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
     }
 
     stage = "loading conversation context";
-    const [messages, orders, products, states, settings, leadMemory] = await Promise.all([
+    const [messages, orders, products, states, settings, leadMemory, learning] = await Promise.all([
       workerFetch<WaMessage[]>(
         `/messages/${encodeURIComponent(trigger.chatId)}?peek=1`,
         { signal: controller.signal }
@@ -207,6 +208,12 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       listChatStates(),
       getSettings(),
       getLeadMemory(key),
+      // Learning is an optional writing aid; a profile/schema issue must never
+      // stop the core salesperson from answering with its live facts.
+      getSalesLearningContext(trigger.body).catch(() => ({
+        style_profile: null,
+        relevant_examples: [],
+      })),
     ]);
     const latest = messages[messages.length - 1];
     if (!latest || latest.fromMe || latest.id !== trigger.id) {
@@ -232,6 +239,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       messages,
       currentState: state?.state ?? "NEW",
       geminiApiKey: settings.gemini_api_key,
+      learning,
       signal: controller.signal,
     });
     controller.signal.throwIfAborted();

@@ -10,6 +10,7 @@ import {
   type LeadMemory,
   type Order,
   type Product,
+  type SalesLearningContext,
   type WaMessage,
 } from "./types";
 export { insideQuietHours } from "./agent-policy";
@@ -359,8 +360,12 @@ async function writeReply(input: {
   plan: SalesPlan;
   language: LanguageAssessment;
   messages: WaMessage[];
+  learning?: SalesLearningContext;
   signal?: AbortSignal;
 }): Promise<string> {
+  const learnedVoice = input.learning?.style_profile?.instructions
+    ? `\nLEARNED TEAM VOICE\n${input.learning.style_profile.instructions}`
+    : "";
   const result = await generateStructured({
     keys: input.keys,
     system: `You are the customer-facing WhatsApp salesperson. Follow the supplied sales plan;
@@ -369,6 +374,7 @@ do not change its facts, action, or next step.
 VOICE
 ${input.config.personality}
 ${languageWritingRule(input.language)}
+${learnedVoice}
 - Sound like a capable human salesperson, not a support bot.
 - Answer first, then add at most one relevant value point, then one easy next step.
 - Keep it to 1-3 short WhatsApp sentences. Ask at most one question.
@@ -376,11 +382,14 @@ ${languageWritingRule(input.language)}
 - Avoid headings, markdown, canned phrases, excessive emoji, fake urgency, and pressure.
 - Mention only facts_to_use. Never invent a product benefit, claim, testimonial, price, stock,
   discount, delivery date, guarantee, or policy.
+- Approved examples are style references only. Never copy their names, addresses, phone numbers,
+  prices, order details, promises, policies, or product claims.
 - Before returning, silently verify that the reply uses the requested language and writing style.`,
     content: {
       language: input.language,
       sales_plan: input.plan,
       recent_conversation: transcript(input.messages.slice(-12)),
+      approved_style_examples: input.learning?.relevant_examples ?? [],
     },
     responseSchema: {
       type: "OBJECT",
@@ -402,6 +411,7 @@ export async function decideSalesReply(input: {
   messages: WaMessage[];
   currentState: string;
   geminiApiKey?: string;
+  learning?: SalesLearningContext;
   signal?: AbortSignal;
 }): Promise<AgentDecision> {
   const keys = apiKeys(input.geminiApiKey);
@@ -435,6 +445,7 @@ export async function decideSalesReply(input: {
       plan,
       language,
       messages: input.messages,
+      learning: input.learning,
       signal: input.signal,
     });
   }

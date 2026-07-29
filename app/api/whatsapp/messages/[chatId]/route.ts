@@ -4,6 +4,7 @@ import { purgeCustomerData } from "@/lib/crm-db";
 import { deleteChatState } from "@/lib/db";
 import { chatIdToPhone } from "@/lib/phone";
 import { phoneKey } from "@/lib/risk";
+import { removeLearningConversation } from "@/lib/chat-learning";
 import { workerFetch, WorkerOfflineError } from "@/lib/wa";
 import type { WaMessage } from "@/lib/types";
 
@@ -52,6 +53,7 @@ export async function DELETE(
     const [customerData, chatStates] = await Promise.all([
       purgeCustomerData(key, chatId),
       deleteChatState(phone, chatId),
+      removeLearningConversation(key),
     ]);
     const worker = await workerFetch<{
       ok: boolean;

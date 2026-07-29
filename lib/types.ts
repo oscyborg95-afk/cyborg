@@ -542,3 +542,52 @@ export interface LanguageAssessment {
   explicit: boolean;
   evidence: string;
 }
+
+export interface LearningReplyPair {
+  customer: string;
+  shop: string;
+}
+
+export interface LearningConversation {
+  id: string;
+  phone_key: string;
+  chat_id: string;
+  customer_name: string;
+  order_nos: string[];
+  products: string[];
+  language_style: CustomerLanguageStyle;
+  message_count: number;
+  pairs: LearningReplyPair[];
+  search_text: string;
+  approved_at: string;
+  updated_at: string;
+}
+
+export interface LearningCandidate {
+  phone_key: string;
+  chat_id: string | null;
+  customer_name: string;
+  order_nos: string[];
+  products: string[];
+  delivered_at: string;
+  approved: boolean;
+  message_count: number | null;
+}
+
+export interface SalesStyleProfile {
+  instructions: string;
+  traits: {
+    average_words: number;
+    question_rate: number;
+    emoji_rate: number;
+    language_styles: Partial<Record<CustomerLanguageStyle, number>>;
+  };
+  sample_count: number;
+  example_count: number;
+  updated_at: string;
+}
+
+export interface SalesLearningContext {
+  style_profile: SalesStyleProfile | null;
+  relevant_examples: LearningReplyPair[];
+}
