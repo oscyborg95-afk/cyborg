@@ -6,6 +6,7 @@ const jiti = createJiti(import.meta.url);
 const {
   extractLearningPairs,
   learningChatPhoneKey,
+  learningChatPhoneKeys,
   rankLearningPairs,
   scrubLearningText,
 } = await jiti.import(
@@ -104,4 +105,19 @@ test("standard WhatsApp phone JIDs continue to match directly", () => {
     learningChatPhoneKey("94771234567@s.whatsapp.net"),
     "771234567"
   );
+});
+
+test("LID chats can collect identities from both auth mappings and shared order numbers", () => {
+  assert.deepEqual(
+    learningChatPhoneKeys("123456789012345@lid", [
+      "94771234567",
+      "077 987 6543",
+      "94771234567",
+    ]),
+    ["771234567", "779876543"]
+  );
+});
+
+test("an unresolved LID is never mistaken for a customer phone number", () => {
+  assert.deepEqual(learningChatPhoneKeys("123456789012345@lid"), []);
 });

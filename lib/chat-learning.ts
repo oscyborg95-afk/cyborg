@@ -26,13 +26,13 @@ const g = globalThis as unknown as {
 };
 
 type LearningWaChat = WaChat & {
-  identity_phone_user?: string;
+  identity_phone_users?: string[];
 };
 
 const memConversations = (g.__learningConversations ??= new Map<string, LearningConversation>());
 if (g.__salesStyleProfile === undefined) g.__salesStyleProfile = null;
 
-const PHONE_RE = /(?<!\d)(?:\+?94|0)?7\d{8}(?!\d)/g;
+const PHONE_RE = /(?<!\d)(?:\+?94[\s-]?|0)?7(?:[\s-]?\d){8}(?!\d)/g;
 const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const URL_RE = /\bhttps?:\/\/\S+/gi;
 const ORDER_REF_RE = /\b[A-Z]{1,5}-\d{3,}\b/gi;
@@ -106,6 +106,22 @@ export function learningChatPhoneKey(
   return resolved.length === 9 ? resolved : phoneKey(chatId);
 }
 
+export function learningChatPhoneKeys(
+  chatId: string,
+  identityPhoneUsers: Array<string | null | undefined> = []
+): string[] {
+  const resolved = unique(
+    identityPhoneUsers
+      .map((value) => phoneKey(value ?? ""))
+      .filter((key) => key.length === 9)
+  );
+  const jidKey = phoneKey(chatId);
+  if (jidKey.length === 9 && !chatId.endsWith("@lid") && !chatId.endsWith("@hosted.lid")) {
+    resolved.push(jidKey);
+  }
+  return unique(resolved);
+}
+
 async function listAvailableChats(): Promise<LearningWaChat[]> {
   if (usingSupabase) {
     try {
@@ -115,38 +131,79 @@ async function listAvailableChats(): Promise<LearningWaChat[]> {
         last_message: string;
         last_ts: string | number;
         unread: number;
-        identity_phone_user: string | null;
       }>(
-        `select
-           chats.jid,
-           chats.name,
-           chats.last_message,
-           chats.last_ts,
-           chats.unread,
-           coalesce(
-             regexp_replace(states.phone_number, '\\D', '', 'g'),
-             case
-               when split_part(chats.jid, '@', 2) in ('lid', 'hosted.lid')
-               then mappings.data::jsonb #>> '{}'
-             end
-           ) as identity_phone_user
-         from wa_chats chats
-         left join chat_states states on states.chat_id = chats.jid
-         left join wa_auth mappings
-           on split_part(chats.jid, '@', 2) in ('lid', 'hosted.lid')
-          and mappings.id =
-            'lid-mapping-' ||
-            split_part(split_part(chats.jid, '@', 1), ':', 1) ||
-            '_reverse'
-         order by chats.last_ts desc`
+        `select jid, name, last_message, last_ts, unread
+         from wa_chats order by last_ts desc`
       );
+      const identities = new Map<string, Set<string>>();
+      const addIdentity = (jid: string, value: unknown) => {
+        const key = phoneKey(String(value ?? ""));
+        if (key.length !== 9) return;
+        const values = identities.get(jid) ?? new Set<string>();
+        values.add(key);
+        identities.set(jid, values);
+      };
+
+      // Chats already touched by the sales/order workflow have an explicit
+      // phone ↔ chat link. Keep this independent from the LID lookup so one
+      // legacy table cannot make all discovery fail.
+      await queryDatabase<{ chat_id: string; phone_number: string }>(
+        "select chat_id, phone_number from chat_states"
+      )
+        .then(({ rows: states }) => {
+          states.forEach((state) => addIdentity(state.chat_id, state.phone_number));
+        })
+        .catch(() => {});
+
+      // Baileys persists reverse LID mappings as auth keys. Parse them in
+      // JavaScript instead of casting/joining JSON in SQL; auth stores from
+      // different Baileys versions are then harmless to one another.
+      await queryDatabase<{ id: string; data: string }>(
+        `select id, data from wa_auth
+         where id like 'lid-mapping-%' and right(id, 8) = '_reverse'`
+      )
+        .then(({ rows: mappings }) => {
+          for (const mapping of mappings) {
+            const lidUser = mapping.id
+              .slice("lid-mapping-".length, -"_reverse".length)
+              .split(":")[0];
+            let phoneUser = mapping.data;
+            try {
+              phoneUser = JSON.parse(mapping.data) as string;
+            } catch {
+              // Some legacy stores wrote the scalar without JSON encoding.
+            }
+            const jid =
+              rows.find((chat) => chat.jid.split("@")[0].split(":")[0] === lidUser)?.jid;
+            if (jid) addIdentity(jid, phoneUser);
+          }
+        })
+        .catch(() => {});
+
+      // Historical sales chats commonly contain the contact number supplied
+      // for the COD order. This is a deterministic fallback when WhatsApp did
+      // not provide/persist a LID reverse mapping.
+      await queryDatabase<{ jid: string; body: string }>(
+        `select jid, body from wa_messages
+         where body like '%07%' or body like '%947%' or body like '%+94%'
+         order by ts desc limit 10000`
+      )
+        .then(({ rows: messages }) => {
+          for (const message of messages) {
+            for (const match of message.body.matchAll(PHONE_RE)) {
+              addIdentity(message.jid, match[0]);
+            }
+          }
+        })
+        .catch(() => {});
+
       return rows.map((row) => ({
         id: row.jid,
         name: row.name,
         lastMessage: row.last_message,
         timestamp: Number(row.last_ts),
         unreadCount: Number(row.unread),
-        identity_phone_user: row.identity_phone_user ?? undefined,
+        identity_phone_users: [...(identities.get(row.jid) ?? [])],
       }));
     } catch {
       // Older databases may not have worker persistence yet; try its HTTP API.
@@ -259,12 +316,12 @@ export async function listLearningCandidates(): Promise<LearningCandidate[]> {
     listAvailableChats(),
     approvedKeys(),
   ]);
-  const chatsByPhone = new Map(
-    chats.map((chat) => [
-      learningChatPhoneKey(chat.id, chat.identity_phone_user),
-      chat,
-    ])
-  );
+  const chatsByPhone = new Map<string, LearningWaChat>();
+  for (const chat of [...chats].sort((a, b) => a.timestamp - b.timestamp)) {
+    for (const key of learningChatPhoneKeys(chat.id, chat.identity_phone_users)) {
+      chatsByPhone.set(key, chat);
+    }
+  }
   const deliveredGroups = groupOrdersByCustomerIdentity(
     orders.filter((order) => order.order_status === "delivered")
   );
@@ -273,13 +330,9 @@ export async function listLearningCandidates(): Promise<LearningCandidate[]> {
     const sorted = [...group].sort((a, b) => b.created_at.localeCompare(a.created_at));
     const latest = sorted[0];
     const keys = unique(group.flatMap(orderIdentityKeys));
-    const chat = keys
-      .map((key) => chatsByPhone.get(key))
-      .filter((value): value is LearningWaChat => Boolean(value))
-      .sort((a, b) => b.timestamp - a.timestamp)[0];
-    const key = chat
-      ? learningChatPhoneKey(chat.id, chat.identity_phone_user)
-      : keys[0];
+    const matchedKey = keys.find((key) => chatsByPhone.has(key));
+    const chat = matchedKey ? chatsByPhone.get(matchedKey) : undefined;
+    const key = matchedKey ?? keys[0];
     if (!key || key.length !== 9) continue;
     grouped.push({
       phone_key: key,
