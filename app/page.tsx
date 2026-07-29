@@ -1557,6 +1557,30 @@ export default function Workspace() {
 }
 
 function LinkWhatsAppScreen({ qrImage }: { qrImage: string | null }) {
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+
+  const resetSession = async () => {
+    setResetting(true);
+    setResetError(null);
+    try {
+      const response = await fetch("/api/whatsapp/logout", {
+        method: "POST",
+        cache: "no-store",
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "Could not reset the WhatsApp session.");
+      }
+    } catch (err) {
+      setResetError(
+        err instanceof Error ? err.message : "Could not reset the WhatsApp session."
+      );
+    } finally {
+      setResetting(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col items-center justify-center gap-5 p-6 text-center">
       <Froggy mood={qrImage ? "idle" : "thinking"} size={100} />
@@ -1585,6 +1609,23 @@ function LinkWhatsAppScreen({ qrImage }: { qrImage: string | null }) {
         <Card className="flex h-[260px] w-[260px] items-center justify-center p-4">
           <span className="font-display text-sm font-bold text-ink-soft">Loading…</span>
         </Card>
+      )}
+      {!qrImage && (
+        <div className="flex flex-col items-center gap-2">
+          <Button
+            type="button"
+            tone="ghost"
+            disabled={resetting}
+            onClick={resetSession}
+          >
+            {resetting ? "Resetting WhatsApp…" : "No QR? Generate a fresh one"}
+          </Button>
+          {resetError && (
+            <p role="alert" className="max-w-md text-xs font-bold text-danger-ink">
+              {resetError}
+            </p>
+          )}
+        </div>
       )}
       <p className="font-display text-xs font-bold text-ink-soft">
         This page updates itself automatically — no need to refresh. The QR rotates every ~20s

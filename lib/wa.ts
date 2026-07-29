@@ -18,6 +18,15 @@ export class WorkerTimeoutError extends Error {
   }
 }
 
+export class WorkerResponseError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
 export async function workerFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const callerSignal = init?.signal;
@@ -47,7 +56,9 @@ export async function workerFetch<T>(path: string, init?: RequestInit): Promise<
     clearTimeout(timer);
     callerSignal?.removeEventListener("abort", abortFromCaller);
   }
-  if (!res.ok) throw new Error(data.error || `Worker error ${res.status}`);
+  if (!res.ok) {
+    throw new WorkerResponseError(res.status, data.error || `Worker error ${res.status}`);
+  }
   return data as T;
 }
 

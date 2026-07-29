@@ -740,8 +740,11 @@ async function updateMessageStatus(id, jid, status) {
 let sock = null;
 let activeAuth = null;
 let switchingAccount = false;
+let connectionGeneration = 0;
+let reconnectTimer = null;
 
 async function connectToWhatsApp() {
+  const generation = ++connectionGeneration;
   const auth = await getAuthState();
   activeAuth = auth;
 
@@ -764,6 +767,9 @@ async function connectToWhatsApp() {
   sock.ev.on("creds.update", auth.saveCreds);
 
   sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+    // A manual session reset replaces the socket. Ignore late events from the
+    // old socket so it cannot reconnect with credentials we just cleared.
+    if (generation !== connectionGeneration) return;
     if (qr) {
       latestQr = await QRCode.toDataURL(qr, { width: 600, margin: 1 });
       io.emit("wa:qr", { qr: latestQr });
@@ -783,7 +789,12 @@ async function connectToWhatsApp() {
       } else {
         console.log(`[cyborg-wa-worker] Connection closed (${statusCode ?? "unknown"}) — reconnecting`);
       }
-      setTimeout(connectToWhatsApp, 2500);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => {
+        connectToWhatsApp().catch((err) =>
+          console.error("[cyborg-wa-worker] reconnect failed:", err)
+        );
+      }, 2500);
     }
   });
 
@@ -835,26 +846,35 @@ app.post("/logout", async (_req, res) => {
   if (switchingAccount) {
     return res.status(409).json({ error: "A WhatsApp account switch is already in progress." });
   }
-  if (!ready || !sock || !activeAuth) {
-    return res.status(409).json({ error: "WhatsApp is not currently connected." });
+  if (!activeAuth) {
+    return res.status(503).json({ error: "WhatsApp is still starting. Please try again shortly." });
   }
 
   switchingAccount = true;
   const currentSocket = sock;
   const currentAuth = activeAuth;
+  const wasReady = ready;
+  // Invalidate the old connection handler before ending the socket. Without
+  // this, a stale authenticated socket can immediately recreate itself and
+  // leave the worker forever at { ready: false, qr: null }.
+  connectionGeneration += 1;
+  clearTimeout(reconnectTimer);
   latestQr = null;
   setReady(false);
 
   try {
-    await currentSocket.logout();
-    // The loggedOut connection event also clears auth. Repeating the operation
-    // here is safe and ensures the API never reports success with saved
-    // credentials still present.
+    currentSocket?.ev.removeAllListeners("creds.update");
+    if (wasReady && currentSocket) {
+      await currentSocket.logout();
+    } else if (currentSocket) {
+      currentSocket.end(new Error("WhatsApp session reset requested"));
+    }
     await currentAuth.clear();
+    await connectToWhatsApp();
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[cyborg-wa-worker] account switch failed:", err);
-    return res.status(500).json({ error: "Could not log out the linked WhatsApp account." });
+    console.error("[cyborg-wa-worker] account reset failed:", err);
+    return res.status(500).json({ error: "Could not reset the WhatsApp session." });
   } finally {
     switchingAccount = false;
   }
