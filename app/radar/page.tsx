@@ -207,6 +207,11 @@ export default function ProductRadarPage() {
       </header>
 
       {!dashboard.configured && <Card className="flex flex-col gap-3 border-gold/50 bg-flame-tint p-4 sm:flex-row sm:items-center"><div className="text-2xl" aria-hidden="true">🔑</div><div className="flex-1"><p className="font-display font-extrabold text-ink">Connect the live signal</p><p className="text-sm font-bold text-ink-soft">Add <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs text-ink">APIFY_TOKEN</code> to your server environment. The examples below are clearly marked demo data.</p></div><a href="https://console.apify.com/settings/integrations" target="_blank" rel="noreferrer" className="font-display text-sm font-extrabold text-flame-dark underline decoration-2 underline-offset-2">Open Apify token settings ↗</a></Card>}
+      {dashboard.lastRun?.status === "completed" && dashboard.lastRun.error && (
+        <div role="status" className="rounded-xl border-2 border-gold/50 bg-flame-tint px-4 py-3 font-bold text-ink">
+          The latest scan completed with partial provider coverage. Some countries or competitor results may be missing; the available evidence is still shown below.
+        </div>
+      )}
       {error && <div role="alert" className="rounded-xl border-2 border-danger-line bg-danger-bg px-4 py-3 font-bold text-danger-ink">{error}</div>}
 
       {top ? (

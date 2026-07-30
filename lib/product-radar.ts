@@ -156,7 +156,7 @@ export function normalizeTikTokAd(input: unknown, country = ""): RadarEvidence {
   const page = nested(item, "advertiser", "brand", "account");
   const sourceId = text(item.id, item.adId, item.ad_id, item.materialId, ad.id) ||
     stableId(text(item.title, ad.title, item.description), text(item.adUrl, item.url));
-  const title = text(item.title, item.adTitle, ad.title, item.description, ad.description);
+  const title = text(item.title, item.adTitle, item.ad_title, ad.title, item.description, ad.description);
   const media = nested(item, "video", "media", "image");
   const observed = new Date().toISOString();
   return {
@@ -164,23 +164,23 @@ export function normalizeTikTokAd(input: unknown, country = ""): RadarEvidence {
     productKey: "",
     platform: "tiktok",
     sourceId,
-    advertiser: text(item.brandName, item.advertiserName, page.name, page.title, item.author),
+    advertiser: text(item.brandName, item.brand_name, item.advertiserName, item.advertiser_name, page.name, page.title, item.author),
     title,
-    copy: text(item.description, item.adText, item.caption, ad.description, ad.text),
-    cta: text(item.cta, item.callToAction, ad.cta),
-    adUrl: text(item.adUrl, item.shareUrl, item.url, ad.url),
-    landingUrl: text(item.landingPage, item.landingPageUrl, item.destinationUrl, ad.landingUrl),
-    mediaUrl: text(item.thumbnailUrl, item.coverUrl, item.imageUrl, media.url, ad.thumbnailUrl),
-    startDate: date(item.firstSeen, item.firstSeenAt, item.createTime, item.startDate),
+    copy: text(item.description, item.adText, item.ad_text, item.caption, ad.description, ad.text),
+    cta: text(item.cta, item.callToAction, item.call_to_action, ad.cta),
+    adUrl: text(item.adUrl, item.ad_url, item.shareUrl, item.source_url, item.url, ad.url),
+    landingUrl: text(item.landingPage, item.landing_page, item.landingPageUrl, item.landing_page_url, item.destinationUrl, ad.landingUrl),
+    mediaUrl: text(item.thumbnailUrl, item.coverUrl, item.cover_url, item.imageUrl, item.video_url_hd, item.video_url, media.url, ad.thumbnailUrl),
+    startDate: date(item.firstSeen, item.firstSeenAt, item.first_seen_at, item.createTime, item.startDate, item.scraped_at),
     endDate: null,
     active: item.active !== false,
     platforms: ["TikTok"],
     offer: extractOffer(`${title} ${text(item.description, item.adText, item.caption)}`),
-    country: text(item.country, item.countryCode, country),
-    firstSeenAt: date(item.firstSeen, item.firstSeenAt, item.createTime) || observed,
+    country: text(item.country, item.countryCode, item.country_code, asArray(item.countries)[0], country),
+    firstSeenAt: date(item.firstSeen, item.firstSeenAt, item.first_seen_at, item.createTime, item.scraped_at) || observed,
     lastSeenAt: observed,
     observationCount: 1,
-    raw: boundedRaw({ ...item, _radar: { likes: number(item.likes, stats.likes), ctr: text(item.ctr, item.ctrTier, stats.ctr), industry: text(item.industry, ad.industry) } }),
+    raw: boundedRaw({ ...item, _radar: { likes: number(item.likes, stats.likes), ctr: text(item.ctr, item.ctrTier, item.ctr_tier, stats.ctr), industry: text(item.industry, item.industry_key, ad.industry) } }),
   };
 }
 
@@ -325,6 +325,7 @@ export function buildProduct(name: string, evidence: RadarEvidence[], scanAt = n
 
 function config() {
   const max = Number.parseInt(process.env.RADAR_MAX_CANDIDATES || "8", 10);
+  const timeoutSeconds = Number.parseInt(process.env.RADAR_APIFY_TIMEOUT_SECONDS || "130", 10);
   return {
     token: process.env.APIFY_TOKEN?.trim() || "",
     metaActor: process.env.APIFY_META_ACTOR_ID?.trim() || "curious_coder~facebook-ads-library-scraper",
@@ -332,6 +333,9 @@ function config() {
     countries: (process.env.RADAR_DISCOVERY_COUNTRIES || "US,GB,AU,SG,AE").split(",").map((v) => v.trim().toUpperCase()).filter(Boolean),
     market: (process.env.RADAR_MARKET_COUNTRY || "LK").trim().toUpperCase(),
     maxCandidates: Number.isFinite(max) ? Math.max(1, Math.min(25, max)) : 8,
+    actorTimeoutMs: (Number.isFinite(timeoutSeconds)
+      ? Math.max(30, Math.min(240, timeoutSeconds))
+      : 130) * 1_000,
   };
 }
 
@@ -346,9 +350,14 @@ export function radarConfiguration() {
   };
 }
 
-async function callActor(actorId: string, input: Loose, token: string): Promise<unknown[]> {
+async function callActor(
+  actorId: string,
+  input: Loose,
+  token: string,
+  timeoutMs: number
+): Promise<unknown[]> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 95_000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(
       `https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?clean=true`,
@@ -367,7 +376,13 @@ async function callActor(actorId: string, input: Loose, token: string): Promise<
     const payload = await response.json();
     return Array.isArray(payload) ? payload : asArray(asObject(payload).items ?? asObject(payload).data);
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") throw new Error(`Apify actor ${actorId} timed out after 95 seconds`);
+    if (error instanceof Error && error.name === "AbortError") {
+      const timeout = new Error(
+        `Apify actor ${actorId} timed out after ${Math.round(timeoutMs / 1_000)} seconds`
+      );
+      timeout.name = "RadarProviderTimeout";
+      throw timeout;
+    }
     throw error;
   } finally {
     clearTimeout(timer);
@@ -603,14 +618,42 @@ export async function runRadarScan(): Promise<RadarDashboard> {
   const run: RadarRun = { id: randomUUID(), status: "running", startedAt: new Date().toISOString(), completedAt: null, tiktokAds: 0, candidates: 0, metaAds: 0, error: "" };
   await saveRun(run);
   try {
+    const warnings: string[] = [];
+    const discoveryRuns = await Promise.allSettled(
+      settings.countries.map(async (country) => {
+        const rows = await callActor(settings.tiktokActor, {
+          period: "30", country, industry: "E-commerce & Shopping", objective: "Conversions",
+          adFormat: "All Formats", orderBy: "CTR", keyword: "", maxResults: 50,
+          responseFormat: "detailed", proxyConfiguration: { useApifyProxy: true },
+        }, settings.token, settings.actorTimeoutMs);
+        return rows
+          .map((row) => normalizeTikTokAd(row, country))
+          .filter((ad) => ad.title || ad.copy);
+      })
+    );
     const tiktok: RadarEvidence[] = [];
-    for (const country of settings.countries) {
-      const rows = await callActor(settings.tiktokActor, {
-        period: "30", country, industry: "All Industries", objective: "Conversions",
-        adFormat: "All Formats", orderBy: "For You", keyword: "", maxResults: 50,
-        responseFormat: "detailed", proxyConfiguration: { useApifyProxy: true },
-      }, settings.token);
-      tiktok.push(...rows.map((row) => normalizeTikTokAd(row, country)));
+    discoveryRuns.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        tiktok.push(...result.value);
+      } else {
+        const message = result.reason instanceof Error
+          ? result.reason.message
+          : "Unknown provider error";
+        warnings.push(`${settings.countries[index]} TikTok discovery failed: ${message}`);
+      }
+    });
+    if (!tiktok.length) {
+      const error = new Error(
+        warnings.length
+          ? `TikTok discovery could not return any ads. ${warnings.join(" | ")}`
+          : "TikTok discovery returned no usable product ads."
+      );
+      error.name = discoveryRuns.some(
+        (result) => result.status === "rejected" &&
+          result.reason instanceof Error &&
+          result.reason.name === "RadarProviderTimeout"
+      ) ? "RadarProviderTimeout" : "RadarProviderError";
+      throw error;
     }
     run.tiktokAds = tiktok.length;
     let candidates: string[] = [];
@@ -618,19 +661,48 @@ export async function runRadarScan(): Promise<RadarDashboard> {
     if (!candidates.length) candidates = tiktok.map(fallbackProductName).filter((name): name is string => Boolean(name));
     candidates = [...new Map(candidates.map((name) => [productKey(name), name])).values()].slice(0, settings.maxCandidates);
     run.candidates = candidates.length;
-    for (const candidate of candidates) {
-      const url = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${encodeURIComponent(settings.market)}&q=${encodeURIComponent(candidate)}&search_type=keyword_unordered&media_type=all`;
-      const rows = await callActor(settings.metaActor, {
-        urls: [{ url }], count: 100, "scrapePageAds.period": "", "scrapePageAds.activeStatus": "active",
-        "scrapePageAds.sortBy": "impressions_desc", "scrapePageAds.countryCode": settings.market,
-      }, settings.token);
-      const sourceMatches = tiktok.filter((ad) => productKey(fallbackProductName(ad) || "") === productKey(candidate));
-      const meta = rows.map((row) => normalizeMetaAd(row, candidate, settings.market));
-      run.metaAds += meta.length;
+    if (!candidates.length) {
+      const error = new Error(
+        "TikTok ads were collected, but no specific physical products could be identified."
+      );
+      error.name = "RadarProviderError";
+      throw error;
+    }
+    const validationRuns = await Promise.allSettled(
+      candidates.map(async (candidate) => {
+        const url = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${encodeURIComponent(settings.market)}&q=${encodeURIComponent(candidate)}&search_type=keyword_unordered&media_type=all`;
+        const rows = await callActor(settings.metaActor, {
+          urls: [{ url }], count: 100, "scrapePageAds.period": "", "scrapePageAds.activeStatus": "active",
+          "scrapePageAds.sortBy": "impressions_desc", "scrapePageAds.countryCode": settings.market,
+        }, settings.token, settings.actorTimeoutMs);
+        return { candidate, rows };
+      })
+    );
+    for (let index = 0; index < validationRuns.length; index += 1) {
+      const result = validationRuns[index];
+      const candidate = candidates[index];
+      const sourceMatches = tiktok.filter(
+        (ad) => productKey(fallbackProductName(ad) || "") === productKey(candidate)
+      );
+      let meta: RadarEvidence[] = [];
+      if (result.status === "fulfilled") {
+        meta = result.value.rows.map(
+          (row) => normalizeMetaAd(row, candidate, settings.market)
+        );
+        run.metaAds += meta.length;
+      } else {
+        const message = result.reason instanceof Error
+          ? result.reason.message
+          : "Unknown provider error";
+        warnings.push(`${candidate} Meta validation failed: ${message}`);
+      }
       await saveProduct(buildProduct(candidate, [...sourceMatches, ...meta]));
     }
     run.status = "completed";
     run.completedAt = new Date().toISOString();
+    run.error = warnings.length
+      ? `Partial scan completed with ${warnings.length} provider warning${warnings.length === 1 ? "" : "s"}.`
+      : "";
     await saveRun(run);
     return getRadarDashboard();
   } catch (error) {

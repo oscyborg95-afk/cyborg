@@ -29,6 +29,25 @@ test("normalizes representative nested TikTok payloads", () => {
   assert.equal(ad.platform, "tiktok");
 });
 
+test("normalizes the current TikTok Actor snake_case output", () => {
+  const ad = normalizeTikTokAd({
+    ad_id: "tt-current-1",
+    brand_name: "smart_home_shop",
+    ad_title: "Rechargeable handheld fabric cleaner",
+    cover_url: "https://example.com/cover.jpg",
+    video_url: "https://example.com/video.mp4",
+    ctr_tier: "top_10%",
+    industry_key: "label_ecommerce",
+    countries: ["US", "GB"],
+    scraped_at: "2026-07-30T10:00:00Z",
+  });
+  assert.equal(ad.title, "Rechargeable handheld fabric cleaner");
+  assert.equal(ad.advertiser, "smart_home_shop");
+  assert.equal(ad.mediaUrl, "https://example.com/cover.jpg");
+  assert.equal(ad.country, "US");
+  assert.equal(ad.raw._radar.ctr, "top_10%");
+});
+
 test("normalizes Meta aliases and preserves offer hints", () => {
   const ad = normalizeMetaAd({
     adArchiveID: "meta-1",

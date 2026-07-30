@@ -17,6 +17,10 @@ export async function GET(req: NextRequest) {
       ? 409
       : error instanceof Error && error.name === "RadarConfigurationError"
         ? 503
+        : error instanceof Error && error.name === "RadarProviderTimeout"
+          ? 504
+          : error instanceof Error && error.name === "RadarProviderError"
+            ? 502
         : 500;
     return NextResponse.json({ error: message }, { status });
   }
