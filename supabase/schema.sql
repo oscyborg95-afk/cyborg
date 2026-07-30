@@ -423,6 +423,7 @@ create unique index if not exists uq_tracking_notification_dedupe
 create table if not exists radar_scan_runs (
   id            uuid primary key,
   status        varchar not null,
+  search_query  text not null default '',
   started_at    timestamptz not null,
   completed_at  timestamptz,
   tiktok_ads    int not null default 0,
@@ -430,6 +431,8 @@ create table if not exists radar_scan_runs (
   meta_ads      int not null default 0,
   error         text not null default ''
 );
+alter table radar_scan_runs
+  add column if not exists search_query text not null default '';
 
 create table if not exists radar_products (
   product_key   varchar primary key,

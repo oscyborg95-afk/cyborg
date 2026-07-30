@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RadarDashboard, RadarPlatform, RadarProduct, RadarStage } from "@/lib/product-radar";
+import { validateRadarKeyword } from "@/lib/radar-keyword";
 import { Button, Card, ProgressRing } from "../components/ui";
 
 const stageMeta: Record<RadarStage, { label: string; classes: string; dot: string }> = {
@@ -143,7 +144,9 @@ export default function ProductRadarPage() {
   const [error, setError] = useState("");
   const [scanning, setScanning] = useState(false);
   const [selected, setSelected] = useState<RadarProduct | null>(null);
-  const [query, setQuery] = useState("");
+  const [scanKeyword, setScanKeyword] = useState("");
+  const [keywordTouched, setKeywordTouched] = useState(false);
+  const [filterQuery, setFilterQuery] = useState("");
   const [stage, setStage] = useState<RadarStage | "all">("all");
   const [platform, setPlatform] = useState<RadarPlatform | "all">("all");
 
@@ -154,6 +157,7 @@ export default function ProductRadarPage() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Could not load Product Radar");
       setDashboard(body);
+      setScanKeyword((current) => current || body.searchQuery || "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load Product Radar");
     }
@@ -163,14 +167,23 @@ export default function ProductRadarPage() {
     return () => window.clearTimeout(timer);
   }, [load]);
 
-  async function scanNow() {
+  async function scanNow(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setKeywordTouched(true);
+    const validation = validateRadarKeyword(scanKeyword);
+    if (!validation.ok || scanning || !dashboard?.configured) return;
     setScanning(true);
     setError("");
     try {
-      const response = await fetch("/api/radar/scan", { method: "POST" });
+      const response = await fetch("/api/radar/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyword: validation.keyword }),
+      });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Scan failed");
       setDashboard(body);
+      setScanKeyword(body.searchQuery || validation.keyword);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
     } finally {
@@ -178,11 +191,13 @@ export default function ProductRadarPage() {
     }
   }
 
+  const keywordValidation = validateRadarKeyword(scanKeyword);
+  const keywordError = keywordTouched && !keywordValidation.ok ? keywordValidation.error : "";
   const filtered = useMemo(() => (dashboard?.products || []).filter((product) =>
     (stage === "all" || product.stage === stage) &&
     (platform === "all" || product.platforms.includes(platform)) &&
-    product.name.toLowerCase().includes(query.toLowerCase())
-  ), [dashboard, query, stage, platform]);
+    product.name.toLowerCase().includes(filterQuery.toLowerCase())
+  ), [dashboard, filterQuery, stage, platform]);
   const top = dashboard?.products[0];
 
   if (!dashboard && !error) {
@@ -200,20 +215,61 @@ export default function ProductRadarPage() {
             <span className="font-display text-xs font-extrabold uppercase tracking-[0.18em] text-frog-dark">Product intelligence</span>
             <span className={`rounded-md border px-2 py-0.5 font-display text-[10px] font-extrabold uppercase ${dashboard.dataMode === "live" ? "border-frog/30 bg-pond text-frog-dark" : "border-gold/50 bg-flame-tint text-flame-dark"}`}>{dashboard.dataMode === "demo" ? "Demo data" : dashboard.dataMode}</span>
           </div>
-          <h1 className="font-display text-3xl font-extrabold leading-tight text-ink">Sri Lanka Cosmetics Radar</h1>
+          <h1 className="font-display text-3xl font-extrabold leading-tight text-ink">Sri Lanka Product Radar</h1>
           <p className="mt-1 text-sm font-bold text-ink-soft">
-            {dashboard.focus.category} · Meta ads shown in {dashboard.focus.marketCountry}
+            Current search: <span className="text-ink">&ldquo;{dashboard.searchQuery}&rdquo;</span> · Meta ads shown in {dashboard.focus.marketCountry}
             {dashboard.focus.includeTikTok ? " · International TikTok enrichment on" : ""}
           </p>
           <p className="mt-1 text-xs font-bold text-ink-soft">{dashboard.lastRun?.status === "completed" ? `Last scanned ${new Date(dashboard.lastRun.completedAt!).toLocaleString("en-LK")}` : "No successful live scan yet"} · {dashboard.nextScan}</p>
         </div>
-        <Button onClick={scanNow} disabled={scanning || !dashboard.configured} className="w-full sm:w-auto">{scanning ? "Scanning Apify…" : "⌁ Scan now"}</Button>
       </header>
+
+      <Card className="border-sky/35 bg-[linear-gradient(105deg,var(--color-surface)_0%,var(--color-sky-tint)_100%)] p-4 sm:p-5">
+        <form onSubmit={scanNow} noValidate>
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border-2 border-sky/30 bg-surface text-xl shadow-sm" aria-hidden="true">⌁</span>
+            <div>
+              <label htmlFor="radar-keyword" className="font-display text-lg font-extrabold text-ink">What should Radar investigate?</label>
+              <p className="text-xs font-bold text-ink-soft">This search replaces the current shortlist with fresh local evidence.</p>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-start">
+            <div>
+              <input
+                id="radar-keyword"
+                name="keyword"
+                value={scanKeyword}
+                minLength={2}
+                maxLength={80}
+                onChange={(event) => {
+                  setScanKeyword(event.target.value);
+                  setKeywordTouched(true);
+                }}
+                onBlur={() => setKeywordTouched(true)}
+                placeholder="e.g. face serum or kitchen gadgets"
+                aria-invalid={Boolean(keywordError)}
+                aria-describedby={keywordError ? "radar-keyword-error radar-keyword-hint" : "radar-keyword-hint"}
+                className="min-h-12 w-full rounded-xl border-2 border-cardline bg-surface px-4 py-2.5 text-base font-extrabold text-ink outline-none transition placeholder:text-ink-soft/70 focus:border-frog focus:ring-3 focus:ring-frog/20 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={scanning}
+              />
+              <p id="radar-keyword-hint" className="mt-1.5 text-xs font-bold text-ink-soft">Use one product or niche phrase, 2–80 characters.</p>
+              {keywordError && <p id="radar-keyword-error" role="alert" className="mt-1 text-sm font-extrabold text-danger-ink">{keywordError}</p>}
+            </div>
+            <span className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border-2 border-sky/35 bg-sky-tint px-3 font-display text-sm font-extrabold text-sky-dark">
+              <span className="h-2.5 w-2.5 rounded-full bg-frog" aria-hidden="true" />
+              Sri Lanka only
+            </span>
+            <Button type="submit" disabled={!keywordValidation.ok || scanning || !dashboard.configured} className="min-h-12 w-full sm:w-auto">
+              {scanning ? "Scanning Sri Lanka…" : "Search Sri Lanka"}
+            </Button>
+          </div>
+        </form>
+      </Card>
 
       {!dashboard.configured && <Card className="flex flex-col gap-3 border-gold/50 bg-flame-tint p-4 sm:flex-row sm:items-center"><div className="text-2xl" aria-hidden="true">🔑</div><div className="flex-1"><p className="font-display font-extrabold text-ink">Connect the live signal</p><p className="text-sm font-bold text-ink-soft">Add <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs text-ink">APIFY_TOKEN</code> to your server environment. The examples below are clearly marked demo data.</p></div><a href="https://console.apify.com/settings/integrations" target="_blank" rel="noreferrer" className="font-display text-sm font-extrabold text-flame-dark underline decoration-2 underline-offset-2">Open Apify token settings ↗</a></Card>}
       {dashboard.lastRun?.status === "completed" && dashboard.lastRun.error && (
         <div role="status" className="rounded-xl border-2 border-gold/50 bg-flame-tint px-4 py-3 font-bold text-ink">
-          The latest scan completed with partial provider coverage. Some countries or competitor results may be missing; the available evidence is still shown below.
+          The latest scan completed with partial provider coverage. Some optional enrichment or competitor results may be missing; the available Sri Lankan evidence is still shown below.
         </div>
       )}
       {error && <div role="alert" className="rounded-xl border-2 border-danger-line bg-danger-bg px-4 py-3 font-bold text-danger-ink">{error}</div>}
@@ -233,7 +289,7 @@ export default function ProductRadarPage() {
             <RadarOrbit score={top.score} />
           </div>
         </Card>
-      ) : <Card className="p-8 text-center"><div className="text-4xl" aria-hidden="true">📡</div><h2 className="mt-2 font-display text-xl font-extrabold text-ink">No signals yet</h2><p className="mt-1 text-sm font-bold text-ink-soft">Run the first scan to discover and validate product candidates automatically.</p></Card>}
+      ) : <Card className="p-8 text-center"><div className="text-4xl" aria-hidden="true">📡</div><h2 className="mt-2 font-display text-xl font-extrabold text-ink">Aim Radar at a market</h2><p className="mt-1 text-sm font-bold text-ink-soft">Enter a product or niche above to discover Sri Lankan ads and competitor signals.</p></Card>}
 
       <section aria-label="Radar summary" className="grid grid-cols-2 divide-x divide-y divide-cardline overflow-hidden rounded-2xl border-2 border-cardline bg-surface sm:grid-cols-4 sm:divide-y-0">
         {[["Candidates", dashboard.summary.candidates, "📦"], ["Advertisers", dashboard.summary.advertisers, "🕵️"], ["Active creatives", dashboard.summary.activeCreatives, "🎬"], ["Emerging picks", dashboard.summary.emergingPicks, "🌱"]].map(([label, value, icon]) => <div key={String(label)} className="p-3 sm:p-4"><p className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">{icon} {label}</p><p className="font-display text-2xl font-extrabold text-ink">{value}</p></div>)}
@@ -242,8 +298,8 @@ export default function ProductRadarPage() {
       <section>
         <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
           <h2 className="flex-1 font-display text-xl font-extrabold text-ink">Ranked discoveries</h2>
-          <label className="sr-only" htmlFor="radar-search">Search products</label>
-          <input id="radar-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search products…" className="rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-sm font-bold text-ink outline-none focus:border-frog sm:w-48" />
+          <label className="sr-only" htmlFor="radar-filter">Filter current shortlist</label>
+          <input id="radar-filter" value={filterQuery} onChange={(e) => setFilterQuery(e.target.value)} placeholder="Filter this shortlist…" className="rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-sm font-bold text-ink outline-none focus:border-frog sm:w-52" />
           <select aria-label="Filter by stage" value={stage} onChange={(e) => setStage(e.target.value as RadarStage | "all")} className="rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-sm font-bold text-ink outline-none focus:border-frog"><option value="all">All stages</option>{Object.entries(stageMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select>
           <select aria-label="Filter by platform" value={platform} onChange={(e) => setPlatform(e.target.value as RadarPlatform | "all")} className="rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-sm font-bold text-ink outline-none focus:border-frog"><option value="all">All platforms</option><option value="tiktok">TikTok</option><option value="meta">Meta</option></select>
         </div>
@@ -255,7 +311,7 @@ export default function ProductRadarPage() {
               <div className="col-span-2 flex items-center justify-between border-t border-cardline pt-2 sm:col-span-1 sm:block sm:border-0 sm:pt-0 sm:text-right"><span className="font-display text-3xl font-extrabold text-ink">{product.score}</span><span className="ml-1 font-display text-[10px] font-extrabold uppercase text-ink-soft sm:block">signal score</span><span className="ml-auto font-display text-sm font-extrabold text-frog-dark sm:ml-0 sm:mt-2 sm:block">View evidence →</span></div>
             </button>
           ))}
-          {!filtered.length && <Card className="p-6 text-center"><p className="font-display font-extrabold text-ink">No products match those filters.</p><button className="mt-2 text-sm font-extrabold text-frog-dark underline" onClick={() => { setQuery(""); setStage("all"); setPlatform("all"); }}>Clear filters</button></Card>}
+          {!filtered.length && <Card className="p-6 text-center"><p className="font-display font-extrabold text-ink">No products match those filters.</p><button className="mt-2 text-sm font-extrabold text-frog-dark underline" onClick={() => { setFilterQuery(""); setStage("all"); setPlatform("all"); }}>Clear filters</button></Card>}
         </div>
       </section>
       <p className="pb-2 text-center text-xs font-bold text-ink-soft">Product Radar scores public advertising signals—not sales, profit, CPA, ROAS, spend, or guaranteed product performance.</p>

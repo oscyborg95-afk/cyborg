@@ -14,7 +14,7 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 | `/customers` | Customer 360 directory with lifetime value, delivery history, AI memory, language, tags, notes, and per-customer autonomy controls |
 | `/ai` | Autonomous salesperson control room — off/draft/auto mode, knowledge, tone, confidence threshold, quiet hours, and full decision audit |
 | `/broadcast` | Rate-limited WhatsApp blast to past customers (launches/restocks) |
-| `/radar` | **Product Radar** — automated Sri Lankan cosmetics discovery, Meta competitor tracking, ranked public-signal shortlist and creative evidence |
+| `/radar` | **Product Radar** — on-demand Sri Lankan product discovery, Meta competitor tracking, ranked public-signal shortlist and creative evidence |
 | `/analytics` | High-score board — levels, dispatch streak, net worth — plus return rates by district/product and an ad-spend/ROAS tracker |
 | `/login` | Operator login (only when `APP_PASSWORD` is set) |
 
@@ -40,13 +40,20 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 
 Set `APIFY_TOKEN` to enable `/radar`; create one in
 [Apify token settings](https://console.apify.com/settings/integrations). The
-defaults search active Meta ads shown in Sri Lanka across preset cosmetics,
-skincare, makeup, and hair-care themes, identify up to eight product candidates,
-collect their local competitors, and run daily at 05:30 Asia/Colombo through the
-authenticated `/api/radar/cron` route. International TikTok enrichment is off by
-default because TikTok Creative Center does not expose Sri Lanka as a country
-filter. Override the category, automatic seed themes, candidate cap, or Actor IDs
-with the `RADAR_*` / `APIFY_*_ACTOR_ID` variables in `.env.local.example`.
+operator can then type any product or niche directly on the Radar page—for
+example `face serum`, `kitchen gadgets`, or `car accessories`. Every search is
+fixed to active Meta ads shown in Sri Lanka, identifies up to eight product
+candidates, and replaces the prior shortlist with their local competitor
+evidence.
+
+The authenticated `/api/radar/cron` route runs daily at 05:30 Asia/Colombo and
+repeats the most recent completed search. Before the first completed manual
+search, it safely defaults to `cosmetics`. International TikTok enrichment is
+optional and off by default because TikTok Creative Center does not expose Sri
+Lanka as a country filter; when enabled, it supplements rather than replaces
+Sri Lankan Meta evidence. Candidate caps, enrichment countries, timeouts, and
+Actor IDs remain configurable through the `RADAR_*` /
+`APIFY_*_ACTOR_ID` variables in `.env.local.example`.
 
 Without a token and live scan, the page shows an explicitly labelled demo
 shortlist. Radar scores public advertising evidence only; it does not claim

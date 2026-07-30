@@ -4,14 +4,18 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   buildProduct,
+  buildSriLankaMetaAdLibraryUrl,
   evidenceKey,
   fallbackProductName,
   normalizeMetaAd,
   normalizeTikTokAd,
   productKey,
   radarConfiguration,
+  radarRunFromRow,
   scoreOpportunity,
+  validateRadarKeyword,
 } from "../lib/product-radar.ts";
+import { parseRadarScanPayload } from "../lib/radar-keyword.ts";
 
 test("normalizes representative nested TikTok payloads", () => {
   const ad = normalizeTikTokAd({
@@ -62,6 +66,51 @@ test("normalizes Meta aliases and preserves offer hints", () => {
   assert.deepEqual(ad.platforms, ["Facebook", "Instagram"]);
 });
 
+test("validates and normalizes one Radar search phrase", () => {
+  assert.deepEqual(validateRadarKeyword("  face serum  "), { ok: true, keyword: "face serum" });
+  assert.deepEqual(validateRadarKeyword("kitchen, gadgets"), { ok: true, keyword: "kitchen, gadgets" });
+  assert.equal(validateRadarKeyword("").ok, false);
+  assert.equal(validateRadarKeyword("x").ok, false);
+  assert.equal(validateRadarKeyword("x".repeat(81)).ok, false);
+  assert.equal(validateRadarKeyword("face\nserum").ok, false);
+  assert.equal(validateRadarKeyword("\nface serum").ok, false);
+});
+
+test("scan payload validation rejects malformed input and country overrides", () => {
+  assert.equal(parseRadarScanPayload(null).ok, false);
+  assert.equal(parseRadarScanPayload({}).ok, false);
+  assert.equal(parseRadarScanPayload({ keyword: "hair growth oil", country: "US" }).ok, false);
+  assert.deepEqual(
+    parseRadarScanPayload({ keyword: "  hair growth oil  " }),
+    { ok: true, keyword: "hair growth oil" }
+  );
+});
+
+test("Meta discovery is permanently scoped to Sri Lanka", () => {
+  const url = new URL(buildSriLankaMetaAdLibraryUrl("car accessories, detailing"));
+  assert.equal(url.searchParams.get("country"), "LK");
+  assert.equal(url.searchParams.get("q"), "car accessories, detailing");
+  const ad = normalizeMetaAd({ id: "foreign", country: "US", title: "Car vacuum" }, "car vacuum", "US");
+  assert.equal(ad.country, "LK");
+});
+
+test("Radar run rows serialize their normalized search query", () => {
+  const run = radarRunFromRow({
+    id: "run-1",
+    status: "completed",
+    search_query: "face serum",
+    started_at: "2026-07-31T01:00:00.000Z",
+    completed_at: "2026-07-31T01:02:00.000Z",
+    tiktok_ads: 2,
+    candidates: 4,
+    meta_ads: 12,
+    error: "",
+  });
+  assert.equal(run.searchQuery, "face serum");
+  assert.equal(run.status, "completed");
+  assert.equal(run.metaAds, 12);
+});
+
 test("score stays bounded and stages saturation explicitly", () => {
   assert.deepEqual(scoreOpportunity({
     competitorCount: 99, activeAdCount: 200, creativeVariants: 100,
@@ -86,18 +135,18 @@ test("fallback candidate extraction is conservative and config reports missing t
   const name = fallbackProductName(normalizeTikTokAd({ title: "Rechargeable portable fabric cleaner", description: "Remove stains fast" }));
   assert.match(name || "", /Rechargeable/i);
   const previous = process.env.APIFY_TOKEN;
-  const previousCategory = process.env.RADAR_CATEGORY;
+  const previousMarket = process.env.RADAR_MARKET_COUNTRY;
   const previousIncludeTikTok = process.env.RADAR_INCLUDE_TIKTOK;
   delete process.env.APIFY_TOKEN;
-  delete process.env.RADAR_CATEGORY;
+  process.env.RADAR_MARKET_COUNTRY = "US";
   delete process.env.RADAR_INCLUDE_TIKTOK;
   const configuration = radarConfiguration();
   assert.equal(configuration.configured, false);
   assert.equal(configuration.marketCountry, "LK");
-  assert.equal(configuration.category, "Cosmetics & skincare");
   assert.equal(configuration.includeTikTok, false);
   if (previous) process.env.APIFY_TOKEN = previous;
-  if (previousCategory) process.env.RADAR_CATEGORY = previousCategory;
+  if (previousMarket) process.env.RADAR_MARKET_COUNTRY = previousMarket;
+  else delete process.env.RADAR_MARKET_COUNTRY;
   if (previousIncludeTikTok) process.env.RADAR_INCLUDE_TIKTOK = previousIncludeTikTok;
 });
 
@@ -106,7 +155,7 @@ test("unreachable optional database still returns a usable demo dashboard", asyn
   const script = `
     const { getRadarDashboard } = await import("./lib/product-radar.ts");
     const result = await getRadarDashboard();
-    process.stdout.write(JSON.stringify({ mode: result.dataMode, count: result.products.length }));
+    process.stdout.write(JSON.stringify({ mode: result.dataMode, count: result.products.length, query: result.searchQuery }));
   `;
   const { stdout } = await run(process.execPath, [
     "--experimental-strip-types",
@@ -122,5 +171,5 @@ test("unreachable optional database still returns a usable demo dashboard", asyn
     },
     timeout: 12_000,
   });
-  assert.deepEqual(JSON.parse(stdout), { mode: "demo", count: 3 });
+  assert.deepEqual(JSON.parse(stdout), { mode: "demo", count: 3, query: "cosmetics" });
 });

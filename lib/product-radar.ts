@@ -1,6 +1,19 @@
 import { createHash, randomUUID } from "crypto";
 import { googleGenerateContentRequest } from "./google-genai.ts";
 import { queryDatabase, usingSupabase } from "./db.ts";
+import {
+  buildSriLankaMetaAdLibraryUrl,
+  DEFAULT_RADAR_KEYWORD,
+  RADAR_COUNTRY,
+  validateRadarKeyword,
+} from "./radar-keyword.ts";
+
+export {
+  buildSriLankaMetaAdLibraryUrl,
+  DEFAULT_RADAR_KEYWORD,
+  RADAR_COUNTRY,
+  validateRadarKeyword,
+} from "./radar-keyword.ts";
 
 export type RadarStage = "emerging" | "validated" | "scaling" | "saturated" | "watch";
 export type RadarPlatform = "tiktok" | "meta";
@@ -54,6 +67,7 @@ export interface RadarProduct {
 export interface RadarRun {
   id: string;
   status: "running" | "completed" | "failed";
+  searchQuery: string;
   startedAt: string;
   completedAt: string | null;
   tiktokAds: number;
@@ -68,9 +82,9 @@ export interface RadarDashboard {
   configurationMessage: string;
   focus: {
     marketCountry: string;
-    category: string;
     includeTikTok: boolean;
   };
+  searchQuery: string;
   lastRun: RadarRun | null;
   nextScan: string;
   summary: {
@@ -189,7 +203,8 @@ export function normalizeTikTokAd(input: unknown, country = ""): RadarEvidence {
   };
 }
 
-export function normalizeMetaAd(input: unknown, product = "", country = "LK"): RadarEvidence {
+export function normalizeMetaAd(input: unknown, product = "", _country = RADAR_COUNTRY): RadarEvidence {
+  void _country;
   const item = asObject(input);
   const snapshot = nested(item, "snapshot", "adArchive", "ad");
   const page = nested(item, "page", "advertiser", "pageInfo");
@@ -221,7 +236,7 @@ export function normalizeMetaAd(input: unknown, product = "", country = "LK"): R
     active: item.isActive !== false && item.active !== false && (!end || new Date(end) > new Date()),
     platforms: platformValues.length ? platformValues : ["Facebook"],
     offer: extractOffer(`${title} ${copy}`),
-    country: text(item.country, item.countryCode, country),
+    country: RADAR_COUNTRY,
     firstSeenAt: start || observed,
     lastSeenAt: observed,
     observationCount: 1,
@@ -297,7 +312,7 @@ export function buildProduct(name: string, evidence: RadarEvidence[], scanAt = n
     oldestActiveDays,
     crossPlatform,
     momentum,
-    localPresence: meta.some((item) => item.country === (process.env.RADAR_MARKET_COUNTRY || "LK")),
+    localPresence: meta.some((item) => item.country === RADAR_COUNTRY),
   };
   const { score, stage } = scoreOpportunity(scoreData);
   const reasons = [
@@ -331,21 +346,11 @@ export function buildProduct(name: string, evidence: RadarEvidence[], scanAt = n
 function config() {
   const max = Number.parseInt(process.env.RADAR_MAX_CANDIDATES || "8", 10);
   const timeoutSeconds = Number.parseInt(process.env.RADAR_APIFY_TIMEOUT_SECONDS || "130", 10);
-  const localSeedKeywords = (
-    process.env.RADAR_META_SEED_KEYWORDS ||
-    "cosmetics,skincare,face serum,skin cream,makeup,hair care,beauty products"
-  )
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
   return {
     token: process.env.APIFY_TOKEN?.trim() || "",
     metaActor: process.env.APIFY_META_ACTOR_ID?.trim() || "curious_coder~facebook-ads-library-scraper",
     tiktokActor: process.env.APIFY_TIKTOK_ACTOR_ID?.trim() || "khadinakbar~tiktok-ads-scraper",
     countries: (process.env.RADAR_DISCOVERY_COUNTRIES || "US,GB,AU,SG,AE").split(",").map((v) => v.trim().toUpperCase()).filter(Boolean),
-    market: (process.env.RADAR_MARKET_COUNTRY || "LK").trim().toUpperCase(),
-    category: process.env.RADAR_CATEGORY?.trim() || "Cosmetics & skincare",
-    localSeedKeywords,
     includeTikTok: process.env.RADAR_INCLUDE_TIKTOK?.trim().toLowerCase() === "true",
     maxCandidates: Number.isFinite(max) ? Math.max(1, Math.min(25, max)) : 8,
     actorTimeoutMs: (Number.isFinite(timeoutSeconds)
@@ -359,9 +364,7 @@ export function radarConfiguration() {
   return {
     configured: Boolean(value.token),
     discoveryCountries: value.countries,
-    marketCountry: value.market,
-    category: value.category,
-    localSeedKeywords: value.localSeedKeywords,
+    marketCountry: RADAR_COUNTRY,
     includeTikTok: value.includeTikTok,
     maxCandidates: value.maxCandidates,
     message: value.token ? "" : "Add APIFY_TOKEN to enable live daily scans.",
@@ -434,8 +437,11 @@ async function ensureSchema() {
   await queryDatabase(`create table if not exists radar_scan_runs (
     id uuid primary key, status varchar not null, started_at timestamptz not null,
     completed_at timestamptz, tiktok_ads int not null default 0, candidates int not null default 0,
-    meta_ads int not null default 0, error text not null default ''
+    meta_ads int not null default 0, error text not null default '', search_query text not null default ''
   )`);
+  await queryDatabase(
+    "alter table radar_scan_runs add column if not exists search_query text not null default ''"
+  );
   await queryDatabase(`create table if not exists radar_products (
     product_key varchar primary key, name varchar not null, score int not null, stage varchar not null,
     metrics jsonb not null default '{}'::jsonb, reasons jsonb not null default '[]'::jsonb,
@@ -475,11 +481,12 @@ async function saveRun(run: RadarRun) {
   try {
     await ensureSchema();
     await queryDatabase(
-      `insert into radar_scan_runs (id,status,started_at,completed_at,tiktok_ads,candidates,meta_ads,error)
-       values ($1,$2,$3,$4,$5,$6,$7,$8)
+      `insert into radar_scan_runs (id,status,search_query,started_at,completed_at,tiktok_ads,candidates,meta_ads,error)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        on conflict (id) do update set status=excluded.status, completed_at=excluded.completed_at,
-       tiktok_ads=excluded.tiktok_ads,candidates=excluded.candidates,meta_ads=excluded.meta_ads,error=excluded.error`,
-      [run.id, run.status, run.startedAt, run.completedAt, run.tiktokAds, run.candidates, run.metaAds, run.error]
+       search_query=excluded.search_query,tiktok_ads=excluded.tiktok_ads,candidates=excluded.candidates,
+       meta_ads=excluded.meta_ads,error=excluded.error`,
+      [run.id, run.status, run.searchQuery, run.startedAt, run.completedAt, run.tiktokAds, run.candidates, run.metaAds, run.error]
     );
   } catch (error) {
     logDatabaseFallback("run write", error);
@@ -570,23 +577,68 @@ function demoProducts(): RadarProduct[] {
   ].sort((a, b) => b.score - a.score);
 }
 
+export function radarRunFromRow(row: Loose): RadarRun {
+  return {
+    id: text(row.id),
+    status: text(row.status) as RadarRun["status"],
+    searchQuery: text(row.search_query),
+    startedAt: text(row.started_at),
+    completedAt: text(row.completed_at) || null,
+    tiktokAds: number(row.tiktok_ads),
+    candidates: number(row.candidates),
+    metaAds: number(row.meta_ads),
+    error: text(row.error),
+  };
+}
+
+export async function getLatestRadarKeyword(): Promise<string> {
+  const latestMemoryRun = memoryRuns.find(
+    (run) => run.status === "completed" && validateRadarKeyword(run.searchQuery).ok
+  );
+
+  if (!canUseDatabase()) {
+    return latestMemoryRun?.searchQuery || DEFAULT_RADAR_KEYWORD;
+  }
+
+  try {
+    await ensureSchema();
+    const result = await queryDatabase<Loose>(
+      `select search_query from radar_scan_runs
+       where status = 'completed' and search_query <> ''
+       order by completed_at desc nulls last, started_at desc
+       limit 1`
+    );
+    const validation = validateRadarKeyword(result.rows[0]?.search_query);
+    return validation.ok
+      ? validation.keyword
+      : latestMemoryRun?.searchQuery || DEFAULT_RADAR_KEYWORD;
+  } catch (error) {
+    logDatabaseFallback("last search read", error);
+    return latestMemoryRun?.searchQuery || DEFAULT_RADAR_KEYWORD;
+  }
+}
+
 export async function getRadarDashboard(): Promise<RadarDashboard> {
   const configured = radarConfiguration();
   let products: RadarProduct[] = [];
   let lastRun: RadarRun | null = null;
+  let dashboardSearchQuery = DEFAULT_RADAR_KEYWORD;
   if (!canUseDatabase()) {
     products = [...memoryProducts.values()].map((product) => ({
       ...product,
       evidence: [...memoryEvidence.values()].filter((item) => item.productKey === product.key),
     })).sort((a, b) => b.score - a.score);
     lastRun = memoryRuns[0] || null;
+    dashboardSearchQuery = memoryRuns.find(
+      (run) => run.status === "completed" && validateRadarKeyword(run.searchQuery).ok
+    )?.searchQuery || DEFAULT_RADAR_KEYWORD;
   } else {
     try {
       await ensureSchema();
       const [productRows, evidenceRows, runRows] = await Promise.all([
         queryDatabase<Loose>("select * from radar_products order by score desc limit 50"),
         queryDatabase<Loose>("select * from radar_ads order by last_seen_at desc limit 500"),
-        queryDatabase<Loose>("select * from radar_scan_runs order by started_at desc limit 1"),
+        queryDatabase<Loose>("select * from radar_scan_runs order by started_at desc limit 50"),
       ]);
       const evidence = evidenceRows.rows.map((row) => {
       const creative = asObject(row.creative);
@@ -610,8 +662,11 @@ export async function getRadarDashboard(): Promise<RadarDashboard> {
         lastSeenAt: text(row.last_seen_at), scanAt: text(row.scan_at), evidence: evidence.filter((item) => item.productKey === row.product_key),
         };
       });
-      const row = runRows.rows[0];
-      if (row) lastRun = { id: text(row.id), status: text(row.status) as RadarRun["status"], startedAt: text(row.started_at), completedAt: text(row.completed_at) || null, tiktokAds: number(row.tiktok_ads), candidates: number(row.candidates), metaAds: number(row.meta_ads), error: text(row.error) };
+      const runs = runRows.rows.map(radarRunFromRow);
+      lastRun = runs[0] || null;
+      dashboardSearchQuery = runs.find(
+        (run) => run.status === "completed" && validateRadarKeyword(run.searchQuery).ok
+      )?.searchQuery || DEFAULT_RADAR_KEYWORD;
     } catch (error) {
       logDatabaseFallback("dashboard read", error);
       products = [...memoryProducts.values()].map((product) => ({
@@ -619,6 +674,9 @@ export async function getRadarDashboard(): Promise<RadarDashboard> {
         evidence: [...memoryEvidence.values()].filter((item) => item.productKey === product.key),
       })).sort((a, b) => b.score - a.score);
       lastRun = memoryRuns[0] || null;
+      dashboardSearchQuery = memoryRuns.find(
+        (run) => run.status === "completed" && validateRadarKeyword(run.searchQuery).ok
+      )?.searchQuery || DEFAULT_RADAR_KEYWORD;
     }
   }
   const live = Boolean(lastRun?.status === "completed" && products.length);
@@ -629,10 +687,10 @@ export async function getRadarDashboard(): Promise<RadarDashboard> {
     configured: configured.configured,
     configurationMessage: configured.message,
     focus: {
-      marketCountry: configured.marketCountry,
-      category: configured.category,
+      marketCountry: RADAR_COUNTRY,
       includeTikTok: configured.includeTikTok,
     },
+    searchQuery: dashboardSearchQuery,
     lastRun,
     nextScan: "Daily at 5:30 AM Colombo time",
     summary: {
@@ -644,8 +702,16 @@ export async function getRadarDashboard(): Promise<RadarDashboard> {
   };
 }
 
-export async function runRadarScan(): Promise<RadarDashboard> {
+export async function runRadarScan(keyword?: string): Promise<RadarDashboard> {
   const settings = config();
+  const requestedKeyword = keyword ?? await getLatestRadarKeyword();
+  const keywordValidation = validateRadarKeyword(requestedKeyword);
+  if (!keywordValidation.ok) {
+    const error = new Error(keywordValidation.error);
+    error.name = "RadarValidationError";
+    throw error;
+  }
+  const searchQuery = keywordValidation.keyword;
   if (!settings.token) {
     const error = new Error("APIFY_TOKEN is not configured");
     error.name = "RadarConfigurationError";
@@ -657,53 +723,51 @@ export async function runRadarScan(): Promise<RadarDashboard> {
     throw error;
   }
   g.__radarScanRunning = true;
-  const run: RadarRun = { id: randomUUID(), status: "running", startedAt: new Date().toISOString(), completedAt: null, tiktokAds: 0, candidates: 0, metaAds: 0, error: "" };
+  const run: RadarRun = { id: randomUUID(), status: "running", searchQuery, startedAt: new Date().toISOString(), completedAt: null, tiktokAds: 0, candidates: 0, metaAds: 0, error: "" };
   await saveRun(run);
   try {
     const warnings: string[] = [];
-    const localDiscoveryRuns = await Promise.allSettled(
-      settings.localSeedKeywords.map(async (keyword) => {
-        const url = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${encodeURIComponent(settings.market)}&q=${encodeURIComponent(keyword)}&search_type=keyword_unordered&media_type=all`;
-        const rows = await callActor(settings.metaActor, {
-          urls: [{ url }],
-          count: 100,
-          "scrapePageAds.period": "",
-          "scrapePageAds.activeStatus": "active",
-          "scrapePageAds.sortBy": "impressions_desc",
-          "scrapePageAds.countryCode": settings.market,
-        }, settings.token, settings.actorTimeoutMs);
-        return rows
-          .map((row) => normalizeMetaAd(row, keyword, settings.market))
-          .filter((ad) => ad.title || ad.copy);
-      })
-    );
-    const localAds: RadarEvidence[] = [];
-    localDiscoveryRuns.forEach((result, index) => {
-      if (result.status === "fulfilled") {
-        localAds.push(...result.value);
-      } else {
-        const message = result.reason instanceof Error
-          ? result.reason.message
-          : "Unknown provider error";
-        warnings.push(
-          `"${settings.localSeedKeywords[index]}" Sri Lanka search failed: ${message}`
-        );
-      }
-    });
+    const metaDiscoveryUrl = buildSriLankaMetaAdLibraryUrl(searchQuery);
+    let localAds: RadarEvidence[] = [];
+    try {
+      const rows = await callActor(settings.metaActor, {
+        urls: [{ url: metaDiscoveryUrl }],
+        count: 100,
+        "scrapePageAds.period": "",
+        "scrapePageAds.activeStatus": "active",
+        "scrapePageAds.sortBy": "impressions_desc",
+        "scrapePageAds.countryCode": RADAR_COUNTRY,
+      }, settings.token, settings.actorTimeoutMs);
+      localAds = rows
+        .map((row) => normalizeMetaAd(row, searchQuery))
+        .filter((ad) => ad.title || ad.copy);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown provider error";
+      const discoveryError = new Error(`"${searchQuery}" Sri Lanka search failed: ${message}`);
+      discoveryError.name = error instanceof Error && error.name === "RadarProviderTimeout"
+        ? "RadarProviderTimeout"
+        : "RadarProviderError";
+      throw discoveryError;
+    }
     const dedupedLocalAds = [
       ...new Map(
         localAds.map((ad) => [evidenceKey(ad.platform, ad.sourceId), ad])
       ).values(),
     ];
     run.metaAds = dedupedLocalAds.length;
+    if (!dedupedLocalAds.length) {
+      const error = new Error(`Sri Lanka search for "${searchQuery}" returned no usable ads.`);
+      error.name = "RadarProviderError";
+      throw error;
+    }
 
     const tiktok: RadarEvidence[] = [];
     if (settings.includeTikTok) {
       const tiktokRuns = await Promise.allSettled(
         settings.countries.map(async (country) => {
           const rows = await callActor(settings.tiktokActor, {
-            period: "30", country, industry: "Beauty & Personal Care", objective: "Conversions",
-            adFormat: "All Formats", orderBy: "CTR", keyword: "", maxResults: 50,
+            period: "30", country, industry: "", objective: "Conversions",
+            adFormat: "All Formats", orderBy: "CTR", keyword: searchQuery, maxResults: 50,
             responseFormat: "detailed", proxyConfiguration: { useApifyProxy: true },
           }, settings.token, settings.actorTimeoutMs);
           return rows
@@ -726,19 +790,6 @@ export async function runRadarScan(): Promise<RadarDashboard> {
     }
 
     const discoveryEvidence = [...dedupedLocalAds, ...tiktok];
-    if (!discoveryEvidence.length) {
-      const error = new Error(
-        warnings.length
-          ? `Sri Lanka cosmetics discovery could not return any ads. ${warnings.join(" | ")}`
-          : "Sri Lanka cosmetics discovery returned no usable ads."
-      );
-      error.name = localDiscoveryRuns.some(
-        (result) => result.status === "rejected" &&
-          result.reason instanceof Error &&
-          result.reason.name === "RadarProviderTimeout"
-      ) ? "RadarProviderTimeout" : "RadarProviderError";
-      throw error;
-    }
     run.tiktokAds = tiktok.length;
     let candidates: string[] = [];
     try { candidates = await extractCandidatesWithGemini(discoveryEvidence); } catch {}
@@ -751,17 +802,17 @@ export async function runRadarScan(): Promise<RadarDashboard> {
     run.candidates = candidates.length;
     if (!candidates.length) {
       const error = new Error(
-        "Sri Lankan cosmetics ads were collected, but no specific physical products could be identified."
+        `Sri Lankan ads for "${searchQuery}" were collected, but no specific physical products could be identified.`
       );
       error.name = "RadarProviderError";
       throw error;
     }
     const validationRuns = await Promise.allSettled(
       candidates.map(async (candidate) => {
-        const url = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${encodeURIComponent(settings.market)}&q=${encodeURIComponent(candidate)}&search_type=keyword_unordered&media_type=all`;
+        const url = buildSriLankaMetaAdLibraryUrl(candidate);
         const rows = await callActor(settings.metaActor, {
           urls: [{ url }], count: 100, "scrapePageAds.period": "", "scrapePageAds.activeStatus": "active",
-          "scrapePageAds.sortBy": "impressions_desc", "scrapePageAds.countryCode": settings.market,
+          "scrapePageAds.sortBy": "impressions_desc", "scrapePageAds.countryCode": RADAR_COUNTRY,
         }, settings.token, settings.actorTimeoutMs);
         return { candidate, rows };
       })
@@ -780,7 +831,7 @@ export async function runRadarScan(): Promise<RadarDashboard> {
       let meta: RadarEvidence[] = [];
       if (result.status === "fulfilled") {
         meta = result.value.rows.map(
-          (row) => normalizeMetaAd(row, candidate, settings.market)
+          (row) => normalizeMetaAd(row, candidate)
         );
         run.metaAds += meta.length;
       } else {
