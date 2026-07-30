@@ -27,6 +27,7 @@ const TOOL_GROUPS: readonly ToolGroup[] = [
   {
     category: "Growth & Automation",
     items: [
+      { href: "/radar", label: "Product Radar", emoji: "📡", desc: "Daily product & competitor signals" },
       { href: "/ai", label: "AI Salesperson", emoji: "✨", desc: "Automated responses & AI sales" },
       { href: "/broadcast", label: "WhatsApp Blast", emoji: "📣", desc: "Bulk customer messaging" },
     ],

@@ -417,3 +417,45 @@ create index if not exists idx_tracking_notification_due
 create unique index if not exists uq_tracking_notification_dedupe
   on tracking_notification_jobs(dedupe_key)
   where dedupe_key is not null;
+
+-- Product Radar: scheduled discovery runs, ranked products, and idempotent
+-- competitor creative observations.
+create table if not exists radar_scan_runs (
+  id            uuid primary key,
+  status        varchar not null,
+  started_at    timestamptz not null,
+  completed_at  timestamptz,
+  tiktok_ads    int not null default 0,
+  candidates    int not null default 0,
+  meta_ads      int not null default 0,
+  error         text not null default ''
+);
+
+create table if not exists radar_products (
+  product_key   varchar primary key,
+  name          varchar not null,
+  score         int not null,
+  stage         varchar not null,
+  metrics       jsonb not null default '{}'::jsonb,
+  reasons       jsonb not null default '[]'::jsonb,
+  risks         jsonb not null default '[]'::jsonb,
+  thumbnail_url text not null default '',
+  first_seen_at timestamptz not null,
+  last_seen_at  timestamptz not null,
+  scan_at       timestamptz not null
+);
+create index if not exists idx_radar_products_score on radar_products(score desc);
+
+create table if not exists radar_ads (
+  evidence_key      varchar primary key,
+  product_key       varchar not null references radar_products(product_key) on delete cascade,
+  platform          varchar not null,
+  source_ad_id      varchar not null,
+  advertiser        text not null default '',
+  creative          jsonb not null default '{}'::jsonb,
+  first_seen_at     timestamptz not null,
+  last_seen_at      timestamptz not null,
+  observation_count int not null default 1,
+  raw_payload       jsonb not null default '{}'::jsonb
+);
+create index if not exists idx_radar_ads_product on radar_ads(product_key, platform);

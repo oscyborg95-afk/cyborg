@@ -14,6 +14,7 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 | `/customers` | Customer 360 directory with lifetime value, delivery history, AI memory, language, tags, notes, and per-customer autonomy controls |
 | `/ai` | Autonomous salesperson control room — off/draft/auto mode, knowledge, tone, confidence threshold, quiet hours, and full decision audit |
 | `/broadcast` | Rate-limited WhatsApp blast to past customers (launches/restocks) |
+| `/radar` | **Product Radar** — automated TikTok product discovery, Meta competitor validation, ranked public-signal shortlist and creative evidence |
 | `/analytics` | High-score board — levels, dispatch streak, net worth — plus return rates by district/product and an ad-spend/ROAS tracker |
 | `/login` | Operator login (only when `APP_PASSWORD` is set) |
 
@@ -34,6 +35,20 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 4. Optional — courier: set `COURIER_API_URL` / `COURIER_API_KEY` and adjust the payload
    field names in `lib/couriers.ts` to your courier's docs. Mock tracking IDs otherwise.
 5. `npm run dev` and open http://localhost:3000.
+
+### Product Radar
+
+Set `APIFY_TOKEN` to enable `/radar`; create one in
+[Apify token settings](https://console.apify.com/settings/integrations). The
+defaults discover conversion ads across `US,GB,AU,SG,AE`, validate up to eight
+product candidates against active Meta ads in Sri Lanka, and run daily at 05:30
+Asia/Colombo through the authenticated `/api/radar/cron` route. Override
+countries, market, candidate cap, or either community Actor ID with the
+`RADAR_*` / `APIFY_*_ACTOR_ID` variables in `.env.local.example`.
+
+Without a token and live scan, the page shows an explicitly labelled demo
+shortlist. Radar scores public advertising evidence only; it does not claim
+sales, spend, profitability, CPA, or ROAS.
 
 ### Tracking reliability
 
@@ -78,6 +93,7 @@ the same `CRON_SECRET` value used by Vercel.
 | Message templates (Sinhala) | `lib/templates.ts` |
 | Gamified metrics (levels, streak, net worth) | `lib/metrics.ts`, `app/api/metrics/route.ts` |
 | Products + physical stock (presets, auto restock on returns) | `app/api/products/*`, managed on `/analytics` |
+| Automated product discovery + competitor evidence (Apify, daily cron, Postgres/in-memory) | `lib/product-radar.ts`, `app/api/radar/*`, `/radar` |
 | Courier tracking auto-sync (booked → delivered/returned) | `lib/couriers.ts`, `app/api/track/sync/route.ts` |
 | Orders + manifests data layer (Supabase or in-memory) | `lib/db.ts`, `supabase/schema.sql` |
 | Courier REST bridge (mock mode until keys are set) | `lib/couriers.ts` |

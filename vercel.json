@@ -4,6 +4,10 @@
     {
       "path": "/api/tracking/cron",
       "schedule": "30 18 * * *"
+    },
+    {
+      "path": "/api/radar/cron",
+      "schedule": "0 0 * * *"
     }
   ]
 }
