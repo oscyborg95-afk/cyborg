@@ -86,9 +86,19 @@ test("fallback candidate extraction is conservative and config reports missing t
   const name = fallbackProductName(normalizeTikTokAd({ title: "Rechargeable portable fabric cleaner", description: "Remove stains fast" }));
   assert.match(name || "", /Rechargeable/i);
   const previous = process.env.APIFY_TOKEN;
+  const previousCategory = process.env.RADAR_CATEGORY;
+  const previousIncludeTikTok = process.env.RADAR_INCLUDE_TIKTOK;
   delete process.env.APIFY_TOKEN;
-  assert.equal(radarConfiguration().configured, false);
+  delete process.env.RADAR_CATEGORY;
+  delete process.env.RADAR_INCLUDE_TIKTOK;
+  const configuration = radarConfiguration();
+  assert.equal(configuration.configured, false);
+  assert.equal(configuration.marketCountry, "LK");
+  assert.equal(configuration.category, "Cosmetics & skincare");
+  assert.equal(configuration.includeTikTok, false);
   if (previous) process.env.APIFY_TOKEN = previous;
+  if (previousCategory) process.env.RADAR_CATEGORY = previousCategory;
+  if (previousIncludeTikTok) process.env.RADAR_INCLUDE_TIKTOK = previousIncludeTikTok;
 });
 
 test("unreachable optional database still returns a usable demo dashboard", async () => {

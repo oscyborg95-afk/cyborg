@@ -200,8 +200,12 @@ export default function ProductRadarPage() {
             <span className="font-display text-xs font-extrabold uppercase tracking-[0.18em] text-frog-dark">Product intelligence</span>
             <span className={`rounded-md border px-2 py-0.5 font-display text-[10px] font-extrabold uppercase ${dashboard.dataMode === "live" ? "border-frog/30 bg-pond text-frog-dark" : "border-gold/50 bg-flame-tint text-flame-dark"}`}>{dashboard.dataMode === "demo" ? "Demo data" : dashboard.dataMode}</span>
           </div>
-          <h1 className="font-display text-3xl font-extrabold leading-tight text-ink">Morning Product Radar</h1>
-          <p className="mt-1 text-sm font-bold text-ink-soft">{dashboard.lastRun?.status === "completed" ? `Last scanned ${new Date(dashboard.lastRun.completedAt!).toLocaleString("en-LK")}` : "No successful live scan yet"} · {dashboard.nextScan}</p>
+          <h1 className="font-display text-3xl font-extrabold leading-tight text-ink">Sri Lanka Cosmetics Radar</h1>
+          <p className="mt-1 text-sm font-bold text-ink-soft">
+            {dashboard.focus.category} · Meta ads shown in {dashboard.focus.marketCountry}
+            {dashboard.focus.includeTikTok ? " · International TikTok enrichment on" : ""}
+          </p>
+          <p className="mt-1 text-xs font-bold text-ink-soft">{dashboard.lastRun?.status === "completed" ? `Last scanned ${new Date(dashboard.lastRun.completedAt!).toLocaleString("en-LK")}` : "No successful live scan yet"} · {dashboard.nextScan}</p>
         </div>
         <Button onClick={scanNow} disabled={scanning || !dashboard.configured} className="w-full sm:w-auto">{scanning ? "Scanning Apify…" : "⌁ Scan now"}</Button>
       </header>
