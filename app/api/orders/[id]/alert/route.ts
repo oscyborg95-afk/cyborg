@@ -30,7 +30,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     listManifests(),
   ]);
   const manifest = manifests.find((m) => m.order_id === id);
-  const templates = makeTemplates(settings?.templates ?? {});
+  const templates = makeTemplates(settings?.templates ?? {}, settings?.business_name || "Your Store");
   const text = alertBodyFor(templates, kind, manifest?.tracking_id);
 
   try {

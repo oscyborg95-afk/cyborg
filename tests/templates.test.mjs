@@ -15,3 +15,10 @@ test("renders a customized rescheduled-delivery message", () => {
 
   assert.equal(text, "Delivery date changed. New attempt coming soon.\nTrack: AT654321");
 });
+
+test("customer-facing defaults use the tenant business name", () => {
+  const branded = makeTemplates({}, "Lotus Home");
+  assert.match(branded.shippedConfirmation(2500, "TRK-9"), /Lotus Home/);
+  assert.doesNotMatch(branded.shippedConfirmation(2500, "TRK-9"), /Daily Cart/);
+  assert.match(branded.deliveredThanks(), /Lotus Home/);
+});

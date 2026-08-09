@@ -37,7 +37,7 @@ export default function LoginPage() {
     <div className="flex h-full flex-col items-center justify-center gap-5 p-6">
       <Froggy mood={error ? "thinking" : "happy"} size={100} />
       <Card className="w-full max-w-sm p-6 text-center">
-        <h1 className="font-display text-2xl font-extrabold text-ink">🔐 Daily Cart</h1>
+        <h1 className="font-display text-2xl font-extrabold text-ink">🔐 WhatsApp Command Center</h1>
         <p className="mt-1 font-display text-sm font-bold text-ink-soft">
           {mode === "login" ? "Sign in to your business workspace." : "Create an isolated business workspace."}
         </p>

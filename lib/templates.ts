@@ -29,7 +29,7 @@ export const TEMPLATE_META: Record<
   shippedConfirmation: {
     label: "🚚 Shipped confirmation",
     hint: "Drafted after every dispatch — you review it before sending.",
-    placeholders: ["{{total}}", "{{tracking}}"],
+    placeholders: ["{{business}}", "{{total}}", "{{tracking}}"],
   },
   trackingAlert: {
     label: "📦 Tracking alert",
@@ -64,7 +64,7 @@ export const TEMPLATE_META: Record<
   deliveredThanks: {
     label: "💚 Delivered thank-you",
     hint: "Auto-sent when the courier confirms delivery.",
-    placeholders: [],
+    placeholders: ["{{business}}"],
   },
   returnedApology: {
     label: "↩️ Return / redeliver offer",
@@ -79,14 +79,14 @@ export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
   codConfirm: `ඔබගේ order එක confirm කරන්නම්ද? 📦\n\nගෙදරටම delivery — ලැබෙනකොට ගෙවන්න (COD).\nමුළු මුදල: රු. {{total}}\n\nOK කියලා reply කරන්න ✅`,
 
   shippedConfirmation:
-    `🌿 *Daily Cart*\n\n` +
+    `🌿 *{{business}}*\n\n` +
     `ආයුබෝවන්! 🙏 ඔබගේ ඇණවුම සාර්ථකව තහවුරු කර, delivery සඳහා යොමු කර ඇත. ✅\n\n` +
     `📦 Tracking අංකය: *{{tracking}}*\n` +
     `💰 ලැබීමේදී ගෙවීමට ඇති මුදල (COD): *රු. {{total}}*\n` +
     `🚚 සාමාන්‍යයෙන් වැඩ කරන දින 1–3ක් ඇතුළත ඔබ වෙත ලැබෙනු ඇත.\n\n` +
     `ඔබගේ ඇණවුමට බොහෝම ස්තූතියි! 💚 ඕනෑම ගැටලුවක් ඇත්නම් මෙම chat එකට reply කරන්න.\n\n` +
     `━━━━━━━━━━━━━━\n` +
-    `ⓘ මෙය Daily Cart පද්ධතියෙන් ස්වයංක්‍රීයව (automatically) ජනනය කරන ලද පණිවිඩයකි.`,
+    `ⓘ මෙය {{business}} පද්ධතියෙන් ස්වයංක්‍රීයව (automatically) ජනනය කරන ලද පණිවිඩයකි.`,
 
   trackingAlert: `ඔබේ පැකේජය courier වෙත භාර දුන්නා 📦\nTracking අංකය: {{tracking}}\nදවස් 1–2ක් ඇතුළත ලැබෙයි!`,
 
@@ -100,45 +100,47 @@ export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
 
   rescheduledDelivery: `ඔබගේ පැකේජය අද deliver කිරීමට නොහැකි වූ නිසා නැවත delivery සඳහා reschedule කර ඇත. 🙏\nකරුණාකර phone එක ළඟ තබාගන්න. Courier නැවත ඔබව සම්බන්ධ කරයි. 📞\n📦 Tracking: {{tracking}}`,
 
-  deliveredThanks: `ඔබගේ පැකේජය ලැබුණා! 🎉\nDaily Cart එක්ක order කළාට බොහෝම ස්තූතියි 💚\nමොනවා හරි ප්‍රශ්නයක් තියෙනවා නම් මේ chat එකට reply කරන්න.`,
+  deliveredThanks: `ඔබගේ පැකේජය ලැබුණා! 🎉\n{{business}} එක්ක order කළාට බොහෝම ස්තූතියි 💚\nමොනවා හරි ප්‍රශ්නයක් තියෙනවා නම් මේ chat එකට reply කරන්න.`,
 
   returnedApology: `ඔබගේ පැකේජය deliver කරන්න බැරි වුණා 😔\nතවමත් ඕන නම් නැවත යවන්න පුළුවන් — *OK* කියලා reply කරන්න, අපි redeliver කරන්නම්! 🚚`,
 };
 
-type Vars = { total?: number; tracking?: string };
+type Vars = { business?: string; total?: number; tracking?: string };
 
 // Substitute {{placeholders}}, then drop any line that still contains an
 // unresolved one (e.g. no tracking id yet → no tracking line).
 export function renderTemplate(source: string, vars: Vars): string {
   const substituted = source
+    .replaceAll("{{business}}", vars.business?.trim() || "Your Store")
     .replaceAll("{{total}}", vars.total !== undefined ? String(vars.total) : "{{total}}")
     .replaceAll("{{tracking}}", vars.tracking ? vars.tracking : "{{tracking}}");
   return substituted
     .split("\n")
-    .filter((line) => !/\{\{(total|tracking)\}\}/.test(line))
+    .filter((line) => !/\{\{(business|total|tracking)\}\}/.test(line))
     .join("\n");
 }
 
 // Build the callable template set, with operator overrides layered over the
 // defaults. Call with no argument for pure defaults (offline fallback).
-export function makeTemplates(overrides: MessageTemplates = {}) {
+export function makeTemplates(overrides: MessageTemplates = {}, businessName = "Daily Cart") {
   const src = (key: TemplateKey) => overrides[key]?.trim() || DEFAULT_TEMPLATES[key];
+  const vars = (values: Vars = {}): Vars => ({ business: businessName, ...values });
   return {
-    askAddress: () => renderTemplate(src("askAddress"), {}),
-    codConfirm: (totalCod: number) => renderTemplate(src("codConfirm"), { total: totalCod }),
+    askAddress: () => renderTemplate(src("askAddress"), vars()),
+    codConfirm: (totalCod: number) => renderTemplate(src("codConfirm"), vars({ total: totalCod })),
     shippedConfirmation: (totalCod: number, trackingId?: string) =>
-      renderTemplate(src("shippedConfirmation"), { total: totalCod, tracking: trackingId }),
+      renderTemplate(src("shippedConfirmation"), vars({ total: totalCod, tracking: trackingId })),
     trackingAlert: (trackingId: string) =>
-      renderTemplate(src("trackingAlert"), { tracking: trackingId }),
-    delayBonus: () => renderTemplate(src("delayBonus"), {}),
-    followUpAddress: () => renderTemplate(src("followUpAddress"), {}),
-    followUpConfirm: () => renderTemplate(src("followUpConfirm"), {}),
+      renderTemplate(src("trackingAlert"), vars({ tracking: trackingId })),
+    delayBonus: () => renderTemplate(src("delayBonus"), vars()),
+    followUpAddress: () => renderTemplate(src("followUpAddress"), vars()),
+    followUpConfirm: () => renderTemplate(src("followUpConfirm"), vars()),
     outForDelivery: (trackingId: string) =>
-      renderTemplate(src("outForDelivery"), { tracking: trackingId }),
+      renderTemplate(src("outForDelivery"), vars({ tracking: trackingId })),
     rescheduledDelivery: (trackingId: string) =>
-      renderTemplate(src("rescheduledDelivery"), { tracking: trackingId }),
-    deliveredThanks: () => renderTemplate(src("deliveredThanks"), {}),
-    returnedApology: () => renderTemplate(src("returnedApology"), {}),
+      renderTemplate(src("rescheduledDelivery"), vars({ tracking: trackingId })),
+    deliveredThanks: () => renderTemplate(src("deliveredThanks"), vars()),
+    returnedApology: () => renderTemplate(src("returnedApology"), vars()),
   };
 }
 

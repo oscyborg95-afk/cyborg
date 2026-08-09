@@ -395,7 +395,7 @@ export default function Workspace() {
     } catch {}
   }, []);
 
-  const t = makeTemplates(settings?.templates ?? {});
+  const t = makeTemplates(settings?.templates ?? {}, settings?.business_name || "Your Store");
 
   // Fetch status through Next so production browsers do not need direct access
   // to the worker (and never fall back to their own localhost for the QR).

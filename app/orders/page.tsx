@@ -74,9 +74,10 @@ const inputCls =
 function confirmationBlock(
   order: Order,
   manifest?: ShippingManifest,
-  overrides: MessageTemplates = {}
+  overrides: MessageTemplates = {},
+  businessName = "Your Store"
 ): string {
-  return makeTemplates(overrides).shippedConfirmation(order.total_cod, manifest?.tracking_id);
+  return makeTemplates(overrides, businessName).shippedConfirmation(order.total_cod, manifest?.tracking_id);
 }
 
 // Visual style for each timeline outcome.
@@ -223,6 +224,7 @@ export default function OrdersPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [msgTemplates, setMsgTemplates] = useState<MessageTemplates>({});
+  const [businessName, setBusinessName] = useState("Your Store");
   const [search, setSearch] = useState("");
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
   const [customStart, setCustomStart] = useState("");
@@ -259,7 +261,10 @@ export default function OrdersPage() {
       const productsData = await productsRes.json();
       if (productsRes.ok) setProducts(productsData.products);
       const settingsData = await settingsRes.json();
-      if (settingsRes.ok) setMsgTemplates(settingsData.settings?.templates ?? {});
+      if (settingsRes.ok) {
+        setMsgTemplates(settingsData.settings?.templates ?? {});
+        setBusinessName(settingsData.settings?.business_name || "Your Store");
+      }
       const healthData = await healthRes.json();
       if (healthRes.ok) setTrackingHealth(healthData.health);
     } catch (err) {
@@ -446,7 +451,7 @@ export default function OrdersPage() {
 
   async function handleCopy(order: Order) {
     const manifest = manifests.find((m) => m.order_id === order.id);
-    await navigator.clipboard.writeText(confirmationBlock(order, manifest, msgTemplates));
+    await navigator.clipboard.writeText(confirmationBlock(order, manifest, msgTemplates, businessName));
     setCopiedId(order.id);
     setTimeout(() => setCopiedId(null), 1500);
   }
@@ -461,7 +466,7 @@ export default function OrdersPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chatId: phoneToChatId(order.phone_number),
-          text: makeTemplates(msgTemplates).returnedApology(),
+          text: makeTemplates(msgTemplates, businessName).returnedApology(),
         }),
       });
       const data = await res.json();

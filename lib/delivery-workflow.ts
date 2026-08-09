@@ -89,7 +89,7 @@ export async function processDeliveryEvent(
     getSettings(),
   ]);
   if (!tracked) throw new Error(`Unknown waybill ${event.trackingId}`);
-  const templates = makeTemplates(settings.templates);
+  const templates = makeTemplates(settings.templates, settings.business_name);
   const notifications: DeliveryNotificationInput[] = [];
   const customerChat = phoneToChatId(tracked.order.phone_number);
   const ownerPhone = settings.business_phone_1.trim();

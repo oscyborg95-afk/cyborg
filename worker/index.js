@@ -834,7 +834,7 @@ async function connectToWhatsApp() {
       keys: makeCacheableSignalKeyStore(auth.state.keys, logger),
     },
     logger,
-    browser: Browsers.ubuntu("Daily Cart"),
+    browser: Browsers.ubuntu(process.env.TENANT_NAME || "WhatsApp Funnel"),
     markOnlineOnConnect: false, // keep phone notifications ringing
     // On the next fresh relink (QR re-scan), ask the phone to dump its full
     // cached history — this backfills older chats/messages that were tagged in

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cache } from "react";
 import { Baloo_2, Nunito } from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
@@ -7,6 +8,9 @@ import { LevelBadge } from "./level-badge";
 import { Froggy } from "./components/froggy";
 import { ThemeToggle } from "./theme-toggle";
 import { WhatsAppAccountControl } from "./whatsapp-account-control";
+import { LogoutButton } from "./logout-button";
+import { getTenantSession } from "@/lib/tenant-context";
+import { getSettings } from "@/lib/db";
 
 const themeBootstrap = `(function(){try{var t=localStorage.getItem('daily-cart-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t}catch(e){document.documentElement.dataset.theme='light'}})()`;
 
@@ -20,16 +24,30 @@ const nunito = Nunito({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: "Daily Cart — Command Center",
-  description: "A gamified WhatsApp COD command center",
-};
+const tenantBrand = cache(async () => {
+  const session = await getTenantSession();
+  const settings = session ? await getSettings().catch(() => null) : null;
+  return {
+    session,
+    businessName: settings?.business_name?.trim() || "WhatsApp Command Center",
+  };
+});
 
-export default function RootLayout({
+export async function generateMetadata(): Promise<Metadata> {
+  const { businessName } = await tenantBrand();
+  return {
+    title: `${businessName} — Command Center`,
+    description: "A WhatsApp COD command center",
+  };
+}
+
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const { session, businessName } = await tenantBrand();
+
   return (
     <html lang="en" suppressHydrationWarning className={`${baloo.variable} ${nunito.variable} h-full antialiased`}>
       <head>
@@ -45,7 +63,7 @@ export default function RootLayout({
             >
               <Froggy mood="happy" size={36} bob={false} />
               <span className="hidden font-display text-lg font-extrabold tracking-tight text-frog-dark sm:inline">
-                Daily&nbsp;Cart
+                {businessName}
               </span>
             </Link>
             <div className="hidden xl:block ml-1">
@@ -63,6 +81,7 @@ export default function RootLayout({
             </div>
             <WhatsAppAccountControl />
             <ThemeToggle />
+            {session && <LogoutButton />}
           </div>
         </header>
         <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
