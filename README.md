@@ -30,11 +30,43 @@ parsing, one-click courier dispatch, and a gamified high-score board.
      is stored in Postgres, so restarts and redeploys never need a re-scan.
    The worker calls `APP_URL/api/agent/inbound` for autonomous replies. In
    production set the same strong `AGENT_WEBHOOK_SECRET` on the web app and worker.
+   `npm start` now runs the multi-tenant supervisor. It reads active tenants from
+   Postgres and starts one isolated Baileys child connection per tenant. Use
+   `npm run start:single` only for legacy/local single-account troubleshooting.
 3. Optional — Supabase: run `supabase/schema.sql` in the SQL editor, set `SUPABASE_URL`
    and `SUPABASE_SERVICE_ROLE_KEY`. Without these the app uses an in-memory store.
 4. Optional — courier: set `COURIER_API_URL` / `COURIER_API_KEY` and adjust the payload
    field names in `lib/couriers.ts` to your courier's docs. Mock tracking IDs otherwise.
 5. `npm run dev` and open http://localhost:3000.
+
+### Multi-tenancy
+
+Set `DATABASE_URL`, `SESSION_SECRET`, `WORKER_API_SECRET`, and `ADMIN_EMAIL` in
+both deployments as applicable. On the first login, the former single-operator
+workspace is registered as the legacy tenant using the existing `APP_PASSWORD`.
+New accounts are created at `/login` when `ALLOW_SIGNUP=true`.
+
+Each new tenant receives its own PostgreSQL schema. All existing orders, CRM,
+settings, products, AI state, WhatsApp credentials, chats, messages, and media
+queries run through a pool whose `search_path` is fixed to that authenticated
+tenant's schema. The browser's worker token is signed with the tenant ID, and
+Socket.IO uses `/t/<tenant-id>/socket.io`, preventing a token issued for one
+workspace from reaching another tenant's WhatsApp process.
+
+The deployed worker is one supervisor, not one deployment per customer:
+
+```text
+worker/manager.js
+  ├─ tenant A child (Baileys socket A, schema A)
+  ├─ tenant B child (Baileys socket B, schema B)
+  └─ tenant C child (Baileys socket C, schema C)
+```
+
+The supervisor polls `public.app_tenants`; signup therefore starts a new child
+automatically without redeployment. `WA_MAX_TENANTS` is a hard capacity guard.
+Measure memory before raising it: the current Google Cloud `e2-micro` is suitable
+for the legacy account but should be upgraded before promising three concurrent
+production accounts.
 
 ### Product Radar
 

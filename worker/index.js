@@ -32,6 +32,7 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
+const { bearerToken, verifyWorkerAccessToken } = require("./access");
 
 // Pull DATABASE_URL (and friends) from the app's .env.local when running
 // locally; deployed platforms inject real env vars instead.
@@ -50,14 +51,52 @@ const { Server } = require("socket.io");
 // Render, Fly all inject this and route to it); else 3001 for local dev.
 const PORT = Number(process.env.WA_WORKER_PORT || process.env.PORT || 3001);
 const MOCK = process.env.WA_MOCK === "true";
+const WORKER_API_SECRET = process.env.WORKER_API_SECRET || "";
+const TENANT_ID = process.env.TENANT_ID || "";
+const LISTEN_HOST = process.env.WORKER_MANAGED === "true" ? "127.0.0.1" : "0.0.0.0";
+const APP_ORIGIN = (() => {
+  try {
+    return new URL(process.env.APP_URL || "http://localhost:3000").origin;
+  } catch {
+    return "http://localhost:3000";
+  }
+})();
+
+const corsOptions = {
+  origin(origin, callback) {
+    callback(null, !origin || origin === APP_ORIGIN);
+  },
+};
 
 const app = express();
-app.use(cors());
+app.use(cors(corsOptions));
 // Base64 expands a 5 MB photo to about 6.7 MB. Keep the parser just above that
 // while the /send route still enforces the decoded 6 MB media limit below.
 app.use(express.json({ limit: "8mb" }));
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, { cors: { origin: APP_ORIGIN } });
+
+function requestIsAuthorized(req) {
+  return verifyWorkerAccessToken(
+    bearerToken(req.headers.authorization) || req.headers["x-worker-secret"],
+    WORKER_API_SECRET,
+    Date.now(),
+    TENANT_ID
+  );
+}
+
+// Health checks carry no business data. Every other REST and Socket.io entry
+// point requires either the server secret or a short-lived dashboard token.
+app.use((req, res, next) => {
+  if (req.path === "/health" || requestIsAuthorized(req)) return next();
+  res.status(401).json({ error: "Unauthorized" });
+});
+io.use((socket, next) => {
+  const token =
+    socket.handshake.auth?.token || bearerToken(socket.handshake.headers.authorization);
+  if (verifyWorkerAccessToken(token, WORKER_API_SECRET, Date.now(), TENANT_ID)) return next();
+  next(new Error("Unauthorized"));
+});
 
 let ready = false;
 let latestQr = null; // data:image/png;base64,... — the most recent QR to scan, if any
@@ -106,6 +145,7 @@ function scheduleSalesAgent(msg) {
           headers: {
             "Content-Type": "application/json",
             "x-agent-secret": process.env.AGENT_WEBHOOK_SECRET || "",
+            "x-tenant-id": TENANT_ID,
           },
           body: JSON.stringify(msg),
           signal: AbortSignal.timeout(55_000),
@@ -127,7 +167,7 @@ function setReady(value) {
   io.emit("wa:status", { ready });
 }
 
-app.get("/health", (_req, res) => res.json({ ok: true, mode: MOCK ? "mock" : "live", ready }));
+app.get("/health", (_req, res) => res.json({ ok: true, mode: MOCK ? "mock" : "live", ready, tenantId: TENANT_ID || null }));
 
 // JSON twin of /qr — lets the Next.js Workspace embed the live QR inline.
 app.get("/qr.json", (_req, res) => res.json({ ready, qr: latestQr }));
@@ -339,7 +379,7 @@ if (MOCK) {
     res.json({ ok: true });
   });
 
-  server.listen(PORT, () => {
+  server.listen(PORT, LISTEN_HOST, () => {
     setReady(true);
     console.log(`[cyborg-wa-worker] MOCK mode on :${PORT}`);
     startTrackingFallbackScheduler();
@@ -605,16 +645,29 @@ async function resetUnread(jid) {
 // --- Auth state: Postgres-backed so a redeploy never needs a re-scan --------
 
 async function usePostgresAuthState() {
-  const read = async (id) => {
-    const { rows } = await pool.query("select data from wa_auth where id = $1", [id]);
-    return rows[0] ? JSON.parse(rows[0].data, BufferJSON.reviver) : null;
-  };
+  const legacyAuthDir = path.join(__dirname, "wa-session");
+  const legacyFile = (id) => `${id}.json`.replace(/\//g, "__").replace(/:/g, "-");
   const write = async (id, value) => {
     await pool.query(
       `insert into wa_auth (id, data) values ($1, $2)
        on conflict (id) do update set data = excluded.data`,
       [id, JSON.stringify(value, BufferJSON.replacer)]
     );
+  };
+  const read = async (id) => {
+    const { rows } = await pool.query("select data from wa_auth where id = $1", [id]);
+    if (rows[0]) return JSON.parse(rows[0].data, BufferJSON.reviver);
+    if (process.env.MIGRATE_FILE_AUTH === "true") {
+      try {
+        const value = JSON.parse(
+          fs.readFileSync(path.join(legacyAuthDir, legacyFile(id)), "utf8"),
+          BufferJSON.reviver
+        );
+        await write(id, value);
+        return value;
+      } catch {}
+    }
+    return null;
   };
   const del = async (id) => pool.query("delete from wa_auth where id = $1", [id]);
 
@@ -1099,7 +1152,7 @@ app.post("/send", async (req, res) => {
 });
 
 // Listen immediately — /qr and /health must be reachable before the scan.
-server.listen(PORT, () => {
+server.listen(PORT, LISTEN_HOST, () => {
   console.log(`[cyborg-wa-worker] LIVE mode on :${PORT} (waiting for QR scan)`);
   startTrackingFallbackScheduler();
 });

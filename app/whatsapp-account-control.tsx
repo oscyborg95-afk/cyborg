@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
+import { getWorkerConnection } from "@/lib/worker-client";
 import { Button } from "./components/ui";
 
 const WORKER_URL =
@@ -37,18 +38,26 @@ export function WhatsAppAccountControl() {
   useEffect(() => {
     const initialStatusTimer = window.setTimeout(loadStatus, 0);
     const statusPoll = window.setInterval(loadStatus, 15_000);
-    const socket: Socket = io(WORKER_URL, {
-      transports: ["websocket", "polling"],
-    });
-    socket.on("connect", loadStatus);
-    socket.on("disconnect", () => setConnection("offline"));
-    socket.on("wa:status", ({ ready }: { ready: boolean }) =>
-      setConnection(ready ? "connected" : "unlinked")
-    );
+    let disposed = false;
+    let socket: Socket | null = null;
+    getWorkerConnection().then(({ token, tenantId }) => {
+      if (disposed) return;
+      socket = io(WORKER_URL, {
+        transports: ["websocket", "polling"],
+        auth: { token },
+        path: `/t/${tenantId}/socket.io`,
+      });
+      socket.on("connect", loadStatus);
+      socket.on("disconnect", () => setConnection("offline"));
+      socket.on("wa:status", ({ ready }: { ready: boolean }) =>
+        setConnection(ready ? "connected" : "unlinked")
+      );
+    }).catch(() => setConnection("offline"));
     return () => {
+      disposed = true;
       window.clearTimeout(initialStatusTimer);
       window.clearInterval(statusPoll);
-      socket.disconnect();
+      socket?.disconnect();
     };
   }, [loadStatus]);
 

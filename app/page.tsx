@@ -8,6 +8,7 @@ import { makeTemplates } from "@/lib/templates";
 import { itemsSubtotal } from "@/lib/items";
 import { customerRisk, phoneKey } from "@/lib/risk";
 import type { Metrics } from "@/lib/metrics";
+import { getWorkerConnection, workerClientFetch } from "@/lib/worker-client";
 import type {
   BusinessSettings,
   ChatState,
@@ -126,7 +127,7 @@ function fetchAvatar(jid: string): Promise<string | null> {
   if (avatarCache.has(jid)) return Promise.resolve(avatarCache.get(jid)!);
   let p = avatarInFlight.get(jid);
   if (!p) {
-    p = fetch(`${WORKER_URL}/avatar/${encodeURIComponent(jid)}`)
+    p = workerClientFetch(`${WORKER_URL}/avatar/${encodeURIComponent(jid)}`)
       .then((r) => (r.ok ? r.json() : { url: null }))
       .then((d: { url: string | null }) => {
         avatarCache.set(jid, d.url);
@@ -201,7 +202,7 @@ function MediaBubble({ msg }: { msg: WaMessage }) {
       return;
     }
     let alive = true;
-    fetch(`${WORKER_URL}/media/${encodeURIComponent(msg.id)}`)
+    workerClientFetch(`${WORKER_URL}/media/${encodeURIComponent(msg.id)}`)
       .then((r) => (r.ok ? r.json() : "missing"))
       .then((d: MediaBytes) => {
         const v = d === "missing" || !("data" in (d as object)) ? "missing" : d;
@@ -326,7 +327,7 @@ export default function Workspace() {
       if (hasRequested && requested) {
         deepLinkHandledRef.current = true;
         setActiveChatId(requested);
-        fetch(`${WORKER_URL}/read`, {
+        workerClientFetch(`${WORKER_URL}/read`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chatId: requested }),
@@ -428,17 +429,25 @@ export default function Workspace() {
     // The socket keeps the UI instant when the worker is publicly reachable.
     // Polling is the reliable fallback and also refreshes rotating QR codes.
     const statusPoll = window.setInterval(loadWaStatus, 5_000);
-    const socket: Socket = io(WORKER_URL, { transports: ["websocket", "polling"] });
-    socket.on("connect", () => {
+    let disposed = false;
+    let socket: Socket | null = null;
+    getWorkerConnection().then(({ token, tenantId }) => {
+      if (disposed) return;
+      socket = io(WORKER_URL, {
+        transports: ["websocket", "polling"],
+        auth: { token },
+        path: `/t/${tenantId}/socket.io`,
+      });
+      socket.on("connect", () => {
       setWorkerOffline(false);
       loadWaStatus();
-    });
+      });
     // Worker crashed or went offline: flip the UI to offline immediately instead
     // of stranding a stale green "connected" state until the next refresh.
-    socket.on("disconnect", () => setWorkerOffline(true));
-    socket.on("wa:status", ({ ready: r }: { ready: boolean }) => setWaReady(r));
-    socket.on("wa:qr", ({ qr }: { qr: string }) => setQrImage(qr));
-    socket.on("wa:chat-deleted", ({ chatId }: { chatId: string }) => {
+      socket.on("disconnect", () => setWorkerOffline(true));
+      socket.on("wa:status", ({ ready: r }: { ready: boolean }) => setWaReady(r));
+      socket.on("wa:qr", ({ qr }: { qr: string }) => setQrImage(qr));
+      socket.on("wa:chat-deleted", ({ chatId }: { chatId: string }) => {
       setChats((prev) => prev.filter((chat) => chat.id !== chatId));
       if (chatId !== activeChatIdRef.current) return;
       activeChatIdRef.current = null;
@@ -447,9 +456,9 @@ export default function Workspace() {
       setDraft(null);
       setConfirmText(null);
       setAttach(null);
-    });
+      });
     // Delivery acks: bump the ticks on our bubbles as WhatsApp confirms them.
-    socket.on(
+      socket.on(
       "wa:update",
       ({ id, chatId, status }: { id: string; chatId: string; status: number }) => {
         if (chatId !== activeChatIdRef.current) return;
@@ -458,7 +467,7 @@ export default function Workspace() {
         );
       }
     );
-    socket.on("wa:message", (msg: WaMessage) => {
+      socket.on("wa:message", (msg: WaMessage) => {
       if (msg.chatId === activeChatIdRef.current) {
         setMessages((prev) => {
           if (prev.some((m) => m.id === msg.id)) return prev;
@@ -494,10 +503,12 @@ export default function Workspace() {
           (a, b) => b.timestamp - a.timestamp
         );
       });
-    });
+      });
+    }).catch(() => setWorkerOffline(true));
     return () => {
+      disposed = true;
       window.clearInterval(statusPoll);
-      socket.disconnect();
+      socket?.disconnect();
     };
   }, [loadChats, loadStates, loadOrders, loadProducts, loadWaStatus, loadSettings, loadMetrics]);
 
@@ -545,7 +556,7 @@ export default function Workspace() {
     setAttach(null);
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, unreadCount: 0 } : c)));
     // Mark read on the phone too — blue ticks for the customer, badge cleared.
-    fetch(`${WORKER_URL}/read`, {
+    workerClientFetch(`${WORKER_URL}/read`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId }),
@@ -599,7 +610,7 @@ export default function Workspace() {
     const t = typingRef.current;
     const nowMs = Date.now();
     const post = (state: "composing" | "paused") =>
-      fetch(`${WORKER_URL}/typing`, {
+      workerClientFetch(`${WORKER_URL}/typing`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chatId, state }),

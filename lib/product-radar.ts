@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import { googleGenerateContentRequest } from "./google-genai.ts";
 import { queryDatabase, usingSupabase } from "./db.ts";
+import { requireTenantSession } from "./tenant-context.ts";
 import {
   buildSriLankaMetaAdLibraryUrl,
   DEFAULT_RADAR_KEYWORD,
@@ -103,7 +104,7 @@ const g = globalThis as unknown as {
   __radarProducts?: Map<string, RadarProduct>;
   __radarEvidence?: Map<string, RadarEvidence>;
   __radarScanRunning?: boolean;
-  __radarSchemaReady?: boolean;
+  __radarSchemaReady?: Set<string>;
   __radarDatabaseRetryAt?: number;
 };
 const memoryRuns = (g.__radarRuns ??= []);
@@ -433,7 +434,10 @@ async function extractCandidatesWithGemini(ads: RadarEvidence[]): Promise<string
 }
 
 async function ensureSchema() {
-  if (!usingSupabase || g.__radarSchemaReady) return;
+  if (!usingSupabase) return;
+  const tenantId = (await requireTenantSession()).tenantId;
+  const ready = (g.__radarSchemaReady ??= new Set());
+  if (ready.has(tenantId)) return;
   await queryDatabase(`create table if not exists radar_scan_runs (
     id uuid primary key, status varchar not null, started_at timestamptz not null,
     completed_at timestamptz, tiktok_ads int not null default 0, candidates int not null default 0,
@@ -456,7 +460,7 @@ async function ensureSchema() {
   )`);
   await queryDatabase("create index if not exists idx_radar_products_score on radar_products(score desc)");
   await queryDatabase("create index if not exists idx_radar_ads_product on radar_ads(product_key, platform)");
-  g.__radarSchemaReady = true;
+  ready.add(tenantId);
 }
 
 function logDatabaseFallback(operation: string, error: unknown) {

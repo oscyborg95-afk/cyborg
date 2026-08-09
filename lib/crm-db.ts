@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { queryDatabase, usingSupabase, withTransaction } from "./db";
+import { requireTenantSession } from "./tenant-context.ts";
 import type {
   AgentConfig,
   AgentDecision,
@@ -17,7 +18,7 @@ import type {
 } from "./types";
 
 const g = globalThis as unknown as {
-  __crmSchemaReady?: boolean;
+  __crmSchemaReady?: Set<string>;
   __customerProfiles?: Map<string, CustomerProfile>;
   __customerEvents?: CustomerEvent[];
   __attentionItems?: Map<string, AttentionItem>;
@@ -53,7 +54,10 @@ export interface PurgedCustomerData {
 }
 
 async function ensureCrmSchema(): Promise<void> {
-  if (!usingSupabase || g.__crmSchemaReady) return;
+  if (!usingSupabase) return;
+  const tenantId = (await requireTenantSession()).tenantId;
+  const ready = (g.__crmSchemaReady ??= new Set());
+  if (ready.has(tenantId)) return;
   await queryDatabase(`
     create table if not exists customer_profiles (
       phone_key varchar(9) primary key,
@@ -153,7 +157,7 @@ async function ensureCrmSchema(): Promise<void> {
       updated_at timestamptz not null default now()
     );
   `);
-  g.__crmSchemaReady = true;
+  ready.add(tenantId);
 }
 
 function nowIso(): string {

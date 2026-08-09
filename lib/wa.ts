@@ -1,6 +1,8 @@
 // Server-side bridge to the headless WhatsApp worker (worker/index.js).
+import { requireTenantSession } from "./tenant-context";
 
 const WA_WORKER_URL = process.env.WA_WORKER_URL || "http://localhost:3001";
+const WORKER_API_SECRET = process.env.WORKER_API_SECRET || "";
 const configuredWorkerTimeout = Number(process.env.WA_WORKER_TIMEOUT_MS || 10_000);
 const WA_WORKER_TIMEOUT_MS = Number.isFinite(configuredWorkerTimeout)
   ? Math.max(1_000, Math.min(30_000, configuredWorkerTimeout))
@@ -42,8 +44,13 @@ export async function workerFetch<T>(path: string, init?: RequestInit): Promise<
   let res: Response;
   let data: { error?: string };
   try {
+    const { tenantId } = await requireTenantSession();
+    const headers = new Headers(init?.headers);
+    if (WORKER_API_SECRET) headers.set("Authorization", `Bearer ${WORKER_API_SECRET}`);
+    headers.set("x-tenant-id", tenantId);
     res = await fetch(`${WA_WORKER_URL}${path}`, {
       ...init,
+      headers,
       cache: "no-store",
       signal: controller.signal,
     });

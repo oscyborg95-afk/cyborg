@@ -8,6 +8,7 @@ import {
 } from "./customer-identity";
 import { queryDatabase, usingSupabase } from "./db";
 import { workerFetch } from "./wa";
+import { requireTenantSession } from "./tenant-context.ts";
 import type {
   CustomerLanguageStyle,
   LearningCandidate,
@@ -20,7 +21,7 @@ import type {
 } from "./types";
 
 const g = globalThis as unknown as {
-  __learningSchemaReady?: boolean;
+  __learningSchemaReady?: Set<string>;
   __learningConversations?: Map<string, LearningConversation>;
   __salesStyleProfile?: SalesStyleProfile | null;
 };
@@ -43,7 +44,10 @@ const NON_SALES_RE =
   /\b(tracking|track|waybill|courier|dispatched|out for delivery|delivered|refund|return(?:ed)?|complaint)\b/i;
 
 async function ensureLearningSchema(): Promise<void> {
-  if (!usingSupabase || g.__learningSchemaReady) return;
+  if (!usingSupabase) return;
+  const tenantId = (await requireTenantSession()).tenantId;
+  const ready = (g.__learningSchemaReady ??= new Set());
+  if (ready.has(tenantId)) return;
   await queryDatabase(`
     create table if not exists ai_learning_conversations (
       id uuid primary key default gen_random_uuid(),
@@ -70,7 +74,7 @@ async function ensureLearningSchema(): Promise<void> {
       updated_at timestamptz not null default now()
     );
   `);
-  g.__learningSchemaReady = true;
+  ready.add(tenantId);
 }
 
 function asStringArray(value: unknown): string[] {

@@ -25,6 +25,8 @@ import type {
   TrackingNotificationJob,
 } from "./types";
 import type { CourierInvoiceLine, ParsedCourierInvoice } from "./remittance-invoice";
+import { requireTenantSession } from "./tenant-context.ts";
+import { authorizedTenantSchema } from "./tenants.ts";
 
 // Data layer. Connects directly to Postgres (Supabase) when DATABASE_URL is set,
 // otherwise falls back to an in-memory store so the dashboard works before the
@@ -44,7 +46,7 @@ export const usingSupabase = Boolean(DATABASE_URL);
 
 // Survive Next.js dev-server hot reloads (one pool, one set of fallback maps).
 const g = globalThis as unknown as {
-  __cyborgPool?: Pool;
+  __cyborgTenantPools?: Map<string, Pool>;
   __cyborgOrders?: Map<string, Order>;
   __cyborgManifests?: Map<string, ShippingManifest>;
   __cyborgChatStates?: Map<string, ChatState>;
@@ -53,34 +55,54 @@ const g = globalThis as unknown as {
   __cyborgTrackingEvents?: TrackingEvent[];
   __cyborgAdSpend?: Map<string, number>;
   __cyborgOrderSeq?: number; // in-memory running number for short order refs
-  __orderNoReady?: boolean; // whether the order_no schema has been ensured
-  __orderSafetyReady?: boolean; // idempotency/archive/manifest uniqueness schema
+  __orderNoReady?: Set<string>;
+  __orderSafetyReady?: Set<string>;
   __cyborgAlerts?: Map<string, CustomerAlert>; // in-memory customer-alert log
-  __alertsReady?: boolean; // whether the customer_alerts table has been ensured
+  __alertsReady?: Set<string>;
   __cyborgOrderLocks?: Map<string, Promise<void>>;
   __cyborgTrackingSyncRunning?: boolean;
   __cyborgWebhookEvents?: Map<string, CourierWebhookEvent>;
   __cyborgNotificationJobs?: Map<string, TrackingNotificationJob>;
   __cyborgDeliveryEvents?: Map<string, DeliveryEvent>;
   __cyborgDeliveryAttempts?: Map<string, DeliveryAttempt>;
-  __trackingOpsReady?: boolean;
+  __trackingOpsReady?: Set<string>;
   __cyborgRemittances?: Map<string, CourierRemittance>;
   __cyborgRemittanceFiles?: Map<string, { data: Buffer; filename: string; mime: string }>;
-  __remittancesReady?: boolean;
+  __remittancesReady?: Set<string>;
 };
 
-let pool: Pool | null = null;
-if (DATABASE_URL) {
-  pool = g.__cyborgPool ??= new Pool({
+const tenantPools = (g.__cyborgTenantPools ??= new Map<string, Pool>());
+
+async function activePool(): Promise<Pool> {
+  if (!DATABASE_URL) throw new Error("Database is not configured");
+  const { tenantId, userId } = await requireTenantSession();
+  const schema = await authorizedTenantSchema(tenantId, userId);
+  let tenantPool = tenantPools.get(tenantId);
+  if (tenantPool) return tenantPool;
+  if (!/^(public|tenant_[a-f0-9]{32})$/.test(schema)) throw new Error("Invalid tenant schema");
+  tenantPool = new Pool({
     connectionString: DATABASE_URL,
     ssl: { rejectUnauthorized: false },
+    options: `-c search_path=${schema},public`,
     max: 5,
     connectionTimeoutMillis: 5_000,
     query_timeout: 10_000,
     statement_timeout: 10_000,
     idle_in_transaction_session_timeout: 15_000,
   });
+  tenantPools.set(tenantId, tenantPool);
+  return tenantPool;
 }
+
+// A tenant-selecting facade preserves the existing data-layer API. Every
+// standalone query and transaction resolves its pool from the signed session
+// (or an explicit withTenant context for webhooks/cron jobs).
+const pool: Pool | null = DATABASE_URL
+  ? ({
+      query: (...args: Parameters<Pool["query"]>) => activePool().then((selected) => selected.query(...args)),
+      connect: () => activePool().then((selected) => selected.connect()),
+    } as unknown as Pool)
+  : null;
 
 // Either the pool or a single checked-out client mid-transaction. Data functions
 // take an optional executor so a caller can thread several writes through one
@@ -157,7 +179,9 @@ const DEFAULT_SETTINGS: BusinessSettings = {
 // order_no / order_prefix columns). Runs once per process — matches the app's
 // existing self-migration pattern so a fresh DB works without a manual schema run.
 async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
-  if (g.__orderSafetyReady) return;
+  const tenantId = (await requireTenantSession()).tenantId;
+  const ready = (g.__orderSafetyReady ??= new Set());
+  if (ready.has(tenantId)) return;
   await db.query("alter table orders add column if not exists idempotency_key varchar");
   await db.query("alter table orders add column if not exists archived_at timestamptz");
   await db.query(
@@ -166,12 +190,14 @@ async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
   await db.query(
     "create unique index if not exists uq_shipping_manifests_order on shipping_manifests(order_id)"
   );
-  g.__orderSafetyReady = true;
+  ready.add(tenantId);
 }
 
 async function ensureOrderNoSchema(db: Queryable): Promise<void> {
   await ensureOrderSafetySchema(db);
-  if (g.__orderNoReady) return;
+  const tenantId = (await requireTenantSession()).tenantId;
+  const ready = (g.__orderNoReady ??= new Set());
+  if (ready.has(tenantId)) return;
   await db.query("create sequence if not exists order_number_seq start 1001");
   await db.query("alter table orders add column if not exists order_no varchar");
   await db.query(
@@ -208,7 +234,7 @@ async function ensureOrderNoSchema(db: Queryable): Promise<void> {
   await db.query(
     "alter table business_settings add column if not exists gemini_api_key varchar not null default ''"
   );
-  g.__orderNoReady = true;
+  ready.add(tenantId);
 }
 
 // Next short reference: "<prefix>-<running number>", e.g. "DC-1001". The prefix
@@ -571,7 +597,9 @@ export async function updateManifestCheckpoint(id: string, checkpoint: string): 
 // --- Durable courier webhook inbox + notification outbox -------------------
 
 async function ensureTrackingOpsSchema(db: Queryable): Promise<void> {
-  if (g.__trackingOpsReady) return;
+  const tenantId = (await requireTenantSession()).tenantId;
+  const ready = (g.__trackingOpsReady ??= new Set());
+  if (ready.has(tenantId)) return;
   await db.query(
     `create table if not exists tracking_events (
        id uuid primary key default gen_random_uuid(),
@@ -654,7 +682,7 @@ async function ensureTrackingOpsSchema(db: Queryable): Promise<void> {
   await db.query(
     "create unique index if not exists uq_tracking_notification_dedupe on tracking_notification_jobs(dedupe_key) where dedupe_key is not null"
   );
-  g.__trackingOpsReady = true;
+  ready.add(tenantId);
 }
 
 export interface DeliveryNotificationInput {
@@ -1426,7 +1454,9 @@ export async function getLatestTrackingEvent(order_id: string): Promise<Tracking
 // per process (like ensureOrderNoSchema) so this feature self-heals on a DB
 // that predates it, instead of silently swallowing "table does not exist".
 async function ensureAlertsSchema(db: Queryable): Promise<void> {
-  if (g.__alertsReady) return;
+  const tenantId = (await requireTenantSession()).tenantId;
+  const ready = (g.__alertsReady ??= new Set());
+  if (ready.has(tenantId)) return;
   await db.query(
     `create table if not exists customer_alerts (
        id         uuid primary key default gen_random_uuid(),
@@ -1444,7 +1474,7 @@ async function ensureAlertsSchema(db: Queryable): Promise<void> {
   await db.query(
     "create index if not exists idx_customer_alerts_order on customer_alerts(order_id, created_at)"
   );
-  g.__alertsReady = true;
+  ready.add(tenantId);
 }
 
 export async function listCustomerAlerts(): Promise<CustomerAlert[]> {
@@ -1521,7 +1551,9 @@ export async function recordCustomerAlert(
 // --- Cash reconciliation (courier COD remittances) ---------------------------
 
 async function ensureRemittanceSchema(db: Queryable): Promise<void> {
-  if (g.__remittancesReady) return;
+  const tenantId = (await requireTenantSession()).tenantId;
+  const ready = (g.__remittancesReady ??= new Set());
+  if (ready.has(tenantId)) return;
   await db.query(`create table if not exists courier_remittances (
     id uuid primary key default gen_random_uuid(), invoice_no varchar not null unique,
     paid_at timestamptz not null, source_filename varchar not null,
@@ -1552,7 +1584,7 @@ async function ensureRemittanceSchema(db: Queryable): Promise<void> {
   await db.query(
     "create index if not exists idx_remittance_lines_batch on courier_remittance_lines(remittance_id)"
   );
-  g.__remittancesReady = true;
+  ready.add(tenantId);
 }
 
 export async function findRemittanceMatches(

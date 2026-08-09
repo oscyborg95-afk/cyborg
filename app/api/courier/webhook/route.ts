@@ -15,6 +15,8 @@ import {
 } from "@/lib/delivery-events";
 import { processDeliveryEvent } from "@/lib/delivery-workflow";
 import { processTrackingNotificationQueue } from "@/lib/tracking-notifications";
+import { withTenant } from "@/lib/tenant-context";
+import { findTenantForWaybill } from "@/lib/tenants";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -91,6 +93,11 @@ export async function POST(request: NextRequest) {
     );
   }
   const event = inspected.event;
+  const tenant = await findTenantForWaybill(event.trackingId);
+  if (!tenant) return NextResponse.json({ error: "Unknown waybill" }, { status: 404 });
+  return withTenant(
+    { tenantId: tenant.id, userId: "courier-webhook", role: "member", expiresAt: Date.now() + 60_000 },
+    async () => {
   const tracked = await getTrackedOrderByWaybill(event.trackingId);
   if (!tracked) return NextResponse.json({ error: "Unknown waybill" }, { status: 404 });
 
@@ -148,4 +155,6 @@ export async function POST(request: NextRequest) {
       { status: message === "Unknown waybill" ? 404 : 500 }
     );
   }
+    }
+  );
 }
