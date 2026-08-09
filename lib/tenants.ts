@@ -82,17 +82,36 @@ export async function ensureTenantRegistry(): Promise<void> {
   `).then(async () => {
     const legacyPassword = process.env.APP_PASSWORD;
     if (!legacyPassword) return;
-    const found = await adminPool.query("select id from public.app_tenants limit 1");
-    if (found.rowCount) return;
-    const tenantId = randomUUID();
-    const userId = randomUUID();
-    const email = (process.env.ADMIN_EMAIL || "owner@daily-cart.local").toLowerCase();
-    await adminPool.query(
-      `insert into public.app_tenants (id, slug, name, schema_name) values ($1,$2,$3,'public');
-       insert into public.app_users (id, email, password_hash) values ($4,$5,$6);
-       insert into public.app_tenant_memberships (tenant_id,user_id,role) values ($1,$4,'owner')`,
-      [tenantId, process.env.DEFAULT_TENANT_SLUG || "daily-cart", process.env.DEFAULT_TENANT_NAME || "Daily Cart", userId, email, await passwordHash(legacyPassword)]
-    );
+    const client = await adminPool.connect();
+    try {
+      await client.query("begin");
+      // Serialize first-run bootstrap across concurrent serverless requests.
+      await client.query("select pg_advisory_xact_lock($1)", [820260809]);
+      const found = await client.query("select id from public.app_tenants limit 1");
+      if (!found.rowCount) {
+        const tenantId = randomUUID();
+        const userId = randomUUID();
+        const email = (process.env.ADMIN_EMAIL || "owner@daily-cart.local").toLowerCase();
+        await client.query(
+          "insert into public.app_tenants (id, slug, name, schema_name) values ($1,$2,$3,'public')",
+          [tenantId, process.env.DEFAULT_TENANT_SLUG || "daily-cart", process.env.DEFAULT_TENANT_NAME || "Daily Cart"]
+        );
+        await client.query(
+          "insert into public.app_users (id, email, password_hash) values ($1,$2,$3)",
+          [userId, email, await passwordHash(legacyPassword)]
+        );
+        await client.query(
+          "insert into public.app_tenant_memberships (tenant_id,user_id,role) values ($1,$2,'owner')",
+          [tenantId, userId]
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }).then(() => undefined);
   await globalRegistry.__tenantRegistryReady;
 }
