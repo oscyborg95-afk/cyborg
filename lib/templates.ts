@@ -10,7 +10,7 @@
 // A line whose placeholders are ALL unresolved is dropped entirely, so e.g.
 // the tracking line disappears cleanly when there is no tracking id yet.
 
-import type { AlertKind, MessageTemplates, TemplateKey } from "./types";
+import type { AlertKind, MessageTemplates, TemplateKey } from "./types.ts";
 
 export const TEMPLATE_META: Record<
   TemplateKey,

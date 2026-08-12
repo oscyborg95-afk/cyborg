@@ -4,15 +4,15 @@ import {
   hasSentAlert,
   ingestDeliveryEvent,
   type DeliveryNotificationInput,
-} from "./db";
+} from "./db.ts";
 import {
   ownerCallDueAt,
   scheduledMorningAt,
   type NormalizedDeliveryEvent,
-} from "./delivery-events";
-import { phoneToChatId } from "./phone";
-import { makeTemplates } from "./templates";
-import type { Order } from "./types";
+} from "./delivery-events.ts";
+import { phoneToChatId } from "./phone.ts";
+import { makeTemplates } from "./templates.ts";
+import type { Order } from "./types.ts";
 
 function displayDate(value: string | null): string {
   if (!value) return "date not confirmed";
@@ -27,9 +27,16 @@ function displayDate(value: string | null): string {
 
 function cleanReason(reason: string): string {
   return reason
-    .replace(/\s*Reschedule Date\s*:\s*\d{4}-\d{2}-\d{2}\s*/gi, " ")
+    .replace(
+      /\s*(?:re-?schedule(?:d)?|next\s*delivery|re-?delivery|delivery)\s*(?:date|on|to|for)?\s*[:\-=]?\s*\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}\s*/gi,
+      " "
+    )
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isReschedule(status: NormalizedDeliveryEvent["status"]): boolean {
+  return status === "rescheduled" || status === "branch_rescheduled";
 }
 
 function ownerAlertBody(
@@ -95,12 +102,22 @@ export async function processDeliveryEvent(
   const ownerPhone = settings.business_phone_1.trim();
   const ownerChat = ownerPhone ? phoneToChatId(ownerPhone) : "";
   const prefix = `delivery:${tracked.order.id}:attempt:${event.attemptNo}`;
+  // Owner alerts stay per-date: a new delivery date is genuinely new information
+  // worth a second alert. Where the courier gave no date they collapse onto one
+  // key per attempt, as before.
   const exceptionPrefix =
-    event.status === "rescheduled" && event.nextDeliveryDate
+    isReschedule(event.status) && event.nextDeliveryDate
       ? `delivery:${tracked.order.id}:reschedule:${event.nextDeliveryDate}`
       : prefix;
+  // The customer-facing key deliberately carries no attempt number. The webhook
+  // reads the attempt from a payload field while the poller re-derives it from
+  // history on every run, so the two disagree constantly and a key built from
+  // either one lets the same reschedule through twice. Order + date is stable
+  // across both paths, and the queue's per-order cooldown catches the rest.
+  const customerRescheduleKey =
+    `delivery:${tracked.order.id}:customer_rescheduled:${event.nextDeliveryDate ?? "pending"}`;
   const now = new Date();
-  const callDueAt = event.status === "rescheduled"
+  const callDueAt = isReschedule(event.status)
     ? ownerCallDueAt(event.nextDeliveryDate, event.occurredAt, now)
     : null;
 
@@ -132,17 +149,21 @@ export async function processDeliveryEvent(
     }
   }
 
-  if (event.status === "rescheduled") {
-    notifications.push({
-      recipient: "customer",
-      chat_id: customerChat,
-      body: customerRescheduleBody(
-        templates.rescheduledDelivery(event.trackingId),
-        event
-      ),
-      notification_type: "customer_rescheduled",
-      dedupe_key: `${exceptionPrefix}:customer_rescheduled`,
-    });
+  if (isReschedule(event.status)) {
+    // A parcel that went back to the branch is an internal courier movement;
+    // the customer hears about it only once it is rescheduled for real.
+    if (event.status === "rescheduled") {
+      notifications.push({
+        recipient: "customer",
+        chat_id: customerChat,
+        body: customerRescheduleBody(
+          templates.rescheduledDelivery(event.trackingId),
+          event
+        ),
+        notification_type: "customer_rescheduled",
+        dedupe_key: customerRescheduleKey,
+      });
+    }
     if (ownerChat) {
       notifications.push({
         recipient: "owner",
@@ -175,7 +196,7 @@ export async function processDeliveryEvent(
     }
   }
 
-  if (event.status === "failed_to_deliver" && ownerChat) {
+  if ((event.status === "failed_to_deliver" || event.status === "branch_failed") && ownerChat) {
     notifications.push({
       recipient: "owner",
       chat_id: ownerChat,

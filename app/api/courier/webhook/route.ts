@@ -8,11 +8,7 @@ import {
   inspectCourierWebhook,
   webhookCheckpoint,
 } from "@/lib/courier-webhook";
-import {
-  normalizeDeliveryStatus,
-  parseRescheduleDate,
-  type NormalizedDeliveryEvent,
-} from "@/lib/delivery-events";
+import { normalizeWebhookEvent } from "@/lib/delivery-events";
 import { processDeliveryEvent } from "@/lib/delivery-workflow";
 import { processTrackingNotificationQueue } from "@/lib/tracking-notifications";
 import { withTenant } from "@/lib/tenant-context";
@@ -58,14 +54,16 @@ function stable(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function webhookOccurredAt(value: string | null): string {
-  if (!value) return new Date().toISOString();
-  const direct = new Date(value);
-  if (!Number.isNaN(direct.getTime()) && /(?:Z|[+-]\d\d:?\d\d)$/i.test(value)) {
-    return direct.toISOString();
+// Every string the courier sent, at any nesting depth, so the reschedule-date
+// scan is not limited to the one field we happened to map.
+function payloadTexts(value: unknown, depth = 0): string[] {
+  if (depth > 4 || !value || typeof value !== "object") return [];
+  const out: string[] = [];
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    if (typeof child === "string") out.push(child);
+    else if (child && typeof child === "object") out.push(...payloadTexts(child, depth + 1));
   }
-  const local = new Date(`${value.trim().replace(" ", "T")}+05:30`);
-  return Number.isNaN(local.getTime()) ? new Date().toISOString() : local.toISOString();
+  return out;
 }
 
 export async function POST(request: NextRequest) {
@@ -114,28 +112,13 @@ export async function POST(request: NextRequest) {
       payload: { ...payload, _observed_keys: inspected.observedKeys },
       notifications: [],
     });
-    const canonical =
-      event.status === "returned" || event.status === "cancelled"
-        ? "returned_to_ho"
-        : event.status === "redelivery"
-          ? "out_for_delivery"
-          : normalizeDeliveryStatus(event.status);
-    if (canonical) {
-      const normalized: NormalizedDeliveryEvent = {
-        eventKey: `webhook:${fingerprint}`,
-        trackingId: event.trackingId,
-        status: canonical,
-        attemptNo: event.attempt ?? 1,
-        reason: event.remarks,
-        occurredAt: webhookOccurredAt(event.occurredAt),
-        nextDeliveryDate:
-          canonical === "rescheduled" ? parseRescheduleDate(event.remarks) : null,
-        raw: {
-          status_name: event.status,
-          status_created_at: event.occurredAt ?? new Date().toISOString(),
-          remarks: event.remarks,
-        },
-      };
+    // One normalizer for both ingestion paths. The reschedule date is also
+    // hunted for across the whole payload, not just `remarks`: couriers put it
+    // in a different field depending on the callback, and a date the webhook
+    // misses but the poller finds produces two different dedupe keys — which is
+    // exactly how the customer ended up with duplicate reschedule messages.
+    const normalized = normalizeWebhookEvent(event, fingerprint, payloadTexts(payload));
+    if (normalized) {
       await processDeliveryEvent(normalized, "webhook");
     }
     after(() => processTrackingNotificationQueue(50));

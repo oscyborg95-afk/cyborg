@@ -2,12 +2,12 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
-      "path": "/api/tracking/cron",
+      "path": "/api/tracking/cron?mode=sync",
       "schedule": "30 18 * * *"
     },
     {
-      "path": "/api/radar/cron",
-      "schedule": "0 0 * * *"
+      "path": "/api/tracking/cron?mode=drain",
+      "schedule": "0 1 * * *"
     }
   ]
 }

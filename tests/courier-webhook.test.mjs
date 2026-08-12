@@ -19,6 +19,9 @@ test("parses nested TransExpress-style reschedule payloads", () => {
   assert.deepEqual(event, {
     trackingId: "AT123456",
     status: "rescheduled",
+    // The courier's own wording is kept so the canonical classifier can tell a
+    // branch reschedule apart from a real one.
+    rawStatus: "rescheduled",
     remarks: "Customer unavailable",
     attempt: 2,
     occurredAt: null,

@@ -14,7 +14,6 @@ parsing, one-click courier dispatch, and a gamified high-score board.
 | `/customers` | Customer 360 directory with lifetime value, delivery history, AI memory, language, tags, notes, and per-customer autonomy controls |
 | `/ai` | Autonomous salesperson control room — off/draft/auto mode, knowledge, tone, confidence threshold, quiet hours, and full decision audit |
 | `/broadcast` | Rate-limited WhatsApp blast to past customers (launches/restocks) |
-| `/radar` | **Product Radar** — on-demand Sri Lankan product discovery, Meta competitor tracking, ranked public-signal shortlist and creative evidence |
 | `/analytics` | High-score board — levels, dispatch streak, net worth — plus return rates by district/product and an ad-spend/ROAS tracker |
 | `/login` | Operator login (only when `APP_PASSWORD` is set) |
 
@@ -33,8 +32,10 @@ parsing, one-click courier dispatch, and a gamified high-score board.
    `npm start` now runs the multi-tenant supervisor. It reads active tenants from
    Postgres and starts one isolated Baileys child connection per tenant. Use
    `npm run start:single` only for legacy/local single-account troubleshooting.
-3. Optional — Supabase: run `supabase/schema.sql` in the SQL editor, set `SUPABASE_URL`
-   and `SUPABASE_SERVICE_ROLE_KEY`. Without these the app uses an in-memory store.
+3. Supabase/Postgres: run `supabase/schema.sql` in the SQL editor. The legacy
+   single-workspace development mode can use an in-memory store, but multi-tenant
+   accounts require `DATABASE_URL`; `SUPABASE_URL` and
+   `SUPABASE_SERVICE_ROLE_KEY` are optional server-side client settings.
 4. Optional — courier: set `COURIER_API_URL` / `COURIER_API_KEY` and adjust the payload
    field names in `lib/couriers.ts` to your courier's docs. Mock tracking IDs otherwise.
 5. `npm run dev` and open http://localhost:3000.
@@ -68,38 +69,50 @@ Measure memory before raising it: the current Google Cloud `e2-micro` is suitabl
 for the legacy account but should be upgraded before promising three concurrent
 production accounts.
 
-### Product Radar
-
-Set `APIFY_TOKEN` to enable `/radar`; create one in
-[Apify token settings](https://console.apify.com/settings/integrations). The
-operator can then type any product or niche directly on the Radar page—for
-example `face serum`, `kitchen gadgets`, or `car accessories`. Every search is
-fixed to active Meta ads shown in Sri Lanka, identifies up to eight product
-candidates, and replaces the prior shortlist with their local competitor
-evidence.
-
-The authenticated `/api/radar/cron` route runs daily at 05:30 Asia/Colombo and
-repeats the most recent completed search. Before the first completed manual
-search, it safely defaults to `cosmetics`. International TikTok enrichment is
-optional and off by default because TikTok Creative Center does not expose Sri
-Lanka as a country filter; when enabled, it supplements rather than replaces
-Sri Lankan Meta evidence. Candidate caps, enrichment countries, timeouts, and
-Actor IDs remain configurable through the `RADAR_*` /
-`APIFY_*_ACTOR_ID` variables in `.env.local.example`.
-
-Without a token and live scan, the page shows an explicitly labelled demo
-shortlist. Radar scores public advertising evidence only; it does not claim
-sales, spend, profitability, CPA, or ROAS.
-
 ### Tracking reliability
 
 Set `COURIER_WEBHOOK_SECRET` for the TransExpress callback and `CRON_SECRET`
-for the protected tracking fallback runner. `vercel.json` schedules a daily
-00:00 Asia/Colombo recovery sweep, which is compatible with Vercel Hobby. On
-Vercel Pro, change the schedule to `*/10 * * * *` for a ten-minute fallback.
-For a ten-minute fallback on any Vercel plan, set Railway worker variables
-`APP_TRACKING_CRON_URL=https://cyborg-fawn.vercel.app/api/tracking/cron` and
-the same `CRON_SECRET` value used by Vercel.
+for the protected tracking fallback runner.
+
+`/api/tracking/cron` takes a `mode`:
+
+| Mode | Cost | What it does |
+| --- | --- | --- |
+| `?mode=sync` | one courier round trip per in-flight parcel | full reconciliation of courier history, then drains the outbox |
+| `?mode=drain` | one DB round trip | flushes the WhatsApp outbox only |
+
+The drain matters on its own because reminders are queued for a wall-clock time
+— the owner's 07:00 "delivery today" nudge sits in the queue until something
+drains it. Run it every few minutes; a sync-only schedule delivers 07:00
+reminders at whatever hour the sync happens to run.
+
+`vercel.json` ships Hobby-compatible daily schedules for both. **On Vercel Pro,
+change them to `0 * * * *` (sync) and `*/15 * * * *` (drain).** On any plan, the
+always-on WhatsApp worker drives both on a much tighter loop — drain every two
+minutes, sync every ten — when you set Railway worker variables
+`APP_TRACKING_CRON_URL=https://cyborg-fawn.vercel.app/api/tracking/cron` and the
+same `CRON_SECRET` value used by Vercel. Tune with `TRACKING_DRAIN_INTERVAL_MS`
+and `TRACKING_SYNC_INTERVAL_MS`.
+
+A sync reports `remaining` when it hits `TRACKING_SYNC_BUDGET_MS` (45s default)
+before walking every parcel. Parcels are polled least-recently-updated first, so
+the next run resumes with the stale ones — a `remaining` that never falls means
+the schedule is too slow for the shop's volume.
+
+### Not talking over yourself
+
+Courier events arrive twice — once by webhook, once by the poller — and the two
+disagree about attempt numbers and dates. Three layers keep that from becoming
+duplicate customer messages:
+
+1. Both paths build the event through one normalizer (`lib/delivery-events.ts`).
+2. The customer's dedupe key is order + delivery date, never the attempt number.
+3. `CUSTOMER_NOTIFICATION_COOLDOWN_HOURS` (12 by default) collapses repeats of
+   the same message type to one per order per window. Owner alerts are exempt —
+   the operator wants every revision.
+
+Every message an order caused is listed under "Messages sent for this order" in
+the delivery rescue card, with its dedupe key and outcome.
 
 ## Architecture
 
@@ -134,9 +147,8 @@ the same `CRON_SECRET` value used by Vercel.
 | Message templates (Sinhala) | `lib/templates.ts` |
 | Gamified metrics (levels, streak, net worth) | `lib/metrics.ts`, `app/api/metrics/route.ts` |
 | Products + physical stock (presets, auto restock on returns) | `app/api/products/*`, managed on `/analytics` |
-| Automated product discovery + competitor evidence (Apify, daily cron, Postgres/in-memory) | `lib/product-radar.ts`, `app/api/radar/*`, `/radar` |
 | Courier tracking auto-sync (booked → delivered/returned) | `lib/couriers.ts`, `app/api/track/sync/route.ts` |
-| Orders + manifests data layer (Supabase or in-memory) | `lib/db.ts`, `supabase/schema.sql` |
+| Orders + manifests data layer (tenant Postgres schemas; in-memory for legacy local development only) | `lib/db.ts`, `supabase/schema.sql` |
 | Courier REST bridge (mock mode until keys are set) | `lib/couriers.ts` |
 
 ## The dispatch loop

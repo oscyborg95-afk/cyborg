@@ -5,6 +5,10 @@ export type CourierWebhookStatus =
 export interface ParsedCourierWebhook {
   trackingId: string;
   status: CourierWebhookStatus;
+  // The courier's own wording, kept alongside the coarse mapped status so the
+  // canonical classifier can tell "returned to branch - rescheduled" apart from
+  // a plain reschedule. Mapping to CourierWebhookStatus is lossy.
+  rawStatus: string;
   remarks: string;
   attempt: number | null;
   occurredAt: string | null;
@@ -68,6 +72,7 @@ export function parseCourierWebhook(payload: unknown): ParsedCourierWebhook | nu
   return {
     trackingId,
     status: normalizeCourierWebhookStatus(rawStatus),
+    rawStatus,
     remarks,
     attempt: Number.isFinite(parsedAttempt) && parsedAttempt > 0 ? parsedAttempt : null,
     occurredAt: occurredAt || null,

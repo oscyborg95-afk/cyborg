@@ -101,6 +101,40 @@ io.use((socket, next) => {
 let ready = false;
 let latestQr = null; // data:image/png;base64,... — the most recent QR to scan, if any
 
+// --- Send idempotency ------------------------------------------------------
+// The dashboard aborts a /send after WA_WORKER_TIMEOUT_MS (10s by default) and
+// the notification queue retries it. If WhatsApp had in fact accepted the first
+// attempt, the retry would deliver a second copy to the customer. Callers that
+// can retry pass an idempotencyKey; we remember it just long enough to cover
+// the retry window and answer repeats without touching WhatsApp again.
+const SEND_IDEMPOTENCY_TTL_MS = 6 * 60 * 60 * 1000;
+const sendLedger = new Map(); // key -> { at, promise }
+
+function pruneSendLedger() {
+  const cutoff = Date.now() - SEND_IDEMPOTENCY_TTL_MS;
+  for (const [key, entry] of sendLedger) {
+    if (entry.at < cutoff) sendLedger.delete(key);
+  }
+}
+
+// Returns a response to replay, or null when this send should proceed.
+function claimSendKey(key) {
+  if (!key) return null;
+  pruneSendLedger();
+  const existing = sendLedger.get(key);
+  if (existing) return existing;
+  sendLedger.set(key, { at: Date.now(), done: false });
+  return null;
+}
+
+function releaseSendKey(key, delivered) {
+  if (!key) return;
+  // A send that failed outright must be retryable, so drop the claim; a
+  // delivered one stays in the ledger to absorb the duplicate retry.
+  if (!delivered) sendLedger.delete(key);
+  else sendLedger.set(key, { at: Date.now(), done: true });
+}
+
 function startTrackingFallbackScheduler() {
   const url = process.env.APP_TRACKING_CRON_URL;
   const secret = process.env.CRON_SECRET;
@@ -108,17 +142,26 @@ function startTrackingFallbackScheduler() {
     console.log("[cyborg-wa-worker] tracking fallback scheduler disabled (APP_TRACKING_CRON_URL / CRON_SECRET not set)");
     return;
   }
-  const run = async () => {
+  const run = async (mode) => {
+    const target = new URL(url);
+    target.searchParams.set("mode", mode);
     try {
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${secret}` } });
+      const res = await fetch(target, { headers: { Authorization: `Bearer ${secret}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 160)}`);
-      console.log("[cyborg-wa-worker] tracking fallback completed");
+      console.log(`[cyborg-wa-worker] tracking ${mode} completed`);
     } catch (err) {
-      console.error("[cyborg-wa-worker] tracking fallback failed:", err.message);
+      console.error(`[cyborg-wa-worker] tracking ${mode} failed:`, err.message);
     }
   };
-  setTimeout(run, 60_000);
-  setInterval(run, 10 * 60_000);
+  // Draining the outbox costs one DB round trip, so it runs often enough that a
+  // reminder scheduled for 07:00 actually goes out at 07:00. The full courier
+  // reconciliation is the expensive one and stays on a slower beat.
+  const drainMs = Math.max(60_000, Number(process.env.TRACKING_DRAIN_INTERVAL_MS || 120_000));
+  const syncMs = Math.max(drainMs, Number(process.env.TRACKING_SYNC_INTERVAL_MS || 10 * 60_000));
+  setTimeout(() => run("drain"), 30_000);
+  setInterval(() => run("drain"), drainMs);
+  setTimeout(() => run("sync"), 60_000);
+  setInterval(() => run("sync"), syncMs);
 }
 
 function emitMessage(msg) {
@@ -294,7 +337,10 @@ if (MOCK) {
   });
 
   app.post("/send", (req, res) => {
-    const { chatId, text, media, expectedLatestMessageId } = req.body;
+    const { chatId, text, media, expectedLatestMessageId, idempotencyKey } = req.body;
+    if (claimSendKey(idempotencyKey)) {
+      return res.json({ ok: true, deduped: true });
+    }
     // Live WhatsApp JIDs end in @s.whatsapp.net; the mock seeds use @c.us.
     // Match by phone digits so server-side sends (alerts, broadcast) work here.
     let chat = chats.get(chatId);
@@ -303,6 +349,7 @@ if (MOCK) {
       chat = [...chats.values()].find((c) => c.id.split("@")[0] === digits);
     }
     if (!chat || (!text && !media?.data)) {
+      releaseSendKey(idempotencyKey, false);
       return res.status(400).json({ error: "unknown chatId or empty text" });
     }
     const latest = chat.messages[chat.messages.length - 1];
@@ -310,8 +357,10 @@ if (MOCK) {
       expectedLatestMessageId &&
       (!latest || latest.fromMe || latest.id !== expectedLatestMessageId)
     ) {
+      releaseSendKey(idempotencyKey, false);
       return res.status(409).json({ error: "A newer message superseded this AI reply" });
     }
+    releaseSendKey(idempotencyKey, true);
     const msg = {
       id: `${chat.id}-${chat.messages.length}`,
       chatId: chat.id,
@@ -1101,15 +1150,19 @@ app.post("/send", async (req, res) => {
   if (!ready || !sock) {
     return res.status(503).json({ error: "WhatsApp not linked yet — scan the QR at /qr" });
   }
-  const { chatId, text, media, expectedLatestMessageId } = req.body;
+  const { chatId, text, media, expectedLatestMessageId, idempotencyKey } = req.body;
   if (!chatId || (!text && !media?.data)) {
     return res.status(400).json({ error: "chatId and text (or media) required" });
+  }
+  if (claimSendKey(idempotencyKey)) {
+    return res.json({ ok: true, deduped: true });
   }
   try {
     if (expectedLatestMessageId) {
       const messages = await listMessages(chatId);
       const latest = messages[messages.length - 1];
       if (!latest || latest.fromMe || latest.id !== expectedLatestMessageId) {
+        releaseSendKey(idempotencyKey, false);
         return res.status(409).json({ error: "A newer message superseded this AI reply" });
       }
     }
@@ -1118,6 +1171,7 @@ app.post("/send", async (req, res) => {
     if (media?.data) {
       mediaBuffer = Buffer.from(media.data, "base64");
       if (mediaBuffer.length > MAX_MEDIA_BYTES) {
+        releaseSendKey(idempotencyKey, false);
         return res.status(400).json({ error: "media too large (6 MB max)" });
       }
       sent = await sock.sendMessage(chatId, {
@@ -1130,6 +1184,7 @@ app.post("/send", async (req, res) => {
     }
     // Answer as soon as WhatsApp accepts the message — persisting to Postgres
     // (2 round trips to a remote DB) happens after, so the UI isn't kept waiting.
+    releaseSendKey(idempotencyKey, true);
     res.json({ ok: true });
     // messages.upsert usually echoes our own sends, but don't rely on it.
     const msg = normalize(sent);
@@ -1147,6 +1202,7 @@ app.post("/send", async (req, res) => {
       }
     }
   } catch (err) {
+    releaseSendKey(idempotencyKey, false);
     res.status(500).json({ error: String(err) });
   }
 });

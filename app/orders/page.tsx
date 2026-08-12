@@ -24,6 +24,7 @@ import type {
   ShippingManifest,
   TrackingHealth,
   TrackingEvent,
+  TrackingNotificationJob,
 } from "@/lib/types";
 import { Froggy } from "../components/froggy";
 import { Button, Card } from "../components/ui";
@@ -1331,6 +1332,124 @@ function notificationBadge(
   );
 }
 
+const NOTIFICATION_TYPE_LABEL: Record<string, string> = {
+  customer_out_for_delivery: "Customer · out for delivery",
+  customer_rescheduled: "Customer · reschedule notice",
+  customer_delivered: "Customer · delivered thanks",
+  customer_returned: "Customer · return apology",
+  owner_reschedule_alert: "You · reschedule alert",
+  owner_delivery_failed: "You · failed delivery",
+  owner_call_reminder: "You · call reminder",
+  owner_morning_reminder: "You · delivery-day reminder",
+  owner_terminal_return: "You · parcel returned",
+  tracking: "Tracking update",
+};
+
+// Every WhatsApp this order caused. Two identical bubbles in a customer's chat
+// look the same whether they came from one bug or two events — this names the
+// job behind each one, so a duplicate is diagnosable instead of just annoying.
+function MessageAudit({ orderId }: { orderId: string }) {
+  const [jobs, setJobs] = useState<TrackingNotificationJob[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/orders/${orderId}/notifications`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not load the message history");
+      setJobs(data.notifications ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load the message history");
+    } finally {
+      setLoading(false);
+    }
+  }, [orderId]);
+
+  const duplicates = useMemo(() => {
+    if (!jobs) return 0;
+    const seen = new Map<string, number>();
+    for (const job of jobs) {
+      if (job.recipient !== "customer" || job.status !== "sent") continue;
+      const key = job.notification_type ?? "tracking";
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+    }
+    return [...seen.values()].reduce((total, count) => total + Math.max(count - 1, 0), 0);
+  }, [jobs]);
+
+  return (
+    <details
+      className="group mt-3 rounded-xl border-2 border-cardline/60 bg-cream/30"
+      onToggle={(event) => {
+        if ((event.currentTarget as HTMLDetailsElement).open && !jobs && !loading) load();
+      }}
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 font-display text-[11px] font-extrabold text-ink outline-none hover:bg-cream/60 focus-visible:bg-cream/60">
+        <span>
+          💬 Messages sent for this order
+          {duplicates > 0 && (
+            <span className="ml-2 rounded-lg bg-flame-tint px-2 py-0.5 text-[10px] text-flame-dark">
+              {duplicates} repeat{duplicates === 1 ? "" : "s"} to customer
+            </span>
+          )}
+        </span>
+        <span className="text-ink-soft group-open:rotate-180" aria-hidden="true">▾</span>
+      </summary>
+      <div className="border-t border-cardline/60 px-3 py-2">
+        {loading && (
+          <p className="font-display text-[11px] font-bold text-ink-soft">Loading…</p>
+        )}
+        {error && (
+          <p role="alert" className="font-display text-[11px] font-extrabold text-flame-dark">
+            ⚠ {error}
+          </p>
+        )}
+        {jobs?.length === 0 && !loading && (
+          <p className="font-display text-[11px] font-bold text-ink-soft">
+            No WhatsApp messages have been queued for this order.
+          </p>
+        )}
+        <ul className="space-y-1.5">
+          {jobs?.map((job) => (
+            <li key={job.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span className="font-display text-[11px] font-extrabold text-ink">
+                {NOTIFICATION_TYPE_LABEL[job.notification_type ?? "tracking"] ??
+                  job.notification_type}
+              </span>
+              <span
+                className={`rounded px-1.5 py-0.5 font-display text-[10px] font-extrabold ${
+                  job.status === "sent"
+                    ? "bg-pond text-frog-dark"
+                    : job.status === "failed"
+                      ? "bg-flame-tint text-flame-dark"
+                      : job.status === "skipped"
+                        ? "bg-surface-soft text-ink-soft"
+                        : "bg-gold/20 text-gold-dark"
+                }`}
+              >
+                {job.status}
+              </span>
+              <span className="font-mono text-[10px] font-bold text-ink-soft">
+                {fmtDateTime(job.sent_at ?? job.created_at)}
+              </span>
+              {job.last_error && (
+                <span className="w-full font-display text-[10px] font-semibold text-flame-dark">
+                  {job.last_error}
+                </span>
+              )}
+              <span className="w-full truncate font-mono text-[9px] text-ink-soft/70">
+                {job.dedupe_key}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </details>
+  );
+}
+
 function AttemptRiskRail({ attempt }: { attempt: number }) {
   const current = Math.min(Math.max(attempt, 1), 3);
   const tone =
@@ -1607,6 +1726,15 @@ function DeliveryRescuePanel({
                       </span>
                     </div>
 
+                    {attempt.customer_replied_at && (
+                      <p className="mt-2 rounded-xl border-2 border-sky/40 bg-sky-tint px-3 py-2 font-display text-[11px] font-bold text-ink">
+                        💬 Customer replied {fmtDateTime(attempt.customer_replied_at)}:{" "}
+                        <span className="font-semibold">
+                          &ldquo;{attempt.customer_reply}&rdquo;
+                        </span>
+                      </p>
+                    )}
+
                     <div className="mt-3 grid gap-3 border-t-2 border-cardline/60 pt-3 lg:grid-cols-[auto_1fr]">
                       <div className="grid grid-cols-2 gap-2 sm:flex">
                         <a
@@ -1738,6 +1866,7 @@ function DeliveryRescuePanel({
                         {feedback[attempt.id].text}
                       </p>
                     )}
+                    <MessageAudit orderId={attempt.order_id} />
                   </div>
                 </article>
               );

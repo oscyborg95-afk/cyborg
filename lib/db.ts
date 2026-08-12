@@ -25,7 +25,7 @@ import type {
   TrackingNotificationJob,
 } from "./types";
 import type { CourierInvoiceLine, ParsedCourierInvoice } from "./remittance-invoice";
-import { requireTenantSession } from "./tenant-context.ts";
+import { getTenantSession, requireTenantSession } from "./tenant-context.ts";
 import { authorizedTenantSchema } from "./tenants.ts";
 
 // Data layer. Connects directly to Postgres (Supabase) when DATABASE_URL is set,
@@ -60,7 +60,7 @@ const g = globalThis as unknown as {
   __cyborgAlerts?: Map<string, CustomerAlert>; // in-memory customer-alert log
   __alertsReady?: Set<string>;
   __cyborgOrderLocks?: Map<string, Promise<void>>;
-  __cyborgTrackingSyncRunning?: boolean;
+  __cyborgTrackingSyncRunning?: Set<string>;
   __cyborgWebhookEvents?: Map<string, CourierWebhookEvent>;
   __cyborgNotificationJobs?: Map<string, TrackingNotificationJob>;
   __cyborgDeliveryEvents?: Map<string, DeliveryEvent>;
@@ -520,19 +520,28 @@ interface BookingResultLike {
 // returns null immediately instead of duplicating status and message side effects.
 export async function withExclusiveTrackingSync<T>(fn: () => Promise<T>): Promise<T | null> {
   if (!pool) {
-    if (g.__cyborgTrackingSyncRunning) return null;
-    g.__cyborgTrackingSyncRunning = true;
+    // The in-memory fallback runs before a database (and before tenants) exist,
+    // so it must not demand a session the way the Postgres path can.
+    const tenantId = (await getTenantSession())?.tenantId ?? "local";
+    const busy = (g.__cyborgTrackingSyncRunning ??= new Set<string>());
+    if (busy.has(tenantId)) return null;
+    busy.add(tenantId);
     try {
       return await fn();
     } finally {
-      g.__cyborgTrackingSyncRunning = false;
+      busy.delete(tenantId);
     }
   }
+  // Advisory locks are database-wide, but tenants are schemas inside one
+  // database — a shared key let one tenant's sync silently skip every other
+  // tenant's. The key is namespaced per tenant so they only exclude themselves.
+  const { tenantId } = await requireTenantSession();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const { rows } = await client.query(
-      "select pg_try_advisory_xact_lock(hashtext('cyborg_tracking_sync')) as acquired"
+      "select pg_try_advisory_xact_lock(hashtext($1)) as acquired",
+      [`cyborg_tracking_sync:${tenantId}`]
     );
     if (!rows[0]?.acquired) {
       await client.query("ROLLBACK");
@@ -572,6 +581,43 @@ export async function createManifest(
   };
   memManifests.set(manifest.id, manifest);
   return manifest;
+}
+
+// Every parcel still with the courier, paired with its manifest. The tracking
+// sync used to start from listOrders(), which is capped at the 200 newest rows
+// for the dashboard — once a shop passed 200 orders, older booked parcels
+// quietly stopped being polled and their reschedules never surfaced. Tracking
+// has to be driven by "is it still in flight", not by recency.
+export async function listInFlightTrackedOrders(): Promise<
+  Array<{ order: Order; manifest: ShippingManifest }>
+> {
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    await ensureTrackingOpsSchema(pool);
+    const { rows } = await pool.query(
+      `select o.*, row_to_json(m) as manifest
+         from shipping_manifests m
+         join orders o on o.id = m.order_id
+        where o.order_status = 'booked' and o.archived_at is null
+        order by coalesce(
+          (select max(e.occurred_at) from delivery_events e where e.order_id = o.id),
+          m.created_at
+        ) asc
+        limit 5000`
+    );
+    return (rows as Array<Order & { manifest: ShippingManifest }>).map((row) => {
+      const { manifest, ...order } = row;
+      return { order: order as Order, manifest };
+    });
+  }
+  const out: Array<{ order: Order; manifest: ShippingManifest }> = [];
+  for (const manifest of memManifests.values()) {
+    const order = memOrders.get(manifest.order_id);
+    if (order && order.order_status === "booked" && !order.archived_at) {
+      out.push({ order, manifest });
+    }
+  }
+  return out;
 }
 
 export async function listManifests(): Promise<ShippingManifest[]> {
@@ -651,11 +697,15 @@ async function ensureTrackingOpsSchema(db: Queryable): Promise<void> {
        call_status varchar not null default 'pending',
        called_at timestamptz,
        call_notes text not null default '',
+       customer_replied_at timestamptz,
+       customer_reply text not null default '',
        created_at timestamptz not null default now(),
        updated_at timestamptz not null default now(),
        unique(order_id, attempt_no))`
   );
   await db.query("create index if not exists idx_delivery_attempts_due on delivery_attempts(call_status, call_due_at)");
+  await db.query("alter table delivery_attempts add column if not exists customer_replied_at timestamptz");
+  await db.query("alter table delivery_attempts add column if not exists customer_reply text not null default ''");
   await db.query(
     `create table if not exists tracking_notification_jobs (
        id uuid primary key default gen_random_uuid(),
@@ -679,6 +729,10 @@ async function ensureTrackingOpsSchema(db: Queryable): Promise<void> {
        on tracking_notification_jobs(webhook_event_id, recipient) where webhook_event_id is not null`
   );
   await db.query("create index if not exists idx_tracking_notification_due on tracking_notification_jobs(status, next_attempt_at)");
+  // Serves both the per-order message audit and the customer cooldown lookup.
+  await db.query(
+    "create index if not exists idx_tracking_notification_order on tracking_notification_jobs(order_id, notification_type, created_at desc)"
+  );
   await db.query(
     "create unique index if not exists uq_tracking_notification_dedupe on tracking_notification_jobs(dedupe_key) where dedupe_key is not null"
   );
@@ -692,6 +746,21 @@ export interface DeliveryNotificationInput {
   notification_type: string;
   dedupe_key: string;
   next_attempt_at?: string;
+}
+
+// Last line of defence against talking over ourselves. Dedupe keys stop the
+// *same* event being announced twice; this stops a customer hearing the same
+// kind of news repeatedly because the courier kept revising it (a reschedule
+// pushed one day at a time used to produce one WhatsApp per revision). Owner
+// alerts are exempt — the operator wants every revision.
+const CUSTOMER_NOTIFICATION_COOLDOWN_MINUTES = (() => {
+  const configured = Number(process.env.CUSTOMER_NOTIFICATION_COOLDOWN_HOURS);
+  const hours = Number.isFinite(configured) && configured >= 0 ? configured : 12;
+  return Math.round(hours * 60);
+})();
+
+function cooldownApplies(job: DeliveryNotificationInput): boolean {
+  return job.recipient === "customer" && CUSTOMER_NOTIFICATION_COOLDOWN_MINUTES > 0;
 }
 
 export async function ingestDeliveryEvent(input: {
@@ -801,11 +870,20 @@ export async function ingestDeliveryEvent(input: {
           `insert into tracking_notification_jobs
             (order_id, recipient, alert_kind, chat_id, body, notification_type,
              dedupe_key, delivery_attempt_id, next_attempt_at)
-           values ($1,$2,null,$3,$4,$5,$6,$7,$8)
+           select $1,$2,null,$3,$4,$5,$6,$7,$8
+            where not $9::boolean
+               or not exists (
+                 select 1 from tracking_notification_jobs recent
+                  where recent.order_id = $1
+                    and recent.notification_type = $5
+                    and recent.status in ('pending','processing','sent')
+                    and recent.created_at > now() - make_interval(mins => $10::int)
+               )
            on conflict (dedupe_key) where dedupe_key is not null do nothing`,
           [
             tracked.order.id, job.recipient, job.chat_id, job.body, job.notification_type,
             job.dedupe_key, attempt.id, job.next_attempt_at ?? new Date().toISOString(),
+            cooldownApplies(job), CUSTOMER_NOTIFICATION_COOLDOWN_MINUTES,
           ]
         );
       }
@@ -881,6 +959,17 @@ export async function ingestDeliveryEvent(input: {
   }
   for (const job of input.notifications) {
     if ([...memNotificationJobs.values()].some((item) => item.dedupe_key === job.dedupe_key)) continue;
+    if (
+      cooldownApplies(job) &&
+      [...memNotificationJobs.values()].some(
+        (item) =>
+          item.order_id === tracked.order.id &&
+          item.notification_type === job.notification_type &&
+          ["pending", "processing", "sent"].includes(item.status) &&
+          Date.parse(item.created_at) >
+            Date.now() - CUSTOMER_NOTIFICATION_COOLDOWN_MINUTES * 60_000
+      )
+    ) continue;
     const notification: TrackingNotificationJob = {
       id: randomUUID(), webhook_event_id: null, order_id: tracked.order.id,
       recipient: job.recipient, alert_kind: null, chat_id: job.chat_id, body: job.body,
@@ -927,6 +1016,75 @@ export async function listDeliveryAttempts(): Promise<DeliveryAttempt[]> {
       };
     })
     .sort((a, b) => b.last_event_at.localeCompare(a.last_event_at));
+}
+
+// We message a customer about a reschedule and then lose the thread: their
+// reply lands in WhatsApp while the delivery task still says "waiting on a
+// call". Attaching the reply to the open attempt closes that loop — the rescue
+// card can show "customer replied 10m ago" instead of sending the operator to
+// dial someone who already answered in writing.
+//
+// It deliberately does not decide what the reply *meant*. Interpreting "ok" as
+// a confirmation would silently cancel the owner's reminders on an ambiguous
+// message; the human still makes that call, just with the reply in front of them.
+export async function recordCustomerDeliveryReply(
+  phone: string,
+  message: string
+): Promise<DeliveryAttempt | null> {
+  const key = phone.replace(/\D/g, "").slice(-9);
+  if (key.length < 9) return null;
+  const snippet = message.trim().slice(0, 500);
+  if (!snippet) return null;
+
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const { rows } = await pool.query(
+      `update delivery_attempts a set
+         customer_replied_at = now(),
+         customer_reply = $2,
+         updated_at = now()
+        where a.id = (
+          select inner_a.id from delivery_attempts inner_a
+            join orders o on o.id = inner_a.order_id
+           where inner_a.call_status not in ('called_confirmed','resolved')
+             and inner_a.status not in ('delivered','returned_to_ho')
+             and (
+               right(regexp_replace(o.phone_number, '\\D', '', 'g'), 9) = $1
+               or right(regexp_replace(coalesce(o.phone_2,''), '\\D', '', 'g'), 9) = $1
+             )
+           order by inner_a.last_event_at desc
+           limit 1
+        )
+       returning *`,
+      [key, snippet]
+    );
+    return (rows[0] as DeliveryAttempt) ?? null;
+  }
+
+  const open = [...memDeliveryAttempts.entries()]
+    .filter(([, attempt]) => {
+      const order = memOrders.get(attempt.order_id);
+      if (!order) return false;
+      const matches = [order.phone_number, order.phone_2 ?? ""].some(
+        (value) => value.replace(/\D/g, "").slice(-9) === key
+      );
+      return (
+        matches &&
+        !["called_confirmed", "resolved"].includes(attempt.call_status) &&
+        !["delivered", "returned_to_ho"].includes(attempt.status)
+      );
+    })
+    .sort(([, a], [, b]) => b.last_event_at.localeCompare(a.last_event_at));
+  const found = open[0];
+  if (!found) return null;
+  const updated: DeliveryAttempt = {
+    ...found[1],
+    customer_replied_at: new Date().toISOString(),
+    customer_reply: snippet,
+    updated_at: new Date().toISOString(),
+  };
+  memDeliveryAttempts.set(found[0], updated);
+  return updated;
 }
 
 export async function getDeliveryAttempt(id: string): Promise<DeliveryAttempt | null> {
@@ -1141,6 +1299,31 @@ export async function ingestCourierWebhook(input: {
     memNotificationJobs.set(job.id, job);
   }
   return { duplicate: false, event_id: event.id, order_id: tracked.order.id };
+}
+
+// Every WhatsApp this order has caused, queued or sent. Duplicate-message bugs
+// are invisible from the chat thread alone (the operator sees two identical
+// bubbles and no reason why); this is the audit trail that names the job type,
+// its dedupe key and its outcome.
+export async function listOrderNotifications(
+  orderId: string,
+  limit = 100
+): Promise<TrackingNotificationJob[]> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const { rows } = await pool.query(
+      `select * from tracking_notification_jobs
+        where order_id = $1
+        order by created_at desc
+        limit $2`,
+      [orderId, limit]
+    );
+    return rows as TrackingNotificationJob[];
+  }
+  return [...memNotificationJobs.values()]
+    .filter((job) => job.order_id === orderId)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, limit);
 }
 
 export async function claimDueTrackingNotifications(limit = 10): Promise<TrackingNotificationJob[]> {

@@ -96,6 +96,10 @@ export interface DeliveryAttempt {
   call_status: DeliveryCallStatus;
   called_at: string | null;
   call_notes: string;
+  // Set when the customer answers our WhatsApp about this delivery, so the
+  // rescue queue can show a written reply instead of demanding a phone call.
+  customer_replied_at?: string | null;
+  customer_reply?: string;
   customer_notification_status: TrackingNotificationStatus | null;
   owner_notification_status: TrackingNotificationStatus | null;
   created_at: string;

@@ -4,14 +4,23 @@ import {
   getDeliveryAttempt,
   recordCustomerAlert,
   skipTrackingNotification,
-} from "./db";
-import { sendWhatsAppMessage } from "./wa";
+} from "./db.ts";
+import { getTenantSession } from "./tenant-context.ts";
+import { sendWhatsAppMessage } from "./wa.ts";
 
-let running: Promise<{ sent: number; failed: number }> | null = null;
+// One drain per tenant at a time. This used to be a single module-level
+// promise: during the cron's tenant loop, a webhook draining tenant A's queue
+// made tenant B's call return A's promise, so B's queue was skipped entirely.
+const running = new Map<string, Promise<{ sent: number; failed: number }>>();
 
-export function processTrackingNotificationQueue(limit = 20) {
-  if (running) return running;
-  running = (async () => {
+export async function processTrackingNotificationQueue(limit = 20) {
+  // Falls back to a single local lane when auth is not configured (dev against
+  // the in-memory store), rather than refusing to drain the queue at all.
+  const tenantId = (await getTenantSession())?.tenantId ?? "local";
+  const active = running.get(tenantId);
+  if (active) return active;
+
+  const run = (async () => {
     let sent = 0;
     let failed = 0;
     const jobs = await claimDueTrackingNotifications(limit);
@@ -30,7 +39,10 @@ export function processTrackingNotificationQueue(limit = 20) {
             continue;
           }
         }
-        await sendWhatsAppMessage(job.chat_id, job.body);
+        // The job id doubles as the idempotency key: if the worker accepted the
+        // message but our HTTP call timed out, the retry is answered from the
+        // worker's ledger instead of sending the customer a second copy.
+        await sendWhatsAppMessage(job.chat_id, job.body, undefined, undefined, undefined, job.id);
         await finishTrackingNotification(job.id);
         if (job.recipient === "customer" && job.alert_kind) {
           await recordCustomerAlert(job.order_id, job.alert_kind, job.body, "sent");
@@ -47,7 +59,9 @@ export function processTrackingNotificationQueue(limit = 20) {
     }
     return { sent, failed };
   })().finally(() => {
-    running = null;
+    running.delete(tenantId);
   });
-  return running;
+
+  running.set(tenantId, run);
+  return run;
 }

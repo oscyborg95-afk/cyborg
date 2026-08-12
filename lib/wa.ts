@@ -1,5 +1,5 @@
 // Server-side bridge to the headless WhatsApp worker (worker/index.js).
-import { requireTenantSession } from "./tenant-context";
+import { requireTenantSession } from "./tenant-context.ts";
 
 const WA_WORKER_URL = process.env.WA_WORKER_URL || "http://localhost:3001";
 const WORKER_API_SECRET = process.env.WORKER_API_SECRET || "";
@@ -75,17 +75,22 @@ export interface WaOutboundMedia {
   data: string;
 }
 
+// `idempotencyKey` makes a retry safe. A send that WhatsApp accepted but whose
+// HTTP response we never saw (worker slower than WA_WORKER_TIMEOUT_MS) is
+// retried by the notification queue; the worker recognises the key and answers
+// without sending the customer a second copy.
 export function sendWhatsAppMessage(
   chatId: string,
   text: string,
   media?: WaOutboundMedia,
   expectedLatestMessageId?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  idempotencyKey?: string
 ) {
-  return workerFetch<{ ok: boolean }>("/send", {
+  return workerFetch<{ ok: boolean; deduped?: boolean }>("/send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chatId, text, media, expectedLatestMessageId }),
+    body: JSON.stringify({ chatId, text, media, expectedLatestMessageId, idempotencyKey }),
     signal,
   });
 }
