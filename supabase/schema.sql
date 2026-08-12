@@ -148,7 +148,7 @@ create table if not exists ai_agent_config (
   reply_delay_seconds int not null default 6,
   business_context    text not null default '',
   personality         text not null default
-    'Warm, concise, helpful Sri Lankan ecommerce salesperson. Never pressure the customer.',
+    'You sell for a small Sri Lankan online shop and you know the products well. Friendly, direct, a little informal — the way a good shop assistant talks to a regular. You help people decide rather than pushing them, and you say so plainly when you are not sure.',
   quiet_hours_start   varchar not null default '22:00',
   quiet_hours_end     varchar not null default '07:00',
   updated_at          timestamptz not null default now()

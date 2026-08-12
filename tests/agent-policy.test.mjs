@@ -65,7 +65,7 @@ test("only genuine support or safety escalations pause the customer", () => {
   );
 });
 
-test("autonomy starts with high-confidence low-risk sales intents", () => {
+test("the agent carries ordinary sales turns on its own", () => {
   assert.equal(
     canAutoSendDecision({
       intent: "price_question",
@@ -74,11 +74,49 @@ test("autonomy starts with high-confidence low-risk sales intents", () => {
     }),
     true
   );
+  // Address collection and objection handling are part of the job now.
+  assert.equal(
+    canAutoSendDecision({
+      intent: "address",
+      sales_stage: "checkout_details",
+      language_confidence: 0.95,
+    }),
+    true
+  );
   assert.equal(
     canAutoSendDecision({
       intent: "order",
-      sales_stage: "checkout_details",
-      language_confidence: 0.98,
+      sales_stage: "objection",
+      language_confidence: 0.88,
+    }),
+    true
+  );
+});
+
+test("autonomy stops where a wrong reply costs money or goodwill", () => {
+  assert.equal(
+    canAutoSendDecision({
+      intent: "complaint",
+      sales_stage: "consideration",
+      language_confidence: 0.99,
+    }),
+    false
+  );
+  assert.equal(
+    canAutoSendDecision({
+      intent: "tracking",
+      sales_stage: "support",
+      language_confidence: 0.99,
+    }),
+    false
+  );
+  // Checkout keeps the stricter language bar: a misread address becomes a
+  // failed COD delivery, not just an awkward message.
+  assert.equal(
+    canAutoSendDecision({
+      intent: "confirmation",
+      sales_stage: "checkout_confirmation",
+      language_confidence: 0.85,
     }),
     false
   );

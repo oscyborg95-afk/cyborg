@@ -95,6 +95,26 @@ export function sendWhatsAppMessage(
   });
 }
 
+// Drives the "typing…" line on the customer's phone. Cosmetic by definition:
+// a failure here must never stop the message it was announcing, so callers get
+// a promise that resolves either way.
+export async function sendTypingState(
+  chatId: string,
+  state: "composing" | "paused",
+  signal?: AbortSignal
+): Promise<void> {
+  try {
+    await workerFetch("/typing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId, state }),
+      signal,
+    });
+  } catch {
+    // Ignored on purpose — see above.
+  }
+}
+
 // Captured voice-note/photo bytes for a message id (base64). 404s (not
 // captured, mock mode, pruned) surface as a thrown error — callers skip it.
 export function fetchWaMedia(id: string) {

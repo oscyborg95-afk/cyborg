@@ -479,6 +479,12 @@ export interface AgentDecision {
   language_confidence: number;
   confidence: number;
   reply: string;
+  /**
+   * The reply split the way a person actually types on WhatsApp — one or a few
+   * short bubbles sent in sequence. `reply` is the same text joined with
+   * newlines, kept for storage, review, and validation.
+   */
+  reply_bubbles: string[];
   next_state: ChatStateValue;
   action: "reply" | "handoff" | "skip";
   handoff_reason: string;

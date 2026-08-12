@@ -72,7 +72,9 @@ const PlanSchema = z.object({
   facts_to_use: z.array(z.string()),
 });
 
-const ReplySchema = z.object({ reply: z.string() });
+const ReplySchema = z.object({
+  bubbles: z.array(z.string()).min(1).max(3),
+});
 
 type SalesPlan = z.infer<typeof PlanSchema>;
 
@@ -362,29 +364,49 @@ async function writeReply(input: {
   messages: WaMessage[];
   learning?: SalesLearningContext;
   signal?: AbortSignal;
-}): Promise<string> {
+}): Promise<string[]> {
   const learnedVoice = input.learning?.style_profile?.instructions
     ? `\nLEARNED TEAM VOICE\n${input.learning.style_profile.instructions}`
     : "";
   const result = await generateStructured({
     keys: input.keys,
-    system: `You are the customer-facing WhatsApp salesperson. Follow the supplied sales plan;
-do not change its facts, action, or next step.
+    system: `You are a real person working the WhatsApp line for a Sri Lankan COD shop.
+Follow the supplied sales plan; do not change its facts, action, or next step.
+You are writing the actual messages this person would type on their phone right now.
 
 VOICE
 ${input.config.personality}
 ${languageWritingRule(input.language)}
 ${learnedVoice}
-- Sound like a capable human salesperson, not a support bot.
-- Answer first, then add at most one relevant value point, then one easy next step.
-- Keep it to 1-3 short WhatsApp sentences. Ask at most one question.
-- Do not repeat a greeting, question, or detail already in the conversation.
-- Avoid headings, markdown, canned phrases, excessive emoji, fake urgency, and pressure.
+- Write the way people actually text: contractions, everyday words, relaxed punctuation.
+  A sentence fragment is fine. Starting with "ah", "ok so", "yeah" is fine when it fits.
+- Do not open with a greeting unless the customer just greeted you and you have not
+  greeted them yet in this conversation.
+- Never use support-bot phrasing: "Thank you for reaching out", "I hope this helps",
+  "Please note that", "Certainly!", "As mentioned earlier", "Is there anything else".
+- Vary your length. Some turns are three words ("yes, in stock"). Some are two short
+  sentences. Do not make every reply the same shape.
+- Answer the question first. Add a reason to buy only when it genuinely fits this moment.
+- One question per turn at most, and only when you actually need the answer to move forward.
+  Plenty of good turns end without a question.
+- An emoji is fine occasionally when it matches how the customer writes. Never more than one,
+  and never in a message about a problem, a complaint, or money owed.
+- Never repeat a greeting, a question, or a detail already covered in the conversation.
+- No markdown, no headings, no bullet lists, no manufactured urgency, no pressure.
+
+FACTS
 - Mention only facts_to_use. Never invent a product benefit, claim, testimonial, price, stock,
   discount, delivery date, guarantee, or policy.
 - Approved examples are style references only. Never copy their names, addresses, phone numbers,
   prices, order details, promises, policies, or product claims.
-- Before returning, silently verify that the reply uses the requested language and writing style.`,
+
+MESSAGE SHAPE
+- Return 1-3 bubbles: the separate messages this person would send back to back.
+- Most turns are ONE bubble. Use a second bubble only when a real person would break there —
+  an answer then a follow-up thought, or a detail then the question.
+- Each bubble stands alone as something you would press send on. Never split mid-sentence.
+- Keep each bubble under about 200 characters.
+- Before returning, silently verify every bubble uses the requested language and writing style.`,
     content: {
       language: input.language,
       sales_plan: input.plan,
@@ -393,13 +415,24 @@ ${learnedVoice}
     },
     responseSchema: {
       type: "OBJECT",
-      properties: { reply: { type: "STRING" } },
-      required: ["reply"],
+      properties: {
+        bubbles: {
+          type: "ARRAY",
+          items: { type: "STRING" },
+          minItems: 1,
+          maxItems: 3,
+        },
+      },
+      required: ["bubbles"],
     },
     parser: ReplySchema,
     signal: input.signal,
   });
-  return result.reply.trim().slice(0, 1600);
+  const bubbles = result.bubbles
+    .map((bubble) => bubble.trim().slice(0, 700))
+    .filter(Boolean)
+    .slice(0, 3);
+  return bubbles;
 }
 
 export async function decideSalesReply(input: {
@@ -437,9 +470,9 @@ export async function decideSalesReply(input: {
           evidence: plan.language_evidence,
         };
 
-  let reply = "";
+  let bubbles: string[] = [];
   if (plan.action !== "skip") {
-    reply = await writeReply({
+    bubbles = await writeReply({
       keys,
       config: input.config,
       plan,
@@ -450,8 +483,11 @@ export async function decideSalesReply(input: {
     });
   }
 
+  // Bubbles are one reply typed in parts, so language is validated on the whole
+  // thing — a two-word second bubble would otherwise fail script detection.
+  const reply = bubbles.join("\n").slice(0, 1600);
   const validation = validateReplyScript(reply, language.style);
-  const validationFailed = plan.action !== "skip" && !validation.valid;
+  const validationFailed = plan.action !== "skip" && (!validation.valid || !reply);
   return {
     intent: plan.intent,
     language: language.language,
@@ -461,6 +497,7 @@ export async function decideSalesReply(input: {
       ? 0
       : Math.min(language.confidence, plan.confidence),
     reply: validationFailed ? "" : reply,
+    reply_bubbles: validationFailed ? [] : bubbles,
     next_state: plan.next_state,
     action: validationFailed ? "handoff" : plan.action,
     handoff_reason: validationFailed

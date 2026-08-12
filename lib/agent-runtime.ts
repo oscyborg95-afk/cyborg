@@ -26,7 +26,7 @@ import {
   needsAgentHandoff,
   shouldPauseCustomer,
 } from "./agent-policy";
-import { sendWhatsAppMessage, workerFetch } from "./wa";
+import { sendTypingState, sendWhatsAppMessage, workerFetch } from "./wa";
 import type { AgentRun, WaMessage } from "./types";
 
 const configuredExecutionTimeout = Number(process.env.AGENT_EXECUTION_TIMEOUT_MS || 40_000);
@@ -37,6 +37,14 @@ const configuredMessageAge = Number(process.env.AGENT_MAX_MESSAGE_AGE_MS || 3 * 
 const AGENT_MAX_MESSAGE_AGE_MS = Number.isFinite(configuredMessageAge)
   ? Math.max(30_000, Math.min(15 * 60_000, configuredMessageAge))
   : 3 * 60_000;
+
+// Roughly how long a fast phone typist takes, so the "typing…" line and the
+// gap between bubbles track the length of what is about to arrive.
+const TYPING_MS_PER_CHAR = 45;
+const MIN_TYPING_MS = 900;
+const MAX_TYPING_MS = 4_000;
+// Left on the clock for the profile, state, and event writes that follow a send.
+const POST_SEND_BUDGET_MS = 8_000;
 
 export interface AgentTrigger {
   id: string;
@@ -92,6 +100,53 @@ function waitForReplyDelay(milliseconds: number, signal: AbortSignal): Promise<v
   });
 }
 
+function typingMs(text: string): number {
+  return Math.min(MAX_TYPING_MS, Math.max(MIN_TYPING_MS, text.length * TYPING_MS_PER_CHAR));
+}
+
+// A fixed pause reads as a machine on a timer. Spreading the configured delay
+// over a band around itself is what makes the arrival feel like a person who
+// happened to pick the phone up.
+function jitter(milliseconds: number): number {
+  return Math.round(milliseconds * (0.65 + Math.random() * 0.7));
+}
+
+/**
+ * Sends one AI turn as the sequence of bubbles a person would actually type,
+ * showing "typing…" for a length-appropriate beat before each one.
+ *
+ * Only the first bubble carries the newer-message guard: once it lands, the
+ * newest message in the chat is our own and the guard would reject the rest.
+ */
+async function sendReplyBubbles(input: {
+  chatId: string;
+  bubbles: string[];
+  triggerMessageId: string;
+  pacingDeadline: number;
+  signal: AbortSignal;
+  onBubbleSent: () => void;
+}): Promise<void> {
+  for (const [index, bubble] of input.bubbles.entries()) {
+    // When the run is close to its deadline the remaining bubbles still go out,
+    // just without the pacing. A half-delivered reply is the worse outcome.
+    const pace = Math.min(typingMs(bubble), Math.max(0, input.pacingDeadline - Date.now()));
+    if (pace > 0) {
+      await sendTypingState(input.chatId, "composing", input.signal);
+      await waitForReplyDelay(pace, input.signal);
+      await sendTypingState(input.chatId, "paused", input.signal);
+    }
+    await sendWhatsAppMessage(
+      input.chatId,
+      bubble,
+      undefined,
+      index === 0 ? input.triggerMessageId : undefined,
+      input.signal,
+      `${input.triggerMessageId}:${index}`
+    );
+    input.onBubbleSent();
+  }
+}
+
 export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | null> {
   if (trigger.fromMe || !trigger.id || !trigger.chatId) return null;
   if (
@@ -118,6 +173,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
   let stage = "claiming the run";
   let claimed: AgentRun | null = null;
   let replySent = false;
+  const pacingDeadline = Date.now() + AGENT_EXECUTION_TIMEOUT_MS - POST_SEND_BUDGET_MS;
   const executionTimer = setTimeout(() => {
     executionTimedOut = true;
     controller.abort(new Error("Agent execution deadline reached"));
@@ -192,7 +248,7 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
     if (config.reply_delay_seconds > 0) {
       stage = "waiting for the reply delay";
       await waitForReplyDelay(
-        Math.min(config.reply_delay_seconds, 15) * 1000,
+        jitter(Math.min(config.reply_delay_seconds, 15) * 1000),
         controller.signal
       );
     }
@@ -307,14 +363,16 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
         decision.reply
       ) {
         stage = "sending the escalation acknowledgement";
-        await sendWhatsAppMessage(
-          trigger.chatId,
-          decision.reply,
-          undefined,
-          trigger.id,
-          controller.signal
-        );
-        replySent = true;
+        await sendReplyBubbles({
+          chatId: trigger.chatId,
+          bubbles: decision.reply_bubbles.length ? decision.reply_bubbles : [decision.reply],
+          triggerMessageId: trigger.id,
+          pacingDeadline,
+          signal: controller.signal,
+          onBubbleSent: () => {
+            replySent = true;
+          },
+        });
         await ensureCustomerProfile({
           phone_key: key,
           primary_phone: phone,
@@ -354,14 +412,16 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
     }
 
     stage = "sending the WhatsApp reply";
-    await sendWhatsAppMessage(
-      trigger.chatId,
-      decision.reply,
-      undefined,
-      trigger.id,
-      controller.signal
-    );
-    replySent = true;
+    await sendReplyBubbles({
+      chatId: trigger.chatId,
+      bubbles: decision.reply_bubbles.length ? decision.reply_bubbles : [decision.reply],
+      triggerMessageId: trigger.id,
+      pacingDeadline,
+      signal: controller.signal,
+      onBubbleSent: () => {
+        replySent = true;
+      },
+    });
     controller.signal.throwIfAborted();
     stage = "saving the sent reply";
     await ensureCustomerProfile({

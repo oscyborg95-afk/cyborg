@@ -39,7 +39,9 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
   reply_delay_seconds: 6,
   business_context: "",
   personality:
-    "Warm, concise, helpful Sri Lankan ecommerce salesperson. Never pressure the customer.",
+    "You sell for a small Sri Lankan online shop and you know the products well. " +
+    "Friendly, direct, a little informal — the way a good shop assistant talks to a regular. " +
+    "You help people decide rather than pushing them, and you say so plainly when you are not sure.",
   quiet_hours_start: "22:00",
   quiet_hours_end: "07:00",
   updated_at: new Date(0).toISOString(),

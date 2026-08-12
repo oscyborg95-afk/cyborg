@@ -17,8 +17,7 @@ interface ToolGroup {
 }
 
 const PRIMARY_TABS: readonly NavItem[] = [
-  { href: "/", label: "Workspace", emoji: "💬", desc: "Live chat & desk" },
-  { href: "/attention", label: "Action Queue", emoji: "⚡", desc: "Human decisions needed now" },
+  { href: "/", label: "Workspace", emoji: "💬", desc: "Live chat, desk & actions" },
   { href: "/orders", label: "Orders", emoji: "📦", desc: "Fulfillment & dispatches" },
   { href: "/customers", label: "Customers", emoji: "👥", desc: "CRM & profiles" },
 ];

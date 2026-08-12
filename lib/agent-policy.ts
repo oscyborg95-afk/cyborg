@@ -38,18 +38,22 @@ export function shouldPauseCustomer(
   );
 }
 
+// The agent now carries a conversation end to end: questions, objections,
+// address collection, and COD confirmation all send on their own. Only turns
+// where a wrong reply causes real damage stay human-gated, and the checkout
+// stages keep the stricter language bar because that is where a misread reply
+// turns into a bad COD order.
 export function canAutoSendDecision(
   decision: Pick<AgentDecision, "intent" | "sales_stage" | "language_confidence">
 ): boolean {
-  const safeIntent = [
-    "greeting",
-    "product_question",
-    "price_question",
-    "availability",
-  ].includes(decision.intent);
-  return (
-    safeIntent &&
-    ["discovery", "consideration"].includes(decision.sales_stage) &&
-    decision.language_confidence >= 0.9
-  );
+  if (decision.intent === "complaint") return false;
+
+  const checkoutStage =
+    decision.sales_stage === "checkout_details" ||
+    decision.sales_stage === "checkout_confirmation";
+  const languageFloor = checkoutStage ? 0.9 : 0.82;
+  if (decision.language_confidence < languageFloor) return false;
+
+  // Post-purchase support is where refunds, damage, and delivery disputes live.
+  return decision.sales_stage !== "support";
 }
