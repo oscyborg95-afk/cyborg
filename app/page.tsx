@@ -26,7 +26,6 @@ import { CityPicker } from "./components/city-picker";
 import { ItemsEditor } from "./components/items-editor";
 import { Coach, useColomboCountdown, type CoachLine } from "./components/coach";
 import { XPBurst, playChime } from "./components/celebrations";
-import { ActionStrip } from "./components/action-strip";
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WA_WORKER_URL || "http://localhost:3001";
 
@@ -1057,7 +1056,6 @@ export default function Workspace() {
             ))}
           </div>
         </div>
-        <ActionStrip activeChatId={activeChatId} onOpenChat={selectChat} />
         {staleCount > 0 && filter !== "Follow-up" && (
           <button
             onClick={() => setFilter("Follow-up")}
