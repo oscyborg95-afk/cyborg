@@ -8,6 +8,10 @@
     {
       "path": "/api/tracking/cron?mode=drain",
       "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/followups/tick",
+      "schedule": "0 * * * *"
     }
   ]
 }

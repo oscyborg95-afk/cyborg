@@ -164,6 +164,40 @@ function startTrackingFallbackScheduler() {
   setInterval(() => run("sync"), syncMs);
 }
 
+// The follow-up engine's heartbeat. Each tick sends at most one message, so the
+// interval *is* the pacing: cold leads are chased as a slow trickle across the
+// day instead of a burst, which is what keeps this number off WhatsApp's radar.
+// Randomised so sends do not land on a visibly mechanical 2-minute grid.
+function startFollowUpScheduler() {
+  const secret = process.env.CRON_SECRET;
+  const base = process.env.APP_FOLLOWUP_CRON_URL || process.env.APP_URL;
+  if (!base || !secret) {
+    console.log(
+      "[cyborg-wa-worker] follow-up scheduler disabled (APP_URL / CRON_SECRET not set)"
+    );
+    return;
+  }
+  const url = process.env.APP_FOLLOWUP_CRON_URL
+    ? new URL(process.env.APP_FOLLOWUP_CRON_URL)
+    : new URL("/api/followups/tick", base);
+  const everyMs = Math.max(60_000, Number(process.env.FOLLOWUP_TICK_INTERVAL_MS || 150_000));
+
+  const tick = async () => {
+    try {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${secret}` } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 160)}`);
+      const data = await res.json().catch(() => null);
+      const sent = (data?.tenants ?? []).reduce((total, t) => total + (t.sent ?? 0), 0);
+      if (sent > 0) console.log(`[cyborg-wa-worker] follow-ups sent: ${sent}`);
+    } catch (err) {
+      console.error("[cyborg-wa-worker] follow-up tick failed:", err.message);
+    } finally {
+      setTimeout(tick, everyMs + Math.round(Math.random() * 45_000));
+    }
+  };
+  setTimeout(tick, 45_000);
+}
+
 function emitMessage(msg) {
   io.emit("wa:message", msg);
 }
@@ -432,6 +466,7 @@ if (MOCK) {
     setReady(true);
     console.log(`[cyborg-wa-worker] MOCK mode on :${PORT}`);
     startTrackingFallbackScheduler();
+    startFollowUpScheduler();
   });
   return;
 }
@@ -1211,6 +1246,7 @@ app.post("/send", async (req, res) => {
 server.listen(PORT, LISTEN_HOST, () => {
   console.log(`[cyborg-wa-worker] LIVE mode on :${PORT} (waiting for QR scan)`);
   startTrackingFallbackScheduler();
+  startFollowUpScheduler();
 });
 
 ensureTables()

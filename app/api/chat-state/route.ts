@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listChatStates, upsertChatState } from "@/lib/db";
+import { stopFollowUpsForConversion } from "@/lib/followups";
 import { CHAT_STATES, type ChatStateValue } from "@/lib/types";
 
 export async function GET() {
@@ -22,6 +23,12 @@ export async function POST(req: NextRequest) {
   }
   try {
     const record = await upsertChatState(phone_number, chat_id, state, display_name);
+    // Reaching either end state means the chase is over. (Moving *back* into a
+    // waiting state does not re-enroll here — the sweep does that once the lead
+    // has actually gone quiet again.)
+    if (state === "CONFIRMED" || state === "SHIPPED") {
+      await stopFollowUpsForConversion(phone_number).catch(() => null);
+    }
     return NextResponse.json({ state: record });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to save chat state";

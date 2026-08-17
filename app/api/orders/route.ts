@@ -9,6 +9,7 @@ import {
   usingSupabase,
 } from "@/lib/db";
 import type { NewOrder } from "@/lib/types";
+import { stopFollowUpsForConversion } from "@/lib/followups";
 import { itemsSummary, parseItems } from "@/lib/items";
 
 export async function GET() {
@@ -65,6 +66,9 @@ export async function POST(req: NextRequest) {
       discount,
       total_cod: Math.max(0, productPrice + shippingFee - discount),
     });
+    // The lead converted — nothing should keep chasing them for an address or a
+    // confirmation. Never let this fail the order that was actually saved.
+    await stopFollowUpsForConversion(order.phone_number).catch(() => null);
     return NextResponse.json({ order }, { status: 201 });
   } catch (err) {
     console.error("Order save failed", err);

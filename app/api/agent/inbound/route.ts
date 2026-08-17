@@ -2,6 +2,7 @@ import { timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { runSalesAgent } from "@/lib/agent-runtime";
 import { recordCustomerDeliveryReply } from "@/lib/db";
+import { handleFollowUpInbound } from "@/lib/followups";
 import { chatIdToPhone } from "@/lib/phone";
 import { withTenant } from "@/lib/tenant-context";
 import { tenantSchemaForId } from "@/lib/tenants";
@@ -45,6 +46,12 @@ export async function POST(req: NextRequest) {
   // bookkeeping fail the turn.
   await withTenant(session, () =>
     recordCustomerDeliveryReply(chatIdToPhone(String(body.chatId)), String(body.body ?? ""))
+  ).catch(() => null);
+  // A reply ends whatever follow-up sequence was chasing this customer, and an
+  // explicit "stop" opts them out for good. Runs before the sales agent so the
+  // sequence is cancelled even if the agent turn fails.
+  await withTenant(session, () =>
+    handleFollowUpInbound(String(body.chatId), String(body.body ?? ""))
   ).catch(() => null);
   try {
     const run = await withTenant(session, () => runSalesAgent({

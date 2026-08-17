@@ -427,3 +427,57 @@ create unique index if not exists uq_tracking_notification_dedupe
 -- stops a revised courier date turning into one WhatsApp per revision.
 create index if not exists idx_tracking_notification_order
   on tracking_notification_jobs(order_id, notification_type, created_at desc);
+
+-- Automatic follow-ups for cold leads. One settings row holds the operator's
+-- own message text (per trigger state, several variants per step) plus the
+-- pacing limits that keep an unofficial WhatsApp connection out of trouble.
+create table if not exists follow_up_settings (
+  id              int primary key default 1,
+  enabled         boolean not null default false,
+  daily_cap       int not null default 40,
+  min_gap_minutes int not null default 2,
+  window_start    varchar not null default '09:00',
+  window_end      varchar not null default '20:00',
+  sequences       jsonb not null default '[]'::jsonb,
+  updated_at      timestamptz not null default now()
+);
+insert into follow_up_settings (id) values (1) on conflict do nothing;
+
+-- One live sequence per cold lead. baseline_inbound_at is the "they went quiet
+-- at" mark: any inbound message newer than it means they replied, which ends
+-- the sequence.
+create table if not exists follow_up_enrollments (
+  id                  uuid primary key default gen_random_uuid(),
+  phone_key           varchar(9) not null,
+  chat_id             varchar not null,
+  trigger_state       varchar not null, -- NEW | AWAITING_ADDRESS | AWAITING_CONFIRMATION
+  step_index          int not null default 0,
+  status              varchar not null default 'active', -- active | done | stopped
+  stop_reason         text not null default '',
+  baseline_inbound_at timestamptz,
+  enrolled_at         timestamptz not null default now(),
+  last_sent_at        timestamptz,
+  next_run_at         timestamptz not null default now(),
+  attempts            int not null default 0,
+  last_error          text not null default '',
+  updated_at          timestamptz not null default now()
+);
+-- Two sweeps racing must not double-enroll the same person.
+create unique index if not exists uq_follow_up_active
+  on follow_up_enrollments(phone_key) where status = 'active';
+create index if not exists idx_follow_up_due
+  on follow_up_enrollments(status, next_run_at);
+
+-- Every follow-up actually sent: the audit trail, and the source of the
+-- rolling-24h count that enforces the daily cap.
+create table if not exists follow_up_sends (
+  id            uuid primary key default gen_random_uuid(),
+  enrollment_id uuid not null references follow_up_enrollments(id) on delete cascade,
+  phone_key     varchar(9) not null,
+  chat_id       varchar not null,
+  step_index    int not null,
+  body          text not null,
+  sent_at       timestamptz not null default now(),
+  unique(enrollment_id, step_index)
+);
+create index if not exists idx_follow_up_sends_at on follow_up_sends(sent_at desc);

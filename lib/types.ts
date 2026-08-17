@@ -601,3 +601,62 @@ export interface SalesLearningContext {
   style_profile: SalesStyleProfile | null;
   relevant_examples: LearningReplyPair[];
 }
+
+// --- Automatic follow-ups ---------------------------------------------------
+// A sequence chases one kind of cold lead (no address yet, no COD confirmation
+// yet, never answered at all). Each step is a wait plus the message variants
+// the operator wrote for it; the engine picks one variant per lead so no two
+// customers receive byte-identical text.
+
+export interface FollowUpStep {
+  // Hours to wait before this step. Step 0 counts from the lead's last inbound
+  // message, later steps count from the previous follow-up we sent.
+  delay_hours: number;
+  label: string;
+  variants: string[];
+}
+
+export interface FollowUpSequence {
+  trigger_state: ChatStateValue;
+  enabled: boolean;
+  steps: FollowUpStep[];
+}
+
+export interface FollowUpSettings {
+  enabled: boolean;
+  daily_cap: number;
+  min_gap_minutes: number;
+  window_start: string;
+  window_end: string;
+  sequences: FollowUpSequence[];
+  updated_at: string;
+}
+
+export type FollowUpEnrollmentStatus = "active" | "done" | "stopped";
+
+export interface FollowUpEnrollment {
+  id: string;
+  phone_key: string;
+  chat_id: string;
+  trigger_state: ChatStateValue;
+  step_index: number;
+  status: FollowUpEnrollmentStatus;
+  stop_reason: string;
+  baseline_inbound_at: string | null;
+  enrolled_at: string;
+  last_sent_at: string | null;
+  next_run_at: string;
+  attempts: number;
+  last_error: string;
+  updated_at: string;
+}
+
+export interface FollowUpSend {
+  id: string;
+  enrollment_id: string;
+  phone_key: string;
+  chat_id: string;
+  step_index: number;
+  body: string;
+  sent_at: string;
+}
