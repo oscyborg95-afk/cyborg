@@ -137,8 +137,14 @@ export function coldSince(candidate: EnrollmentCandidate): number {
   return Number.isFinite(inbound) ? inbound : stateAt;
 }
 
+// Two bounds, not one. The lower bound (the first step's delay) is "has this
+// lead actually gone quiet yet"; the upper bound is "is this lead still worth
+// chasing". Without the upper bound, switching the engine on for the first time
+// would enroll every stale chat in the database at once — including someone who
+// asked a question three months ago, for whom an out-of-nowhere reminder is
+// pure spam and a block-and-report risk.
 export function shouldEnroll(
-  settings: Pick<FollowUpSettings, "sequences">,
+  settings: Pick<FollowUpSettings, "sequences" | "max_age_days">,
   candidate: EnrollmentCandidate,
   now = Date.now()
 ): boolean {
@@ -146,7 +152,25 @@ export function shouldEnroll(
   const first = sequence ? stepAt(sequence, 0) : null;
   if (!first) return false;
   const silentMs = now - coldSince(candidate);
-  return silentMs >= first.delay_hours * 3_600_000;
+  if (silentMs < first.delay_hours * 3_600_000) return false;
+  // 0 disables the upper bound (chase everything, however old).
+  if (settings.max_age_days > 0 && silentMs > settings.max_age_days * 86_400_000) return false;
+  return true;
+}
+
+// The calendar day a lead belongs to, in Colombo terms — "the 12 that came in
+// today" is a date question, and the answer must not shift at 05:30 local
+// because the server thinks in UTC.
+export function colomboDay(value: string | number | null): string {
+  if (value === null) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Colombo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }
 
 export type StopReason =

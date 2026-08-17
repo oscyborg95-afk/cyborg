@@ -7,6 +7,7 @@ import {
   updateFollowUpSettings,
 } from "@/lib/followups-db";
 import { listCustomerProfiles } from "@/lib/crm-db";
+import { colomboDay } from "@/lib/followup-policy";
 import type { FollowUpSequence } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +30,10 @@ export async function GET() {
       enrollments: enrollments.map((e) => ({
         ...e,
         display_name: nameByKey.get(e.phone_key) ?? "",
+        // The Colombo calendar day the lead last messaged on — what "today's 12
+        // cold ones" actually means. Computed here so the browser's own
+        // timezone cannot change which day a lead lands in.
+        lead_day: colomboDay(e.baseline_inbound_at ?? e.enrolled_at),
       })),
       sends,
     });
@@ -69,6 +74,7 @@ export async function PUT(req: NextRequest) {
     const settings = await updateFollowUpSettings({
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
       ...(body.daily_cap !== undefined ? { daily_cap: Number(body.daily_cap) } : {}),
+      ...(body.max_age_days !== undefined ? { max_age_days: Number(body.max_age_days) } : {}),
       ...(body.min_gap_minutes !== undefined
         ? { min_gap_minutes: Number(body.min_gap_minutes) }
         : {}),

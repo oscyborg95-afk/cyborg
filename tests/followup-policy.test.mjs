@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   coldSince,
+  colomboDay,
   dispatchBlockReason,
   insideSendWindow,
   isOptOutReply,
@@ -13,6 +14,7 @@ import {
 } from "../lib/followup-policy.ts";
 
 const SETTINGS = {
+  max_age_days: 7,
   window_start: "09:00",
   window_end: "20:00",
   sequences: [
@@ -207,4 +209,48 @@ test("the minimum gap is enforced from the last send, not the last tick", () => 
     dispatchBlockReason(limits, false, { sent_24h: 1, last_sent_at: ago(6) }, now),
     null
   );
+});
+
+test("leads who went quiet too long ago are left alone", () => {
+  const now = Date.parse("2026-07-22T12:00:00Z");
+  const candidate = (lastInbound) => ({
+    phone_key: "768846320",
+    chat_id: "94768846320@s.whatsapp.net",
+    trigger_state: "AWAITING_ADDRESS",
+    last_inbound_at: lastInbound,
+    state_updated_at: lastInbound,
+  });
+  // Inside the 7-day window: chase. Outside it: never.
+  assert.equal(shouldEnroll(SETTINGS, candidate("2026-07-19T12:00:00Z"), now), true);
+  assert.equal(shouldEnroll(SETTINGS, candidate("2026-07-10T12:00:00Z"), now), false);
+  // A three-month-old chat is the case this guard exists for: switching the
+  // engine on must not resurrect it.
+  assert.equal(shouldEnroll(SETTINGS, candidate("2026-04-22T12:00:00Z"), now), false);
+});
+
+test("a zero age limit means no upper bound at all", () => {
+  const now = Date.parse("2026-07-22T12:00:00Z");
+  assert.equal(
+    shouldEnroll(
+      { ...SETTINGS, max_age_days: 0 },
+      {
+        phone_key: "768846320",
+        chat_id: "x",
+        trigger_state: "AWAITING_ADDRESS",
+        last_inbound_at: "2026-04-22T12:00:00Z",
+        state_updated_at: "2026-04-22T12:00:00Z",
+      },
+      now
+    ),
+    true
+  );
+});
+
+test("the lead's day is bucketed in Colombo time, not UTC", () => {
+  // 19:00 UTC on the 21st is already 00:30 on the 22nd in Colombo (UTC+5:30),
+  // which is exactly where a naive UTC bucket would put a lead on the wrong day.
+  assert.equal(colomboDay("2026-07-21T19:00:00Z"), "2026-07-22");
+  assert.equal(colomboDay("2026-07-21T18:00:00Z"), "2026-07-21");
+  assert.equal(colomboDay(null), "");
+  assert.equal(colomboDay("not a date"), "");
 });

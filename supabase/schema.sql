@@ -434,6 +434,9 @@ create index if not exists idx_tracking_notification_order
 create table if not exists follow_up_settings (
   id              int primary key default 1,
   enabled         boolean not null default false,
+  -- Leads quiet for longer than this are never enrolled. Without it, switching
+  -- the engine on would chase every stale chat in the table at once.
+  max_age_days    int not null default 7,
   daily_cap       int not null default 40,
   min_gap_minutes int not null default 2,
   window_start    varchar not null default '09:00',
@@ -441,6 +444,7 @@ create table if not exists follow_up_settings (
   sequences       jsonb not null default '[]'::jsonb,
   updated_at      timestamptz not null default now()
 );
+alter table follow_up_settings add column if not exists max_age_days int not null default 7;
 insert into follow_up_settings (id) values (1) on conflict do nothing;
 
 -- One live sequence per cold lead. baseline_inbound_at is the "they went quiet

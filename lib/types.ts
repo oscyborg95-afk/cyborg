@@ -624,6 +624,9 @@ export interface FollowUpSequence {
 
 export interface FollowUpSettings {
   enabled: boolean;
+  // Leads whose last message is older than this are never enrolled — the guard
+  // against chasing a months-old chat. 0 means no upper bound.
+  max_age_days: number;
   daily_cap: number;
   min_gap_minutes: number;
   window_start: string;

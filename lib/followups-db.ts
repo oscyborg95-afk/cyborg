@@ -118,6 +118,9 @@ export const DEFAULT_FOLLOW_UP_SETTINGS: FollowUpSettings = {
   // Off until the operator reads the copy and turns it on. An automation that
   // messages customers must never switch itself on during a deploy.
   enabled: false,
+  // A week. Long enough to cover "I messaged on Friday, it is now Monday",
+  // short enough that switching the engine on cannot resurrect an ancient chat.
+  max_age_days: 7,
   daily_cap: 40,
   min_gap_minutes: 2,
   window_start: "09:00",
@@ -142,6 +145,8 @@ async function ensureFollowUpSchema(): Promise<void> {
       sequences jsonb not null default '[]'::jsonb,
       updated_at timestamptz not null default now()
     );
+    alter table follow_up_settings
+      add column if not exists max_age_days int not null default 7;
     insert into follow_up_settings (id) values (1) on conflict do nothing;
     create table if not exists follow_up_enrollments (
       id uuid primary key default gen_random_uuid(),
@@ -214,6 +219,7 @@ export async function getFollowUpSettings(): Promise<FollowUpSettings> {
     if (!row) return DEFAULT_FOLLOW_UP_SETTINGS;
     return {
       enabled: Boolean(row.enabled),
+      max_age_days: Number(row.max_age_days ?? DEFAULT_FOLLOW_UP_SETTINGS.max_age_days),
       daily_cap: Number(row.daily_cap),
       min_gap_minutes: Number(row.min_gap_minutes),
       window_start: String(row.window_start),
@@ -239,6 +245,10 @@ export async function updateFollowUpSettings(
       1,
       Math.min(120, Math.round(Number(input.min_gap_minutes ?? current.min_gap_minutes)))
     ),
+    max_age_days: Math.max(
+      0,
+      Math.min(365, Math.round(Number(input.max_age_days ?? current.max_age_days)))
+    ),
     sequences: mergeSequences(input.sequences ?? current.sequences),
     updated_at: nowIso(),
   };
@@ -246,14 +256,17 @@ export async function updateFollowUpSettings(
     await ensureFollowUpSchema();
     await queryDatabase(
       `insert into follow_up_settings
-         (id, enabled, daily_cap, min_gap_minutes, window_start, window_end, sequences, updated_at)
-       values (1,$1,$2,$3,$4,$5,$6::jsonb, now())
+         (id, enabled, max_age_days, daily_cap, min_gap_minutes, window_start, window_end,
+          sequences, updated_at)
+       values (1,$1,$2,$3,$4,$5,$6,$7::jsonb, now())
        on conflict (id) do update set
-         enabled=excluded.enabled, daily_cap=excluded.daily_cap,
+         enabled=excluded.enabled, max_age_days=excluded.max_age_days,
+         daily_cap=excluded.daily_cap,
          min_gap_minutes=excluded.min_gap_minutes, window_start=excluded.window_start,
          window_end=excluded.window_end, sequences=excluded.sequences, updated_at=now()`,
       [
         next.enabled,
+        next.max_age_days,
         next.daily_cap,
         next.min_gap_minutes,
         next.window_start,

@@ -29,7 +29,21 @@ const SEQUENCE_INFO: Record<string, { title: string; blurb: string; icon: string
   },
 };
 
-type EnrollmentRow = FollowUpEnrollment & { display_name: string };
+type EnrollmentRow = FollowUpEnrollment & { display_name: string; lead_day: string };
+
+// "Today" has to mean today in Colombo, not today in whatever timezone the
+// browser happens to be in.
+function colomboToday(offsetDays = 0): string {
+  const date = new Date(Date.now() + offsetDays * 86_400_000);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Colombo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+type DayFilter = "all" | "today" | "yesterday" | "custom";
 
 export default function FollowUpsPage() {
   const [settings, setSettings] = useState<FollowUpSettings | null>(null);
@@ -43,6 +57,8 @@ export default function FollowUpsPage() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [dayFilter, setDayFilter] = useState<DayFilter>("all");
+  const [customDay, setCustomDay] = useState(colomboToday());
 
   const load = useCallback(async () => {
     try {
@@ -147,6 +163,15 @@ export default function FollowUpsPage() {
 
   const active = enrollments.filter((e) => e.status === "active");
   const capLeft = Math.max(0, settings.daily_cap - pace.sent_24h);
+  const targetDay =
+    dayFilter === "today"
+      ? colomboToday()
+      : dayFilter === "yesterday"
+        ? colomboToday(-1)
+        : dayFilter === "custom"
+          ? customDay
+          : "";
+  const visibleQueue = targetDay ? active.filter((row) => row.lead_day === targetDay) : active;
 
   return (
     <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
@@ -235,7 +260,28 @@ export default function FollowUpsPage() {
           This runs on your own WhatsApp number. Keeping the volume low and the gaps human is what
           keeps the number safe — raise these slowly.
         </p>
-        <div className="grid gap-4 sm:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <label className="font-display text-xs font-extrabold text-ink-soft">
+            Only chase leads from the last
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                type="number"
+                min="0"
+                max="365"
+                className={fieldClass}
+                value={settings.max_age_days}
+                onChange={(event) =>
+                  setSettings({ ...settings, max_age_days: Number(event.target.value) })
+                }
+              />
+              <span className="font-display text-sm font-extrabold">days</span>
+            </div>
+            <span className="mt-1 block font-body text-[11px] font-bold normal-case">
+              {settings.max_age_days === 0
+                ? "⚠️ No limit — even months-old chats get chased."
+                : `Anyone quiet longer than ${settings.max_age_days} days is left alone.`}
+            </span>
+          </label>
           <label className="font-display text-xs font-extrabold text-ink-soft">
             Max per day
             <input
@@ -412,18 +458,57 @@ export default function FollowUpsPage() {
 
       <Card className="p-4 sm:p-5">
         <h2 className="font-display text-lg font-extrabold text-ink">
-          🎯 In the queue ({active.length})
+          🎯 In the queue ({visibleQueue.length}
+          {targetDay && visibleQueue.length !== active.length ? ` of ${active.length}` : ""})
         </h2>
         <p className="mb-3 text-xs font-bold text-ink-soft">
-          Leads waiting for their next nudge. Stop any of them if you have already handled it.
+          Leads waiting for their next nudge, grouped by the day they last messaged you. Stop any of
+          them if you have already handled it.
         </p>
-        {active.length === 0 ? (
+
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {(
+            [
+              ["all", "All days"],
+              ["today", "Today"],
+              ["yesterday", "Yesterday"],
+              ["custom", "Pick a date"],
+            ] as [DayFilter, string][]
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setDayFilter(value)}
+              className={
+                "rounded-xl border-2 px-3 py-1.5 font-display text-xs font-extrabold transition " +
+                (dayFilter === value
+                  ? "border-frog bg-pond text-frog-dark"
+                  : "border-cardline bg-surface text-ink-soft hover:bg-surface-soft")
+              }
+            >
+              {label}
+            </button>
+          ))}
+          {dayFilter === "custom" && (
+            <input
+              type="date"
+              className={`${fieldClass} w-auto`}
+              value={customDay}
+              max={colomboToday()}
+              onChange={(event) => setCustomDay(event.target.value)}
+            />
+          )}
+        </div>
+
+        {visibleQueue.length === 0 ? (
           <p className="py-6 text-center font-display text-sm font-bold text-ink-soft">
-            Nobody is cold right now 🎉
+            {active.length === 0
+              ? "Nobody is cold right now 🎉"
+              : "No cold leads from that day."}
           </p>
         ) : (
           <ul className="space-y-2">
-            {active.map((row) => (
+            {visibleQueue.map((row) => (
               <li
                 key={row.id}
                 className="flex flex-wrap items-center gap-3 rounded-2xl border-2 border-cardline bg-surface-soft p-3"
@@ -436,6 +521,14 @@ export default function FollowUpsPage() {
                     {SEQUENCE_INFO[row.trigger_state]?.title ?? row.trigger_state} · step{" "}
                     {row.step_index + 1} · next {timeAgo(row.next_run_at)}
                     {row.last_error ? ` · ⚠️ ${row.last_error}` : ""}
+                  </p>
+                  <p className="text-[11px] font-extrabold text-ink-soft">
+                    📅 messaged{" "}
+                    {row.lead_day === colomboToday()
+                      ? "today"
+                      : row.lead_day === colomboToday(-1)
+                        ? "yesterday"
+                        : row.lead_day}
                   </p>
                 </div>
                 <button
