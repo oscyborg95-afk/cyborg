@@ -123,7 +123,7 @@ export function ActionStrip({
       >
         <span aria-hidden="true">{urgent > 0 ? "🔥" : "⚡"}</span>
         <span className="flex-1">
-          Needs you · {items.length}
+          Actions · {items.length}
           {codAtRisk > 0 && (
             <span className="ml-1 font-bold text-gold-dark">{money(codAtRisk)} COD</span>
           )}
