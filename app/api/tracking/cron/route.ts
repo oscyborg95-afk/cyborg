@@ -40,11 +40,25 @@ export async function GET(req: NextRequest) {
               role: "member",
               expiresAt: Date.now() + 300_000,
             },
-            async () => ({
-              tenantId: tenant.id,
-              sync: mode === "sync" ? await withExclusiveTrackingSync(runTrackingSync) : null,
-              notifications: await processTrackingNotificationQueue(100),
-            })
+            async () => {
+              // Drain first, sync second — never the other way round. The
+              // reconciliation can burn this function's whole 60s budget, and
+              // when it did, the outbox that ran after it was simply never
+              // reached: every delivery notification stopped going out while
+              // the queue kept filling from the webhook.
+              const started = Date.now();
+              const notifications = await processTrackingNotificationQueue(25);
+              // Only reconcile with time actually left to do it in; a sync that
+              // is going to time out anyway must not also cost us the next
+              // tick's drain.
+              const syncable = mode === "sync" && Date.now() - started < 20_000;
+              return {
+                tenantId: tenant.id,
+                notifications,
+                sync: syncable ? await withExclusiveTrackingSync(runTrackingSync) : null,
+                syncSkipped: mode === "sync" && !syncable,
+              };
+            }
           )
         );
       } catch (err) {

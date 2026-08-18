@@ -870,12 +870,12 @@ export async function ingestDeliveryEvent(input: {
           `insert into tracking_notification_jobs
             (order_id, recipient, alert_kind, chat_id, body, notification_type,
              dedupe_key, delivery_attempt_id, next_attempt_at)
-           select $1,$2,null,$3,$4,$5,$6,$7,$8
+           select $1::uuid,$2::varchar,null,$3::varchar,$4::text,$5::varchar,$6::varchar,$7::uuid,$8::timestamptz
             where not $9::boolean
                or not exists (
                  select 1 from tracking_notification_jobs recent
-                  where recent.order_id = $1
-                    and recent.notification_type = $5
+                  where recent.order_id = $1::uuid
+                    and recent.notification_type = $5::varchar
                     and recent.status in ('pending','processing','sent')
                     and recent.created_at > now() - make_interval(mins => $10::int)
                )
