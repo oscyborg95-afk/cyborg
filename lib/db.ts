@@ -1176,6 +1176,156 @@ export async function enqueueDeliveryNotification(input: DeliveryNotificationInp
   memNotificationJobs.set(job.id, job);
 }
 
+// --- Owner digests -----------------------------------------------------------
+// The owner used to get one WhatsApp per parcel per reminder, so a morning with
+// ten rescheduled parcels was ten messages. Both reminders are now rolled into
+// a single digest built from these rows.
+
+export interface OwnerDigestRow {
+  order_id: string;
+  order_no: string | null;
+  customer_name: string;
+  phone_number: string;
+  tracking_id: string;
+  attempt_no: number;
+  status: DeliveryEventStatus;
+  next_delivery_date: string | null;
+  call_status: DeliveryCallStatus;
+}
+
+// Open attempts scheduled for `date`. 'resolved' is excluded because the
+// delivery already finished (delivered or returned); 'called_confirmed' is kept
+// so the digest can show what is already handled instead of hiding it.
+export async function listAttemptsForDigestDate(date: string): Promise<OwnerDigestRow[]> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const { rows } = await pool.query(
+      `select a.order_id, o.order_no, o.customer_name, o.phone_number,
+              a.tracking_id, a.attempt_no, a.status, a.next_delivery_date, a.call_status
+         from delivery_attempts a join orders o on o.id = a.order_id
+        where a.next_delivery_date = $1 and a.call_status <> 'resolved'
+        order by a.attempt_no desc, o.customer_name asc`,
+      [date]
+    );
+    return rows as OwnerDigestRow[];
+  }
+  return [...memDeliveryAttempts.values()]
+    .filter((a) => a.next_delivery_date === date && a.call_status !== "resolved")
+    .map(memDigestRow)
+    .filter((row): row is OwnerDigestRow => row !== null)
+    .sort((a, b) => b.attempt_no - a.attempt_no || a.customer_name.localeCompare(b.customer_name));
+}
+
+// Rescheduled parcels the courier never gave a date for. They never reach a
+// dated digest, so the evening one lists them separately rather than letting
+// them fall silent.
+export async function listUndatedOpenAttempts(): Promise<OwnerDigestRow[]> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const { rows } = await pool.query(
+      `select a.order_id, o.order_no, o.customer_name, o.phone_number,
+              a.tracking_id, a.attempt_no, a.status, a.next_delivery_date, a.call_status
+         from delivery_attempts a join orders o on o.id = a.order_id
+        where a.next_delivery_date is null
+          and a.call_status = 'pending'
+          and a.status in ('rescheduled','branch_rescheduled','failed_to_deliver','branch_failed')
+          and a.last_event_at > now() - interval '14 days'
+        order by a.attempt_no desc, a.last_event_at desc`
+    );
+    return rows as OwnerDigestRow[];
+  }
+  const cutoff = Date.now() - 14 * 86_400_000;
+  return [...memDeliveryAttempts.values()]
+    .filter(
+      (a) =>
+        !a.next_delivery_date &&
+        a.call_status === "pending" &&
+        ["rescheduled", "branch_rescheduled", "failed_to_deliver", "branch_failed"].includes(a.status) &&
+        Date.parse(a.last_event_at) > cutoff
+    )
+    .map(memDigestRow)
+    .filter((row): row is OwnerDigestRow => row !== null)
+    .sort((a, b) => b.attempt_no - a.attempt_no);
+}
+
+function memDigestRow(attempt: DeliveryAttempt): OwnerDigestRow | null {
+  const order = memOrders.get(attempt.order_id);
+  if (!order) return null;
+  return {
+    order_id: attempt.order_id,
+    order_no: order.order_no ?? null,
+    customer_name: order.customer_name,
+    phone_number: order.phone_number,
+    tracking_id: attempt.tracking_id,
+    attempt_no: attempt.attempt_no,
+    status: attempt.status,
+    next_delivery_date: attempt.next_delivery_date,
+    call_status: attempt.call_status,
+  };
+}
+
+// A digest belongs to no single parcel, but tracking_notification_jobs.order_id
+// is NOT NULL, so it is filed under the first parcel it covers. The dedupe key
+// carries the real identity (one digest per kind per day), so a re-run — a
+// retried cron, a webhook-triggered drain — cannot send a second copy.
+export async function enqueueOwnerDigest(input: {
+  order_id: string;
+  chat_id: string;
+  body: string;
+  notification_type: string;
+  dedupe_key: string;
+}): Promise<boolean> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const { rowCount } = await pool.query(
+      `insert into tracking_notification_jobs
+        (order_id,recipient,chat_id,body,notification_type,dedupe_key,next_attempt_at)
+       values($1,'owner',$2,$3,$4,$5,now())
+       on conflict(dedupe_key) where dedupe_key is not null do nothing`,
+      [input.order_id, input.chat_id, input.body, input.notification_type, input.dedupe_key]
+    );
+    return (rowCount ?? 0) > 0;
+  }
+  if ([...memNotificationJobs.values()].some((job) => job.dedupe_key === input.dedupe_key)) return false;
+  const now = new Date().toISOString();
+  const id = randomUUID();
+  memNotificationJobs.set(id, {
+    id, webhook_event_id: null, order_id: input.order_id, recipient: "owner",
+    alert_kind: null, chat_id: input.chat_id, body: input.body,
+    notification_type: input.notification_type, dedupe_key: input.dedupe_key,
+    delivery_attempt_id: null, status: "pending", attempts: 0, next_attempt_at: now,
+    last_error: "", created_at: now, sent_at: null,
+  });
+  return true;
+}
+
+// Per-parcel reminders queued before the digest existed are still sitting in the
+// outbox with a future next_attempt_at. Without this the first digest morning
+// would ALSO deliver the old blast it was meant to replace.
+export async function skipSupersededReminders(): Promise<number> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const { rowCount } = await pool.query(
+      `update tracking_notification_jobs
+          set status='skipped',last_error='Superseded by owner digest',claimed_at=null
+        where notification_type in ('owner_call_reminder','owner_morning_reminder')
+          and status in ('pending','failed')`
+    );
+    return rowCount ?? 0;
+  }
+  let skipped = 0;
+  for (const [id, job] of memNotificationJobs) {
+    if (
+      ["owner_call_reminder", "owner_morning_reminder"].includes(job.notification_type ?? "") &&
+      ["pending", "failed"].includes(job.status)
+    ) {
+      memNotificationJobs.set(id, { ...job, status: "skipped", last_error: "Superseded by owner digest" });
+      skipped++;
+    }
+  }
+  return skipped;
+}
+
 export async function cancelPendingAttemptReminders(attemptId: string): Promise<void> {
   if (pool) {
     await ensureTrackingOpsSchema(pool);

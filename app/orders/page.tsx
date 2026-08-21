@@ -1339,8 +1339,10 @@ const NOTIFICATION_TYPE_LABEL: Record<string, string> = {
   customer_returned: "Customer · return apology",
   owner_reschedule_alert: "You · reschedule alert",
   owner_delivery_failed: "You · failed delivery",
-  owner_call_reminder: "You · call reminder",
-  owner_morning_reminder: "You · delivery-day reminder",
+  owner_call_reminder: "You · call reminder (retired, now in the digest)",
+  owner_morning_reminder: "You · delivery-day reminder (retired, now in the digest)",
+  owner_morning_digest: "You · morning digest",
+  owner_evening_digest: "You · evening digest",
   owner_terminal_return: "You · parcel returned",
   tracking: "Tracking update",
 };

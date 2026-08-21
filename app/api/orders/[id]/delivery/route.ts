@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   cancelPendingAttemptReminders,
-  enqueueDeliveryNotification,
   getDeliveryAttempt,
-  getSettings,
   updateDeliveryAttempt,
 } from "@/lib/db";
-import { ownerCallDueAt, scheduledMorningAt } from "@/lib/delivery-events";
-import { phoneToChatId } from "@/lib/phone";
+import { ownerCallDueAt } from "@/lib/delivery-events";
 import type { DeliveryCallStatus } from "@/lib/types";
 
 const ACTION_STATUS: Record<string, DeliveryCallStatus> = {
@@ -71,46 +68,10 @@ export async function PATCH(
   if (body.next_delivery_date !== undefined) {
     await cancelPendingAttemptReminders(attempt.id);
   }
-  if (body.next_delivery_date !== undefined && nextDate) {
-    const settings = await getSettings();
-    const ownerPhone = settings.business_phone_1.trim();
-    if (ownerPhone) {
-      const ownerChat = phoneToChatId(ownerPhone);
-      const prefix = `delivery:${orderId}:attempt:${attempt.attempt_no}:manual:${nextDate}`;
-      const reminder = [
-        "📞 CALL REMINDER",
-        `Tracking: ${attempt.tracking_id}`,
-        `Next attempt: ${attempt.attempt_no + 1}`,
-        `Delivery date: ${nextDate}`,
-        "Please confirm the customer will answer the courier.",
-      ].join("\n");
-      if (callDueAt) {
-        await enqueueDeliveryNotification({
-          order_id: orderId,
-          delivery_attempt_id: attempt.id,
-          recipient: "owner",
-          chat_id: ownerChat,
-          body: reminder,
-          notification_type: "owner_call_reminder",
-          dedupe_key: `${prefix}:owner_call_reminder`,
-          next_attempt_at: callDueAt,
-        });
-      }
-      const morningAt = scheduledMorningAt(nextDate);
-      if (morningAt && new Date(morningAt).getTime() > Date.now()) {
-        await enqueueDeliveryNotification({
-          order_id: orderId,
-          delivery_attempt_id: attempt.id,
-          recipient: "owner",
-          chat_id: ownerChat,
-          body: `🚨 DELIVERY TODAY — CALL STILL OPEN\nTracking: ${attempt.tracking_id}\nAttempt: ${attempt.attempt_no + 1}\nPlease contact the customer now.`,
-          notification_type: "owner_morning_reminder",
-          dedupe_key: `${prefix}:owner_morning_reminder`,
-          next_attempt_at: morningAt,
-        });
-      }
-    }
-  }
+  // Setting a date by hand used to queue this attempt its own call reminder and
+  // its own delivery-morning nudge. Both are now covered by the owner's daily
+  // digest, which reads next_delivery_date straight off the attempt — so the
+  // manual date shows up there with no per-parcel message of its own.
 
   return NextResponse.json({ attempt: updated });
 }
