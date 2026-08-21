@@ -5,11 +5,7 @@ import {
   ingestDeliveryEvent,
   type DeliveryNotificationInput,
 } from "./db.ts";
-import {
-  ownerCallDueAt,
-  scheduledMorningAt,
-  type NormalizedDeliveryEvent,
-} from "./delivery-events.ts";
+import { ownerCallDueAt, type NormalizedDeliveryEvent } from "./delivery-events.ts";
 import { phoneToChatId } from "./phone.ts";
 import { makeTemplates } from "./templates.ts";
 import type { Order } from "./types.ts";
@@ -65,14 +61,25 @@ function ownerAlertBody(
   ].filter(Boolean).join("\n");
 }
 
-function ownerReminderBody(event: NormalizedDeliveryEvent, morning = false): string {
+// Returns are the one event that costs real money, so they get a format nothing
+// else uses: the owner should be able to tell it from a reschedule at a glance,
+// without reading a word. Reschedules are frequent and batched into the daily
+// digest; this stays immediate and per-parcel.
+function returnAlertBody(order: Order, event: NormalizedDeliveryEvent): string {
+  const value = Number(order.total_cod);
   return [
-    morning ? "🚨 DELIVERY TODAY — CALL STILL OPEN" : "📞 CALL REMINDER",
+    "🔴🔴🔴 PARCEL RETURNED 🔴🔴🔴",
+    "",
     `Tracking: ${event.trackingId}`,
-    `Attempt: ${event.attemptNo + 1}`,
-    `Delivery: ${displayDate(event.nextDeliveryDate)}`,
-    event.attemptNo >= 2 ? "High return risk — please contact this customer now." : "Please confirm the customer will answer the courier.",
-  ].join("\n");
+    `Customer: ${order.customer_name}`,
+    `Phone: ${order.phone_number}`,
+    `Order: ${order.order_no ?? order.id}`,
+    Number.isFinite(value) && value > 0 ? `COD value lost: Rs. ${value.toLocaleString("en-LK")}` : "",
+    `Attempts made: ${event.attemptNo}`,
+    cleanReason(event.reason) ? `Courier reason: ${cleanReason(event.reason)}` : "",
+    "",
+    "The parcel is on its way back to you. Call the customer if you want to re-book it.",
+  ].filter(Boolean).join("\n");
 }
 
 function customerRescheduleBody(
@@ -138,15 +145,6 @@ export async function processDeliveryEvent(
       notification_type: "customer_out_for_delivery",
       dedupe_key: `${prefix}:customer_out_for_delivery`,
     });
-    if (ownerChat && event.attemptNo > 1) {
-      notifications.push({
-        recipient: "owner",
-        chat_id: ownerChat,
-        body: ownerReminderBody(event, true),
-        notification_type: "owner_morning_reminder",
-        dedupe_key: `${prefix}:owner_morning_reminder`,
-      });
-    }
   }
 
   if (isReschedule(event.status)) {
@@ -172,27 +170,6 @@ export async function processDeliveryEvent(
         notification_type: "owner_reschedule_alert",
         dedupe_key: `${exceptionPrefix}:owner_reschedule_alert`,
       });
-      if (callDueAt && new Date(callDueAt).getTime() > now.getTime() + 60_000) {
-        notifications.push({
-          recipient: "owner",
-          chat_id: ownerChat,
-          body: ownerReminderBody(event),
-          notification_type: "owner_call_reminder",
-          dedupe_key: `${exceptionPrefix}:owner_call_reminder`,
-          next_attempt_at: callDueAt,
-        });
-      }
-      const morningAt = scheduledMorningAt(event.nextDeliveryDate);
-      if (morningAt && new Date(morningAt).getTime() > now.getTime()) {
-        notifications.push({
-          recipient: "owner",
-          chat_id: ownerChat,
-          body: ownerReminderBody(event, true),
-          notification_type: "owner_morning_reminder",
-          dedupe_key: `${exceptionPrefix}:owner_morning_reminder`,
-          next_attempt_at: morningAt,
-        });
-      }
     }
   }
 
@@ -230,15 +207,7 @@ export async function processDeliveryEvent(
       notifications.push({
         recipient: "owner",
         chat_id: ownerChat,
-        body: [
-          "↩️ PARCEL RETURNED TO HEAD OFFICE",
-          `Order: ${tracked.order.order_no ?? tracked.order.id}`,
-          `Customer: ${tracked.order.customer_name}`,
-          `Phone: ${tracked.order.phone_number}`,
-          `Tracking: ${event.trackingId}`,
-          `Attempts: ${event.attemptNo}`,
-          event.reason ? `Reason: ${event.reason}` : "",
-        ].filter(Boolean).join("\n"),
+        body: returnAlertBody(tracked.order, event),
         notification_type: "owner_terminal_return",
         dedupe_key: `delivery:${tracked.order.id}:owner_terminal_return`,
       });
