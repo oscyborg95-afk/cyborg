@@ -94,7 +94,7 @@ export default function CustomerDetailPage() {
 
   if (!detail || !form) {
     return (
-      <main className="mx-auto max-w-3xl p-6">
+      <main className="mx-auto max-w-3xl p-4 pb-28 sm:p-6">
         <Card className="py-14 text-center">
           <Froggy mood="sleepy" size={80} bob={false} className="mx-auto" />
           <h1 className="font-display text-xl font-extrabold">Customer unavailable</h1>
@@ -108,9 +108,9 @@ export default function CustomerDetailPage() {
   const { customer, orders, messages } = detail;
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
-      <header className="flex flex-wrap items-center gap-3">
-        <Link href="/customers" className="rounded-xl border-2 border-cardline bg-surface px-3 py-2 font-display text-sm font-extrabold text-ink-soft hover:border-frog focus:outline-none focus:ring-2 focus:ring-frog" aria-label="Back to customers">←</Link>
+    <main className="mx-auto max-w-6xl space-y-5 p-4 pb-28 sm:p-6 sm:pb-6">
+      <header className="grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-3 sm:flex sm:flex-wrap">
+        <Link href="/customers" className="flex min-h-11 min-w-11 items-center justify-center rounded-xl border-2 border-cardline bg-surface px-3 py-2 font-display text-sm font-extrabold text-ink-soft hover:border-frog focus:outline-none focus:ring-2 focus:ring-frog" aria-label="Back to customers">←</Link>
         <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-pond font-display text-2xl font-extrabold text-frog-dark">
           {(customer.display_name || "?").slice(0, 1).toUpperCase()}
         </div>
@@ -118,7 +118,7 @@ export default function CustomerDetailPage() {
           <h1 className="truncate font-display text-2xl font-extrabold text-ink sm:text-3xl">{customer.display_name}</h1>
           <p className="text-sm font-bold text-ink-soft">{customer.primary_phone} · {languageName[customer.preferred_language]}</p>
         </div>
-        {customer.chat_id && <Link href={`/?chat=${encodeURIComponent(customer.chat_id)}`} className="btn3d border-grape-dark bg-grape text-white">💬 Open chat</Link>}
+        {customer.chat_id && <Link href={`/?chat=${encodeURIComponent(customer.chat_id)}`} className="btn3d col-span-3 flex min-h-11 items-center justify-center border-grape-dark bg-grape text-white sm:col-span-1">💬 Open chat</Link>}
       </header>
 
       {error && <Card className="!border-danger-line bg-danger-bg p-4 font-display text-sm font-bold text-danger-ink">⚠️ {error}</Card>}
@@ -184,7 +184,7 @@ export default function CustomerDetailPage() {
               ) : messages.slice(-20).map((message) => (
                 <div key={message.id} className={`flex ${message.fromMe ? "justify-end" : "justify-start"}`}>
                   <div className={`max-w-[85%] rounded-2xl border-2 px-3 py-2 ${message.fromMe ? "border-frog bg-pond" : "border-cardline bg-surface"}`}>
-                    <p className="whitespace-pre-wrap text-sm font-semibold text-ink">{message.body || `[${message.media || "media"}]`}</p>
+                    <p className="whitespace-pre-wrap break-words text-sm font-semibold text-ink">{message.body || `[${message.media || "media"}]`}</p>
                     <p className="mt-1 text-right text-[10px] font-bold text-ink-soft">{timeAgo(message.timestamp * 1000)}</p>
                   </div>
                 </div>

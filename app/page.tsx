@@ -248,6 +248,7 @@ function MediaBubble({ msg }: { msg: WaMessage }) {
 }
 
 export default function Workspace() {
+  const [mobileView, setMobileView] = useState<"inbox" | "chat" | "dispatch">("inbox");
   const [chats, setChats] = useState<WaChat[]>([]);
   const [activeChatId, setActiveChatId] = useState<null | string>(null);
   const [messages, setMessages] = useState<WaMessage[]>([]);
@@ -327,6 +328,7 @@ export default function Workspace() {
       if (hasRequested && requested) {
         deepLinkHandledRef.current = true;
         setActiveChatId(requested);
+        setMobileView("chat");
         workerClientFetch(`${WORKER_URL}/read`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -452,6 +454,7 @@ export default function Workspace() {
       if (chatId !== activeChatIdRef.current) return;
       activeChatIdRef.current = null;
       setActiveChatId(null);
+      setMobileView("inbox");
       setMessages([]);
       setDraft(null);
       setConfirmText(null);
@@ -549,6 +552,7 @@ export default function Workspace() {
 
   async function selectChat(chatId: string) {
     setActiveChatId(chatId);
+    setMobileView("chat");
     setDraft(null);
     setConfirmText(null);
     setNotice(null);
@@ -586,6 +590,7 @@ export default function Workspace() {
 
       activeChatIdRef.current = null;
       setActiveChatId(null);
+      setMobileView("inbox");
       setChats((prev) => prev.filter((chat) => chat.id !== chatId));
       setMessages([]);
       setDraft(null);
@@ -1025,27 +1030,27 @@ export default function Workspace() {
   }
 
   return (
-    <div className="grid h-full min-w-0 auto-cols-[100%] grid-flow-col overflow-x-auto overscroll-x-contain scroll-smooth snap-x snap-mandatory divide-x-2 divide-cardline xl:grid-flow-row xl:grid-cols-[290px_minmax(0,1fr)_350px] xl:overflow-hidden xl:snap-none">
+    <div className="h-full min-w-0 xl:grid xl:grid-cols-[290px_minmax(0,1fr)_350px] xl:divide-x-2 xl:divide-cardline xl:overflow-hidden">
       <Confetti run={celebrate} />
       <XPBurst burst={xpBurst} />
 
       {/* LEFT: inbox */}
-      <aside className="flex min-h-0 min-w-0 snap-start flex-col bg-white/50">
+      <aside className={`${mobileView === "inbox" ? "flex" : "hidden"} h-full min-h-0 min-w-0 flex-col bg-surface/55 xl:flex`} aria-label="WhatsApp inbox">
         <div className="border-b-2 border-cardline p-2">
           <input
             ref={searchRef}
-            className="mb-1.5 w-full rounded-xl border-2 border-cardline bg-white px-3 py-1.5 text-xs font-semibold text-ink outline-none focus:border-frog"
+            className="mb-2 min-h-11 w-full rounded-xl border-2 border-cardline bg-surface px-3 text-base font-semibold text-ink outline-none focus:border-frog xl:min-h-0 xl:py-1.5 xl:text-xs"
             placeholder="🔎 Search name, phone, message…  ( / )"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <div className="flex flex-wrap gap-1">
+          <div className="flex gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none]">
             {FILTERS.map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
                 className={
-                  "rounded-full px-2.5 py-1 font-display text-xs font-bold transition " +
+                  "min-h-10 shrink-0 rounded-full px-3 py-1 font-display text-sm font-bold transition xl:min-h-0 xl:text-xs " +
                   (filter === f
                     ? "bg-frog text-white"
                     : "bg-[#f2ede3] text-ink-soft hover:bg-pond hover:text-frog-dark")
@@ -1085,7 +1090,7 @@ export default function Workspace() {
                 key={chat.id}
                 onClick={() => selectChat(chat.id)}
                 className={
-                  "flex w-full items-center gap-2.5 border-b border-cardline/60 px-3 py-2.5 text-left transition hover:bg-pond/40 " +
+                  "flex min-h-[4.75rem] w-full items-center gap-3 border-b border-cardline/60 px-3 py-3 text-left transition hover:bg-pond/40 xl:min-h-0 xl:gap-2.5 xl:py-2.5 " +
                   (chat.id === activeChatId ? "bg-pond/70" : "")
                 }
               >
@@ -1094,7 +1099,7 @@ export default function Workspace() {
                   <div className="flex items-center justify-between gap-2">
                     <span
                       className={
-                        "truncate font-display text-sm text-ink " +
+                        "truncate font-display text-base text-ink xl:text-sm " +
                         (chat.unreadCount > 0 ? "font-extrabold" : "font-bold")
                       }
                     >
@@ -1112,7 +1117,7 @@ export default function Workspace() {
                   <div className="mt-0.5 flex items-center justify-between gap-2">
                     <p
                       className={
-                        "truncate text-xs " +
+                        "truncate text-sm xl:text-xs " +
                         (chat.unreadCount > 0
                           ? "font-bold text-ink"
                           : "font-semibold text-ink-soft")
@@ -1154,19 +1159,22 @@ export default function Workspace() {
       </aside>
 
       {/* CENTER: live chat + action bar */}
-      <section className="flex min-h-0 min-w-0 snap-start flex-col">
+      <section className={`${mobileView === "chat" ? "flex" : "hidden"} h-full min-h-0 min-w-0 flex-col xl:flex`} aria-label="Conversation">
         {activeChat ? (
           <>
-            <div className="flex items-center gap-3 border-b-2 border-cardline bg-white/60 px-4 py-2">
-              <Avatar jid={activeChat.id} name={activeChat.name} size={40} />
-              <div>
+            <div className="flex flex-wrap items-center gap-2 border-b-2 border-cardline bg-surface/75 px-2 py-2 sm:px-4 xl:flex-nowrap xl:gap-3">
+              <button type="button" onClick={() => setMobileView("inbox")} aria-label="Back to inbox" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-cardline bg-surface font-display text-xl font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-frog xl:hidden">‹</button>
+              <Avatar jid={activeChat.id} name={activeChat.name} size={38} />
+              <div className="min-w-0 flex-1">
                 <div className="font-display text-base font-extrabold text-ink">
-                  {activeChat.name}
+                  <span className="block truncate">{activeChat.name}</span>
                 </div>
-                <div className="text-xs font-semibold text-ink-soft">{activePhone}</div>
+                <div className="truncate text-xs font-semibold text-ink-soft">{activePhone}</div>
               </div>
+              <button type="button" onClick={() => setMobileView("dispatch")} aria-label="Open dispatch tools" className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-grape bg-grape-tint px-3 font-display text-sm font-extrabold text-grape-dark focus-visible:outline-2 focus-visible:outline-grape xl:hidden"><span aria-hidden="true">🚚</span><span className="hidden min-[360px]:inline">Dispatch</span></button>
               <select
-                className="ml-auto rounded-xl border-2 border-cardline bg-white px-2 py-1.5 font-display text-xs font-bold text-ink outline-none focus:border-frog"
+                aria-label="Chat order state"
+                className="order-last min-h-11 flex-1 rounded-xl border-2 border-cardline bg-surface px-2 font-display text-sm font-bold text-ink outline-none focus:border-frog xl:order-none xl:ml-auto xl:min-h-0 xl:flex-none xl:py-1.5 xl:text-xs"
                 value={activeState}
                 onChange={(e) => setChatState(e.target.value as ChatStateValue)}
               >
@@ -1180,10 +1188,10 @@ export default function Workspace() {
                 tone="flame"
                 onClick={deleteActiveChat}
                 disabled={deletingChat}
-                className="!px-2.5 !py-1.5 !text-xs"
+                className="order-last !h-11 !w-11 !px-0 !py-0 !text-sm xl:order-none xl:!h-auto xl:!w-auto xl:!px-2.5 xl:!py-1.5 xl:!text-xs"
                 title="Delete this chat's data from the system"
               >
-                {deletingChat ? "Deleting…" : "🗑 Delete"}
+                <span aria-hidden="true">🗑</span><span className="sr-only xl:not-sr-only">{deletingChat ? "Deleting…" : " Delete"}</span>
               </Button>
             </div>
 
@@ -1208,7 +1216,7 @@ export default function Workspace() {
                     <div className={m.fromMe ? "flex justify-end" : "flex justify-start"}>
                       <div
                         className={
-                          "max-w-[70%] rounded-2xl px-3 py-2 text-sm font-semibold shadow-sm " +
+                        "max-w-[88%] rounded-2xl px-3 py-2 text-[15px] font-semibold shadow-sm sm:max-w-[82%] xl:max-w-[70%] xl:text-sm " +
                           (m.fromMe
                             ? "rounded-br-md bg-frog text-white"
                             : "rounded-bl-md border-2 border-cardline bg-white text-ink")
@@ -1240,7 +1248,7 @@ export default function Workspace() {
             </div>
 
             {/* Dynamic action bar */}
-            <div className="flex flex-wrap gap-2 border-t-2 border-cardline bg-white/60 px-4 py-2.5">
+            <div className="flex shrink-0 gap-2 overflow-x-auto border-t-2 border-cardline bg-surface/75 px-3 py-2 [scrollbar-width:none] xl:flex-wrap xl:px-4 xl:py-2.5">
               <Button tone="ghost" onClick={quickAskAddress} className="!px-3 !py-2 !text-xs">
                 📍 Ask for address
               </Button>
@@ -1288,7 +1296,7 @@ export default function Workspace() {
                 </button>
               </div>
             )}
-            <div className="flex items-end gap-2 border-t-2 border-cardline bg-white/60 p-3">
+            <div className="flex shrink-0 items-end gap-2 border-t-2 border-cardline bg-surface/90 p-2.5 sm:p-3">
               <input
                 ref={fileRef}
                 type="file"
@@ -1303,13 +1311,14 @@ export default function Workspace() {
               <button
                 onClick={() => fileRef.current?.click()}
                 title="Attach a photo"
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border-2 border-cardline bg-white text-lg transition hover:border-frog hover:bg-pond"
+                aria-label="Attach a photo"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-cardline bg-surface text-lg transition hover:border-frog hover:bg-pond"
               >
                 📎
               </button>
               <textarea
                 rows={1}
-                className="max-h-28 flex-1 resize-none rounded-xl border-2 border-cardline bg-white px-3.5 py-2.5 text-sm font-semibold text-ink outline-none focus:border-frog"
+                className="min-h-11 max-h-28 min-w-0 flex-1 resize-none rounded-xl border-2 border-cardline bg-surface px-3 py-2.5 text-base font-semibold text-ink outline-none focus:border-frog xl:text-sm"
                 placeholder={attach ? "Add a caption… (Enter to send)" : "Type a message…  (Enter sends, Shift+Enter = new line)"}
                 value={input}
                 onChange={(e) => {
@@ -1357,10 +1366,11 @@ export default function Workspace() {
       </section>
 
       {/* RIGHT: logistics copilot */}
-      <aside className="flex min-h-0 min-w-0 snap-start flex-col overflow-y-auto bg-white/50 p-4">
-        <h2 className="mb-2 font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
-          Dispatch copilot
-        </h2>
+      <aside className={`${mobileView === "dispatch" ? "flex" : "hidden"} h-full min-h-0 min-w-0 flex-col overflow-y-auto bg-surface/95 p-4 xl:flex xl:bg-surface/55`} aria-label="Dispatch tools">
+        <div className="sticky top-0 z-10 -mx-4 -mt-4 mb-3 flex items-center gap-3 border-b-2 border-cardline bg-surface/95 px-4 py-3 xl:static xl:m-0 xl:mb-2 xl:block xl:border-0 xl:bg-transparent xl:p-0">
+          <button type="button" onClick={() => setMobileView("chat")} aria-label="Close dispatch tools" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-cardline bg-surface-soft font-display text-xl font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-frog xl:hidden">‹</button>
+          <div className="min-w-0 flex-1"><h2 className="font-display text-lg font-extrabold text-ink xl:text-xs xl:uppercase xl:tracking-wide xl:text-ink-soft">Dispatch copilot</h2><p className="truncate text-sm font-semibold text-ink-soft xl:hidden">{activeChat ? `Prepare ${activeChat.name}'s COD order` : "Open a chat first"}</p></div>
+        </div>
         <Coach lines={coachLines} size={56} className="mb-3" />
         {metrics && metrics.streakAtRisk && (
           <div className="danger-pulse mb-3 flex items-center justify-between rounded-xl border-2 border-flame bg-flame-tint px-3 py-2">

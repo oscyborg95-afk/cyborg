@@ -41,7 +41,7 @@ export function ThemeToggle() {
       aria-label={dark ? "Switch to day mode" : "Switch to night mode"}
       aria-pressed={dark}
       title={dark ? "Switch to day mode" : "Switch to night mode"}
-      className="btn3d h-9 min-w-9 border-cardline bg-surface px-2 text-base text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-frog"
+      className="btn3d h-11 min-w-11 border-cardline bg-surface px-2 text-base text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-frog sm:h-9 sm:min-w-9"
     >
       <span className="theme-toggle-icon block" aria-hidden="true">
         {dark ? "☀️" : "🌙"}

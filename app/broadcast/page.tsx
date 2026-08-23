@@ -32,19 +32,30 @@ export default function BroadcastPage() {
   const [audience, setAudience] = useState<Audience>("delivered");
   const [skipRisky, setSkipRisky] = useState(true);
   const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ sent: 0, failed: 0, total: 0, current: "" });
   const [done, setDone] = useState<string | null>(null);
   const stopRef = useRef(false);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/orders");
-    const data = await res.json();
-    if (res.ok) setOrders(data.orders);
+    try {
+      const res = await fetch("/api/orders");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not load past customers");
+      setOrders(data.orders);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load past customers");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    load();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
   }, [load]);
 
   // One entry per unique customer (newest name wins — orders are newest-first).
@@ -114,7 +125,7 @@ export default function BroadcastPage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl space-y-5 p-5 sm:p-6">
+    <main className="mx-auto max-w-3xl space-y-5 p-4 pb-28 sm:p-6 sm:pb-6">
       <header className="flex items-center gap-3">
         <Froggy mood={running ? "thinking" : "happy"} size={56} />
         <div>
@@ -133,12 +144,19 @@ export default function BroadcastPage() {
         </p>
       </Card>
 
-      <Card className="space-y-4 p-5">
-        <div className="flex flex-wrap items-center gap-4">
+      {error && (
+        <Card className="grid gap-3 !border-danger-line bg-danger-bg p-4 sm:flex sm:items-center sm:justify-between">
+          <p role="alert" className="font-display text-sm font-bold text-danger-ink">⚠️ {error}</p>
+          <button type="button" onClick={() => { setLoading(true); void load(); }} className="min-h-11 rounded-xl border-2 border-danger-line px-4 py-2 font-display text-sm font-extrabold text-danger-ink focus:outline-none focus:ring-2 focus:ring-danger-ink">Try again</button>
+        </Card>
+      )}
+
+      <Card className="space-y-4 p-4 sm:p-5">
+        <div className="grid gap-4 sm:flex sm:flex-wrap sm:items-center">
           <label className="font-display text-xs font-bold text-ink-soft">
             Audience
             <select
-              className="mt-1 block max-w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+              className="mt-1 block min-h-12 w-full max-w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-base font-bold text-ink outline-none focus:border-frog focus:ring-2 focus:ring-frog/20 sm:w-auto sm:text-sm"
               value={audience}
               onChange={(e) => setAudience(e.target.value as Audience)}
               disabled={running}
@@ -147,20 +165,20 @@ export default function BroadcastPage() {
               <option value="all">Everyone who ever ordered</option>
             </select>
           </label>
-          <label className="flex items-center gap-2 pt-4 font-display text-sm font-bold text-ink-soft">
+          <label className="flex min-h-11 items-center gap-3 rounded-xl bg-surface-soft px-3 py-2 font-display text-sm font-bold text-ink-soft sm:mt-4">
             <input
               type="checkbox"
               checked={skipRisky}
               onChange={(e) => setSkipRisky(e.target.checked)}
               disabled={running}
-              className="h-4 w-4 accent-[var(--color-frog)]"
+              className="h-5 w-5 shrink-0 accent-[var(--color-frog)]"
             />
             Skip risky customers (more returns than deliveries)
           </label>
         </div>
 
-        <p className="font-display text-sm font-extrabold text-ink">
-          🎯 {recipients.length} recipient{recipients.length === 1 ? "" : "s"}
+        <p role="status" className="font-display text-sm font-extrabold text-ink">
+          {loading ? "⏳ Finding eligible past customers…" : `🎯 ${recipients.length} recipient${recipients.length === 1 ? "" : "s"}`}
           {recipients.length > MAX_PER_RUN && (
             <span className="text-ink-soft"> — first {MAX_PER_RUN} this run</span>
           )}
@@ -170,7 +188,7 @@ export default function BroadcastPage() {
           Message
           <textarea
             rows={6}
-            className="mt-1 w-full rounded-xl border-2 border-cardline bg-cream/60 p-3 text-sm font-semibold text-ink outline-none focus:border-frog"
+            className="mt-1 min-h-40 w-full rounded-xl border-2 border-cardline bg-cream/60 p-3 text-base font-semibold text-ink outline-none focus:border-frog focus:ring-2 focus:ring-frog/20 sm:text-sm"
             placeholder={"අලුත් stock ආවා! 🎉 …"}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
@@ -184,12 +202,12 @@ export default function BroadcastPage() {
               value={((progress.sent + progress.failed) / Math.max(progress.total, 1)) * 100}
               tone="var(--color-frog)"
             />
-            <div className="flex items-center justify-between">
+            <div className="grid gap-3 sm:flex sm:items-center sm:justify-between">
               <p className="font-display text-sm font-bold text-ink">
                 📨 {progress.sent + progress.failed}/{progress.total} — sending to{" "}
                 {progress.current}…
               </p>
-              <Button tone="ghost" onClick={() => (stopRef.current = true)}>
+              <Button className="w-full sm:w-auto" tone="ghost" onClick={() => (stopRef.current = true)}>
                 ⏹️ Stop
               </Button>
             </div>
@@ -201,8 +219,8 @@ export default function BroadcastPage() {
           <Button
             tone="frog"
             onClick={start}
-            disabled={!message.trim() || batch.length === 0}
-            className="!py-3"
+            disabled={loading || !message.trim() || batch.length === 0}
+            className="min-h-12 w-full !py-3"
           >
             📣 Send to {batch.length} customer{batch.length === 1 ? "" : "s"}
           </Button>
@@ -216,13 +234,13 @@ export default function BroadcastPage() {
       </Card>
 
       {recipients.length > 0 && (
-        <Card className="p-5">
-          <h2 className="mb-2 font-display text-sm font-extrabold uppercase tracking-wide text-ink-soft">
-            Recipients
-          </h2>
-          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+        <details className="card3d overflow-hidden">
+          <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-3 p-4 font-display text-sm font-extrabold uppercase tracking-wide text-ink-soft focus:outline-none focus:ring-2 focus:ring-inset focus:ring-frog sm:p-5">
+            <span>Recipients · {batch.length}</span><span aria-hidden>▾</span>
+          </summary>
+          <div className="grid grid-cols-1 gap-2 border-t-2 border-cardline p-4 sm:grid-cols-2 sm:p-5">
             {batch.map((r) => (
-              <p key={r.phone} className="font-display text-sm font-bold text-ink">
+              <p key={r.phone} className="break-words rounded-xl bg-surface-soft p-3 font-display text-sm font-bold text-ink">
                 {r.name}{" "}
                 <span className="text-ink-soft">
                   · {r.phone} · ✅{r.delivered}
@@ -231,7 +249,7 @@ export default function BroadcastPage() {
               </p>
             ))}
           </div>
-        </Card>
+        </details>
       )}
     </main>
   );

@@ -145,7 +145,7 @@ export function WhatsAppAccountControl() {
   return (
     <>
       <div
-        className="flex h-9 min-w-0 items-stretch overflow-hidden rounded-xl border-2 border-cardline bg-surface"
+        className="flex h-11 min-w-0 items-stretch overflow-hidden rounded-xl border-2 border-cardline bg-surface sm:h-9"
         aria-label={stateLabel}
       >
         <span className="flex min-w-0 items-center gap-2 px-2.5">

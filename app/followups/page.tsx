@@ -134,7 +134,7 @@ export default function FollowUpsPage() {
 
   if (loading) {
     return (
-      <main className="mx-auto max-w-3xl p-6">
+      <main className="mx-auto max-w-3xl p-4 pb-28 sm:p-6">
         <Card className="py-14 text-center">
           <Froggy mood="thinking" size={80} bob={false} className="mx-auto" />
           <h1 className="font-display text-xl font-extrabold">Loading follow-ups…</h1>
@@ -145,7 +145,7 @@ export default function FollowUpsPage() {
 
   if (!settings) {
     return (
-      <main className="mx-auto max-w-3xl p-6">
+      <main className="mx-auto max-w-3xl p-4 pb-28 sm:p-6">
         <Card className="py-14 text-center">
           <Froggy mood="sleepy" size={80} bob={false} className="mx-auto" />
           <h1 className="font-display text-xl font-extrabold">Follow-ups unavailable</h1>
@@ -174,7 +174,7 @@ export default function FollowUpsPage() {
   const visibleQueue = targetDay ? active.filter((row) => row.lead_day === targetDay) : active;
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
+    <main className="mx-auto max-w-6xl space-y-5 p-4 pb-28 sm:p-6 sm:pb-6">
       <header className="flex flex-wrap items-center gap-3">
         <Froggy mood={settings.enabled ? "celebrate" : "sleepy"} size={64} />
         <div className="min-w-0 flex-1">
@@ -186,7 +186,7 @@ export default function FollowUpsPage() {
           </p>
         </div>
         <span
-          className={`rounded-xl border-2 px-3 py-1.5 font-display text-xs font-extrabold uppercase ${
+          className={`flex min-h-11 items-center rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold uppercase ${
             settings.enabled
               ? "border-frog bg-pond text-frog-dark"
               : "border-cardline bg-surface-soft text-ink-soft"
@@ -222,7 +222,7 @@ export default function FollowUpsPage() {
             says stop leaves the queue immediately.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-3 p-4 sm:p-5">
+        <div className="grid gap-2 p-4 sm:flex sm:flex-wrap sm:items-center sm:gap-3 sm:p-5">
           <Button
             tone={settings.enabled ? "ghost" : "frog"}
             disabled={saving}
@@ -236,13 +236,13 @@ export default function FollowUpsPage() {
         </div>
       </Card>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         {[
           { label: "In the queue", value: active.length, detail: "leads being chased" },
           { label: "Sent (24h)", value: pace.sent_24h, detail: `${capLeft} left today` },
           { label: "Daily cap", value: settings.daily_cap, detail: "hard limit" },
         ].map((metric) => (
-          <Card key={metric.label} className="p-3 text-center sm:p-4">
+          <Card key={metric.label} className={`p-3 text-left sm:p-4 sm:text-center ${metric.label === "Daily cap" ? "col-span-2 sm:col-span-1" : ""}`}>
             <p className="font-display text-xl font-extrabold text-ink sm:text-2xl">
               {metric.value}
             </p>
@@ -339,8 +339,8 @@ export default function FollowUpsPage() {
           icon: "🔔",
         };
         return (
-          <Card key={sequence.trigger_state} className="p-4 sm:p-5">
-            <div className="mb-4 flex flex-wrap items-start gap-3">
+          <details key={sequence.trigger_state} open className="card3d overflow-hidden">
+            <summary className="flex min-h-16 cursor-pointer list-none items-start gap-3 p-4 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-frog sm:p-5">
               <span className="text-2xl" aria-hidden>
                 {info.icon}
               </span>
@@ -348,30 +348,33 @@ export default function FollowUpsPage() {
                 <h2 className="font-display text-lg font-extrabold text-ink">{info.title}</h2>
                 <p className="text-xs font-bold text-ink-soft">{info.blurb}</p>
               </div>
-              <label className="flex items-center gap-2 font-display text-xs font-extrabold text-ink-soft">
+              <span className={`shrink-0 rounded-lg px-2 py-1 font-display text-[10px] font-extrabold uppercase ${sequence.enabled ? "bg-pond text-frog-dark" : "bg-surface-soft text-ink-soft"}`}>
+                {sequence.enabled ? "On" : "Off"} · ▾
+              </span>
+            </summary>
+
+            <div className="space-y-4 border-t-2 border-cardline p-4 sm:p-5">
+              <label className="flex min-h-11 items-center gap-2 rounded-xl bg-surface-soft px-3 font-display text-xs font-extrabold text-ink-soft">
                 <input
                   type="checkbox"
-                  className="h-4 w-4 accent-[var(--color-frog)]"
+                  className="h-5 w-5 accent-[var(--color-frog)]"
                   checked={sequence.enabled}
                   onChange={(event) =>
                     updateSequence(index, { ...sequence, enabled: event.target.checked })
                   }
                 />
-                {sequence.enabled ? "On" : "Off"}
+                {sequence.enabled ? "Sequence enabled" : "Sequence paused"}
               </label>
-            </div>
-
-            <div className="space-y-4">
               {sequence.steps.map((step, stepIndex) => (
                 <div
                   key={stepIndex}
                   className="rounded-2xl border-2 border-cardline bg-surface-soft p-3 sm:p-4"
                 >
-                  <div className="mb-2 flex flex-wrap items-center gap-3">
+                  <div className="mb-3 grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
                     <span className="rounded-lg bg-surface px-2 py-1 font-display text-[11px] font-extrabold uppercase text-ink-soft">
                       Step {stepIndex + 1}
                     </span>
-                    <label className="flex items-center gap-2 font-display text-xs font-extrabold text-ink-soft">
+                    <label className="grid grid-cols-[auto_5rem_auto] items-center gap-2 font-display text-xs font-extrabold text-ink-soft sm:flex">
                       Send after
                       <input
                         type="number"
@@ -423,7 +426,7 @@ export default function FollowUpsPage() {
                               );
                               updateSequence(index, { ...sequence, steps });
                             }}
-                            className="rounded-xl border-2 border-cardline px-2 py-1 font-display text-xs font-extrabold text-ink-soft hover:bg-danger-bg hover:text-danger-ink"
+                            className="flex min-h-11 min-w-11 items-center justify-center rounded-xl border-2 border-cardline px-2 py-2 font-display text-xs font-extrabold text-ink-soft hover:bg-danger-bg hover:text-danger-ink focus:outline-none focus:ring-2 focus:ring-danger-ink"
                           >
                             ✕
                           </button>
@@ -439,19 +442,19 @@ export default function FollowUpsPage() {
                       );
                       updateSequence(index, { ...sequence, steps });
                     }}
-                    className="mt-2 font-display text-xs font-extrabold text-frog-dark underline"
+                    className="mt-2 min-h-11 rounded-xl px-2 font-display text-xs font-extrabold text-frog-dark underline focus:outline-none focus:ring-2 focus:ring-frog"
                   >
                     + Add another wording
                   </button>
                 </div>
               ))}
             </div>
-          </Card>
+          </details>
         );
       })}
 
-      <div className="sticky bottom-4 z-10 flex justify-end">
-        <Button disabled={saving} onClick={() => void save()}>
+      <div className="sticky bottom-24 z-10 flex justify-end sm:bottom-4">
+        <Button className="w-full sm:w-auto" disabled={saving} onClick={() => void save()}>
           {saving ? "Saving…" : "💾 Save follow-up messages"}
         </Button>
       </div>
@@ -466,7 +469,7 @@ export default function FollowUpsPage() {
           them if you have already handled it.
         </p>
 
-        <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="-mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0">
           {(
             [
               ["all", "All days"],
@@ -480,7 +483,7 @@ export default function FollowUpsPage() {
               type="button"
               onClick={() => setDayFilter(value)}
               className={
-                "rounded-xl border-2 px-3 py-1.5 font-display text-xs font-extrabold transition " +
+                "min-h-11 shrink-0 rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold transition " +
                 (dayFilter === value
                   ? "border-frog bg-pond text-frog-dark"
                   : "border-cardline bg-surface text-ink-soft hover:bg-surface-soft")
@@ -492,7 +495,8 @@ export default function FollowUpsPage() {
           {dayFilter === "custom" && (
             <input
               type="date"
-              className={`${fieldClass} w-auto`}
+              aria-label="Custom queue date"
+              className={`${fieldClass} min-w-40 shrink-0`}
               value={customDay}
               max={colomboToday()}
               onChange={(event) => setCustomDay(event.target.value)}
@@ -534,7 +538,7 @@ export default function FollowUpsPage() {
                 <button
                   type="button"
                   onClick={() => void stopEnrollment(row.id)}
-                  className="rounded-xl border-2 border-cardline px-3 py-1.5 font-display text-xs font-extrabold text-ink-soft hover:bg-danger-bg hover:text-danger-ink"
+                  className="min-h-11 rounded-xl border-2 border-cardline px-4 py-2 font-display text-xs font-extrabold text-ink-soft hover:bg-danger-bg hover:text-danger-ink focus:outline-none focus:ring-2 focus:ring-danger-ink"
                 >
                   Stop
                 </button>

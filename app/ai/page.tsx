@@ -150,7 +150,7 @@ export default function AiPage() {
 
   if (!config) {
     return (
-      <main className="mx-auto max-w-3xl p-6">
+      <main className="mx-auto max-w-3xl p-4 pb-28 sm:p-6">
         <Card className="py-14 text-center">
           <Froggy mood="sleepy" size={80} bob={false} className="mx-auto" />
           <h1 className="font-display text-xl font-extrabold">AI salesperson unavailable</h1>
@@ -171,7 +171,7 @@ export default function AiPage() {
   );
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
+    <main className="mx-auto max-w-6xl space-y-5 p-4 pb-28 sm:p-6 sm:pb-6">
       <header className="flex flex-wrap items-center gap-3">
         <Froggy mood={config.mode === "auto" ? "celebrate" : config.mode === "draft" ? "thinking" : "sleepy"} size={64} />
         <div className="min-w-0 flex-1">
@@ -189,7 +189,7 @@ export default function AiPage() {
           <p className="font-display text-xs font-extrabold uppercase tracking-widest text-grape-dark">Master control</p>
           <h2 className="mt-1 font-display text-xl font-extrabold text-ink">How much should the AI handle?</h2>
         </div>
-        <div className="grid grid-cols-3 gap-2 p-3 sm:gap-4 sm:p-5" role="radiogroup" aria-label="AI operating mode">
+        <div className="grid gap-2 p-3 sm:grid-cols-3 sm:gap-4 sm:p-5" role="radiogroup" aria-label="AI operating mode">
           {(["off", "draft", "auto"] as AgentMode[]).map((mode) => {
             const selected = config.mode === mode;
             return (
@@ -198,13 +198,13 @@ export default function AiPage() {
                 role="radio"
                 aria-checked={selected}
                 onClick={() => setConfig({ ...config, mode })}
-                className={`rounded-2xl border-2 border-b-4 p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-grape sm:p-4 ${
+                className={`grid min-h-16 grid-cols-[auto_1fr] items-center gap-x-3 rounded-2xl border-2 border-b-4 p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-grape sm:block sm:p-4 ${
                   selected ? mode === "auto" ? "border-frog bg-pond" : mode === "draft" ? "border-grape bg-grape-tint" : "border-ink-soft bg-surface-soft" : "border-cardline bg-surface hover:-translate-y-0.5"
                 }`}
               >
-                <span className="text-xl">{MODE_INFO[mode].icon}</span>
-                <span className="mt-2 block font-display text-sm font-extrabold uppercase text-ink sm:text-base">{mode === "auto" ? "Autonomous" : mode}</span>
-                <span className="mt-1 hidden text-xs font-bold text-ink-soft sm:block">{mode === "off" ? "No AI replies" : mode === "draft" ? "You approve replies" : "AI sends safely"}</span>
+                <span className="row-span-2 text-xl">{MODE_INFO[mode].icon}</span>
+                <span className="block font-display text-sm font-extrabold uppercase text-ink sm:mt-2 sm:text-base">{mode === "auto" ? "Autonomous" : mode}</span>
+                <span className="text-xs font-bold text-ink-soft sm:mt-1 sm:block">{mode === "off" ? "No AI replies" : mode === "draft" ? "You approve replies" : "AI sends safely"}</span>
               </button>
             );
           })}
@@ -240,7 +240,7 @@ export default function AiPage() {
         </span>
       </Link>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         {[
           {
             label: "Reviewed",
@@ -260,7 +260,7 @@ export default function AiPage() {
             detail: "needs to reach zero",
           },
         ].map((metric) => (
-          <Card key={metric.label} className="p-3 text-center sm:p-4">
+          <Card key={metric.label} className={`p-3 text-left sm:p-4 sm:text-center ${metric.label === "Language fixes" ? "col-span-2 sm:col-span-1" : ""}`}>
             <p className="font-display text-xl font-extrabold text-ink sm:text-2xl">{metric.value}</p>
             <p className="text-[11px] font-extrabold uppercase text-ink-soft">{metric.label}</p>
             <p className="mt-1 hidden text-[10px] font-semibold text-ink-soft sm:block">{metric.detail}</p>
@@ -328,8 +328,8 @@ export default function AiPage() {
             />
           </Card>
 
-          <div className="sticky bottom-3 z-10 flex justify-end">
-            <Button tone={config.mode === "auto" ? "frog" : "grape"} onClick={() => void save()} disabled={saving} className="min-w-44 shadow-xl">
+          <div className="sticky bottom-24 z-10 flex justify-end sm:bottom-3">
+            <Button tone={config.mode === "auto" ? "frog" : "grape"} onClick={() => void save()} disabled={saving} className="w-full min-w-44 shadow-xl sm:w-auto">
               {saving ? "Saving..." : config.mode === "auto" ? "Save & go live" : "Save AI settings"}
             </Button>
           </div>
@@ -358,7 +358,7 @@ export default function AiPage() {
                 <h2 className="font-display text-lg font-extrabold text-ink">Recent decisions</h2>
                 <p className="text-xs font-bold text-ink-soft">Live agent audit</p>
               </div>
-              <button onClick={() => void load()} className="rounded-lg px-2 py-1 font-display text-xs font-extrabold text-sky-dark hover:bg-sky-tint">↻</button>
+              <button onClick={() => void load()} aria-label="Refresh recent AI decisions" className="flex min-h-11 min-w-11 items-center justify-center rounded-xl px-2 py-2 font-display text-base font-extrabold text-sky-dark hover:bg-sky-tint focus:outline-none focus:ring-2 focus:ring-sky">↻</button>
             </div>
             <div className="max-h-[680px] divide-y-2 divide-cardline overflow-y-auto">
               {runs.length === 0 ? (
@@ -387,7 +387,7 @@ export default function AiPage() {
                     <button
                       onClick={() => void retryRun(run)}
                       disabled={reviewingId === run.id}
-                      className="mt-2 rounded-lg bg-sky px-3 py-2 font-display text-[11px] font-extrabold text-white disabled:opacity-50"
+                      className="mt-2 min-h-11 rounded-xl bg-sky px-3 py-2 font-display text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-sky disabled:opacity-50"
                     >
                       {reviewingId === run.id ? "Retrying…" : "Retry latest message"}
                     </button>
@@ -397,13 +397,13 @@ export default function AiPage() {
                       <p className="text-[11px] font-extrabold text-ink">Teach the agent from this draft</p>
                       {editingId === run.id ? (
                         <textarea
-                          className={`${fieldClass} min-h-24 resize-y text-xs`}
+                          className={`${fieldClass} min-h-24 resize-y sm:text-xs`}
                           value={editText}
                           onChange={(event) => setEditText(event.target.value)}
                         />
                       ) : null}
                       <select
-                        className={`${fieldClass} py-2 text-xs`}
+                        className={`${fieldClass} py-2 sm:text-xs`}
                         value={feedbackReason}
                         onChange={(event) => setFeedbackReason(event.target.value)}
                         aria-label="Feedback reason"
@@ -416,11 +416,11 @@ export default function AiPage() {
                         <option value="repeated_question">Repeated question</option>
                         <option value="other">Other</option>
                       </select>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                         <button
                           onClick={() => void reviewDraft(run, "approve")}
                           disabled={reviewingId === run.id}
-                          className="rounded-lg bg-frog px-3 py-2 font-display text-[11px] font-extrabold text-white disabled:opacity-50"
+                          className="min-h-11 rounded-xl bg-frog px-3 py-2 font-display text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-frog disabled:opacity-50"
                         >
                           Approve & send
                         </button>
@@ -429,13 +429,13 @@ export default function AiPage() {
                             <button
                               onClick={() => void reviewDraft(run, "edit")}
                               disabled={reviewingId === run.id || !editText.trim()}
-                              className="rounded-lg bg-grape px-3 py-2 font-display text-[11px] font-extrabold text-white disabled:opacity-50"
+                              className="min-h-11 rounded-xl bg-grape px-3 py-2 font-display text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-grape disabled:opacity-50"
                             >
                               Send correction
                             </button>
                             <button
                               onClick={() => setEditingId("")}
-                              className="rounded-lg border-2 border-cardline px-3 py-2 font-display text-[11px] font-extrabold text-ink"
+                              className="min-h-11 rounded-xl border-2 border-cardline px-3 py-2 font-display text-xs font-extrabold text-ink focus:outline-none focus:ring-2 focus:ring-grape"
                             >
                               Cancel
                             </button>
@@ -446,7 +446,7 @@ export default function AiPage() {
                               setEditingId(run.id);
                               setEditText(run.reply);
                             }}
-                            className="rounded-lg bg-grape px-3 py-2 font-display text-[11px] font-extrabold text-white"
+                            className="min-h-11 rounded-xl bg-grape px-3 py-2 font-display text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-grape"
                           >
                             Edit
                           </button>
@@ -454,7 +454,7 @@ export default function AiPage() {
                         <button
                           onClick={() => void reviewDraft(run, "reject")}
                           disabled={reviewingId === run.id}
-                          className="rounded-lg bg-danger-bg px-3 py-2 font-display text-[11px] font-extrabold text-danger-ink disabled:opacity-50"
+                          className="min-h-11 rounded-xl bg-danger-bg px-3 py-2 font-display text-xs font-extrabold text-danger-ink focus:outline-none focus:ring-2 focus:ring-danger-ink disabled:opacity-50"
                         >
                           Reject
                         </button>

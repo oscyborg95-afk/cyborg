@@ -70,7 +70,7 @@ const ALERT_FOR_STATUS: Record<AlertKind, OrderStatus> = {
 };
 
 const inputCls =
-  "mt-1 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog";
+  "mt-1 min-h-11 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-base font-bold text-ink outline-none focus:border-frog sm:min-h-0 sm:text-sm";
 
 function confirmationBlock(
   order: Order,
@@ -630,15 +630,30 @@ export default function OrdersPage() {
 
   return (
     <main className="mx-auto min-w-0 max-w-5xl space-y-5 p-4 sm:p-6">
-      <header className="flex flex-wrap items-center gap-3">
+      <header className="flex items-center gap-3">
         <Froggy mood={orders.length > 0 ? "happy" : "idle"} size={56} />
-        <div>
+        <div className="min-w-0 flex-1">
           <h1 className="font-display text-2xl font-extrabold text-ink">Orders &amp; tracking</h1>
-          <p className="font-display text-sm font-bold text-ink-soft">
+          <p className="font-display text-sm font-bold leading-snug text-ink-soft">
             Every order, its courier status, and the full delivery timeline
           </p>
         </div>
-        <div className="flex w-full flex-wrap gap-2 lg:ml-auto lg:w-auto">
+        <details className="group relative ml-auto lg:hidden">
+          <summary className="btn3d flex min-h-11 min-w-11 cursor-pointer list-none items-center justify-center border-cardline bg-surface px-3 font-display text-xl font-extrabold text-ink" aria-label="Open order actions">
+            •••
+          </summary>
+          <div className="absolute right-0 z-30 mt-2 grid w-[min(18rem,calc(100vw-2rem))] gap-2 rounded-2xl border-2 border-cardline bg-surface p-3 shadow-xl">
+            <Button tone={showManual ? "ghost" : "gold"} onClick={() => { setShowManual((v) => !v); if (showManual) { setForm(null); setRawText(""); } }} className="w-full">
+              {showManual ? "✕ Close manual order" : "＋ Add manual order"}
+            </Button>
+            <Button tone="grape" onClick={syncTracking} disabled={syncing} className="w-full">
+              {syncing ? "📡 Checking courier…" : "📡 Sync tracking"}
+            </Button>
+            <Button tone="ghost" onClick={handleExportCsv} disabled={orders.length === 0} className="w-full">📄 Export CSV</Button>
+            <Link href="/invoices" className="block"><Button tone="sky" className="w-full">🖨️ Print invoices</Button></Link>
+          </div>
+        </details>
+        <div className="hidden gap-2 lg:ml-auto lg:flex">
           <Button
             tone={showManual ? "ghost" : "gold"}
             onClick={() => {
@@ -714,7 +729,7 @@ export default function OrdersPage() {
           WhatsApp chats parse automatically in the workspace — you don&apos;t need this for those.
         </p>
         <textarea
-          className="h-32 w-full rounded-xl border-2 border-cardline bg-cream/60 p-3 text-sm font-semibold text-ink outline-none focus:border-frog"
+          className="h-32 w-full rounded-xl border-2 border-cardline bg-cream/60 p-3 text-base font-semibold text-ink outline-none focus:border-frog sm:text-sm"
           placeholder="Paste the customer's address message here…"
           value={rawText}
           onChange={(e) => setRawText(e.target.value)}
@@ -730,7 +745,7 @@ export default function OrdersPage() {
       </Card>
 
       {form && (
-        <Card className="animate-pop p-5">
+        <Card className="animate-pop p-4 sm:p-5">
           <h2 className="mb-3 font-display text-lg font-extrabold text-ink">2 · Verify &amp; save</h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="font-display text-xs font-bold text-ink-soft">
@@ -906,7 +921,7 @@ export default function OrdersPage() {
         </Card>
       </section>
 
-      <Card className="p-4 sm:p-5 space-y-4">
+      <Card className="space-y-4 p-4 sm:p-5">
         {/* Header & Search */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-cardline/60 pb-3">
           <div>
@@ -920,15 +935,16 @@ export default function OrdersPage() {
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <input
-              className="w-full sm:w-64 rounded-xl border-2 border-cardline bg-cream/60 px-3 py-1.5 text-sm font-semibold text-ink outline-none focus:border-frog"
+              type="search"
+              className="min-h-11 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 text-base font-semibold text-ink outline-none focus:border-frog sm:w-64 sm:min-h-0 sm:py-1.5 sm:text-sm"
               placeholder="🔎 Search name, phone, city, tracking…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
             {isFiltered && (
-              <Button tone="ghost" onClick={resetFilters} className="text-xs py-1 px-2.5">
+              <Button tone="ghost" onClick={resetFilters} className="min-h-11 text-xs sm:min-h-0 sm:py-1">
                 ✕ Clear filters
               </Button>
             )}
@@ -936,11 +952,11 @@ export default function OrdersPage() {
         </div>
 
         {/* Date Filter Toolbar */}
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft shrink-0">
+        <div className="space-y-2">
+          <span className="block shrink-0 font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
             📅 Date:
           </span>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="-mx-1 flex snap-x items-center gap-2 overflow-x-auto px-1 pb-1" role="group" aria-label="Filter orders by date">
             {(
               [
                 ["all", "All Time"],
@@ -954,7 +970,7 @@ export default function OrdersPage() {
               <button
                 key={key}
                 onClick={() => setDatePreset(key)}
-                className={`rounded-xl border-2 px-2.5 py-1 font-display text-xs font-extrabold transition ${
+                className={`min-h-11 shrink-0 snap-start rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold transition sm:min-h-0 sm:py-1 ${
                   datePreset === key
                     ? "border-frog bg-pond text-frog-dark shadow-xs"
                     : "border-cardline bg-surface text-ink-soft hover:border-frog/50"
@@ -967,23 +983,23 @@ export default function OrdersPage() {
 
           {/* Custom Date Inputs */}
           {datePreset === "custom" && (
-            <div className="flex flex-wrap items-center gap-2 mt-2 sm:mt-0 sm:ml-2 rounded-xl border-2 border-cardline bg-cream/40 p-1.5">
-              <label className="flex items-center gap-1 text-xs font-bold text-ink-soft">
+            <div className="grid grid-cols-1 gap-2 rounded-xl border-2 border-cardline bg-cream/40 p-2 sm:ml-2 sm:mt-0 sm:flex sm:items-center">
+              <label className="grid gap-1 text-xs font-bold text-ink-soft sm:flex sm:items-center">
                 From:
                 <input
                   type="date"
                   value={customStart}
                   onChange={(e) => setCustomStart(e.target.value)}
-                  className="rounded-lg border border-cardline bg-surface px-2 py-0.5 font-display text-xs text-ink outline-none focus:border-frog"
+                  className="min-h-11 rounded-lg border border-cardline bg-surface px-2 py-2 font-display text-base text-ink outline-none focus:border-frog sm:min-h-0 sm:py-0.5 sm:text-xs"
                 />
               </label>
-              <label className="flex items-center gap-1 text-xs font-bold text-ink-soft">
+              <label className="grid gap-1 text-xs font-bold text-ink-soft sm:flex sm:items-center">
                 To:
                 <input
                   type="date"
                   value={customEnd}
                   onChange={(e) => setCustomEnd(e.target.value)}
-                  className="rounded-lg border border-cardline bg-surface px-2 py-0.5 font-display text-xs text-ink outline-none focus:border-frog"
+                  className="min-h-11 rounded-lg border border-cardline bg-surface px-2 py-2 font-display text-base text-ink outline-none focus:border-frog sm:min-h-0 sm:py-0.5 sm:text-xs"
                 />
               </label>
             </div>
@@ -991,11 +1007,11 @@ export default function OrdersPage() {
         </div>
 
         {/* Status Filter Toolbar */}
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft shrink-0">
+        <div className="space-y-2">
+          <span className="block shrink-0 font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
             🏷️ Status:
           </span>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="-mx-1 flex snap-x items-center gap-2 overflow-x-auto px-1 pb-1" role="group" aria-label="Filter orders by status">
             {(
               [
                 ["all", `All (${orders.length})`],
@@ -1009,7 +1025,7 @@ export default function OrdersPage() {
               <button
                 key={key}
                 onClick={() => setStatusFilter(key)}
-                className={`rounded-xl border-2 px-2.5 py-1 font-display text-xs font-extrabold transition ${
+                className={`min-h-11 shrink-0 snap-start rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold transition sm:min-h-0 sm:py-1 ${
                   statusFilter === key
                     ? "border-grape bg-grape-tint text-grape-dark shadow-xs"
                     : "border-cardline bg-surface text-ink-soft hover:border-grape/50"
@@ -1039,7 +1055,144 @@ export default function OrdersPage() {
             </Button>
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-cardline/60" role="region" aria-label="Orders table" tabIndex={0}>
+          <>
+          <section className="space-y-3 md:hidden" aria-label="Orders">
+            {filteredOrders.map((order) => {
+              const manifest = manifests.find((m) => m.order_id === order.id);
+              const orderEvents = events
+                .filter((event) => event.order_id === order.id)
+                .sort((a, b) => a.created_at.localeCompare(b.created_at));
+              const latest = orderEvents[orderEvents.length - 1];
+              const latestStyle = latest ? OUTCOME_STYLE[latest.outcome] : null;
+              const orderAlerts = alerts.filter((alert) => alert.order_id === order.id);
+              const trackable = Boolean(manifest || orderEvents.length || orderAlerts.length);
+              const archiveDisabled =
+                deletingId === order.id ||
+                order.order_status === "booked" ||
+                (order.order_status === "delivered" && !order.remitted_at);
+              return (
+                <article key={order.id} className="rounded-2xl border-2 border-cardline bg-surface p-4 shadow-[0_3px_0_var(--color-cardline)]">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="truncate font-display text-lg font-extrabold text-ink">{order.customer_name}</h3>
+                      <p className="mt-0.5 truncate text-sm font-bold text-ink-soft">
+                        {order.order_no ?? order.phone_number} · {order.district || order.city || "Location not set"}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="font-display text-lg font-extrabold text-ink">Rs. {Number(order.total_cod).toLocaleString("en-LK")}</p>
+                      <p className="text-xs font-bold text-ink-soft">
+                        {new Date(order.created_at).toLocaleDateString("en-LK", { day: "numeric", month: "short" })}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl bg-cream/55 p-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-extrabold uppercase tracking-wide text-ink-soft">Courier</p>
+                      {manifest ? (
+                        <>
+                          <p className="truncate font-mono text-sm font-bold text-ink">{manifest.tracking_id}</p>
+                          <p className="truncate text-sm font-bold text-ink-soft">
+                            {latestStyle ? `${latestStyle.emoji} ${latest.checkpoint}` : "Booked with courier"}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm font-bold text-ink-soft">Not booked yet</p>
+                      )}
+                    </div>
+                    <label className="grid gap-1 text-xs font-extrabold uppercase tracking-wide text-ink-soft">
+                      Status
+                      <select
+                        aria-label={`Status for ${order.customer_name}`}
+                        className={`min-h-11 max-w-[8.5rem] rounded-xl border-0 px-3 py-2 font-display text-sm font-extrabold outline-none focus:ring-2 focus:ring-frog ${STATUS_STYLE[order.order_status]}`}
+                        value={order.order_status}
+                        onChange={(event) => handleStatusChange(order.id, event.target.value as OrderStatus)}
+                      >
+                        <option value="pending">Pending</option>
+                        <option value="booked">Booked</option>
+                        <option value="delivered">Delivered</option>
+                        <option value="returned">Returned</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  {dupIds.has(order.id) && (
+                    <p className="mt-3 rounded-xl bg-flame-tint px-3 py-2 text-sm font-bold text-flame-dark">⚠️ Possible duplicate order</p>
+                  )}
+                  {order.order_status === "delivered" && (
+                    <p className="mt-2 text-sm font-bold text-ink-soft">{order.remitted_at ? "💵 Courier payout recorded" : "⏳ Awaiting courier payout"}</p>
+                  )}
+
+                  <div className="mt-3">
+                    {order.order_status === "pending" ? (
+                      <Button tone="frog" onClick={() => handleBook(order.id)} disabled={bookingId === order.id} className="min-h-11 w-full">
+                        {bookingId === order.id ? "Booking…" : "🚀 Book with courier"}
+                      </Button>
+                    ) : order.order_status === "returned" ? (
+                      <Button tone="gold" onClick={() => handleRedeliverOffer(order)} className="min-h-11 w-full">
+                        {redeliverSentId === order.id ? "Offer sent ✓" : "💬 Send redelivery offer"}
+                      </Button>
+                    ) : trackable ? (
+                      <details className="group">
+                        <summary className="btn3d flex min-h-11 cursor-pointer list-none items-center justify-center border-sky-dark bg-sky px-4 py-2 font-display text-sm font-extrabold text-white">
+                          🧭 View delivery timeline <span className="ml-2 group-open:rotate-180" aria-hidden="true">▾</span>
+                        </summary>
+                        <div className="mt-3 rounded-xl border-2 border-cardline bg-cream/35 p-3">
+                          <Timeline events={orderEvents} manifest={manifest} />
+                          <AlertsPanel order={order} alerts={orderAlerts} busyKey={alertBusy} onSend={handleSendAlert} />
+                        </div>
+                      </details>
+                    ) : (
+                      <Button tone="ghost" onClick={() => handleCopy(order)} className="min-h-11 w-full">
+                        {copiedId === order.id ? "Copied ✓" : "Copy confirmation"}
+                      </Button>
+                    )}
+                  </div>
+
+                  <details className="group mt-3 border-t-2 border-cardline/60 pt-2">
+                    <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between font-display text-sm font-extrabold text-ink">
+                      More order actions <span className="text-ink-soft group-open:rotate-180" aria-hidden="true">▾</span>
+                    </summary>
+                    <div className="grid gap-2 pt-2">
+                      {order.order_status === "returned" && (
+                        <Button tone="sky" onClick={() => handleRebook(order)} disabled={rebookingId === order.id} className="min-h-11 w-full">
+                          {rebookingId === order.id ? "Cloning…" : "🔁 Re-book order"}
+                        </Button>
+                      )}
+                      {trackable && (
+                        <details className="group/timeline rounded-xl border-2 border-cardline bg-cream/35">
+                          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between px-3 font-display text-sm font-extrabold text-ink">
+                            Tracking &amp; customer alerts <span className="group-open/timeline:rotate-180" aria-hidden="true">▾</span>
+                          </summary>
+                          <div className="border-t border-cardline p-3">
+                            <Timeline events={orderEvents} manifest={manifest} />
+                            <AlertsPanel order={order} alerts={orderAlerts} busyKey={alertBusy} onSend={handleSendAlert} />
+                          </div>
+                        </details>
+                      )}
+                      {manifest?.pdf_label_url && (
+                        <a href={manifest.pdf_label_url} target="_blank" rel="noreferrer" className="flex min-h-11 items-center justify-center rounded-xl border-2 border-cardline bg-surface px-3 font-display text-sm font-extrabold text-sky-dark">
+                          Download courier label
+                        </a>
+                      )}
+                      <Button tone="ghost" onClick={() => handleCopy(order)} className="min-h-11 w-full">
+                        {copiedId === order.id ? "Copied ✓" : "Copy confirmation"}
+                      </Button>
+                      <button
+                        onClick={() => handleDelete(order)}
+                        disabled={archiveDisabled}
+                        className="min-h-11 rounded-xl px-3 font-display text-sm font-bold text-flame-dark transition hover:bg-flame-tint disabled:text-ink-soft disabled:opacity-60"
+                      >
+                        {deletingId === order.id ? "Archiving…" : archiveDisabled ? "Archive unavailable for this status" : "🗄 Archive order"}
+                      </button>
+                    </div>
+                  </details>
+                </article>
+              );
+            })}
+          </section>
+          <div className="hidden overflow-x-auto rounded-xl border border-cardline/60 md:block" role="region" aria-label="Orders table" tabIndex={0}>
             <table className="w-full min-w-[760px] text-left text-sm">
               <thead>
                 <tr className="border-b-2 border-cardline font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
@@ -1226,6 +1379,7 @@ export default function OrdersPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Card>
     </main>
@@ -1388,7 +1542,7 @@ function MessageAudit({ orderId }: { orderId: string }) {
         if ((event.currentTarget as HTMLDetailsElement).open && !jobs && !loading) load();
       }}
     >
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 font-display text-[11px] font-extrabold text-ink outline-none hover:bg-cream/60 focus-visible:bg-cream/60">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 font-display text-sm font-extrabold text-ink outline-none hover:bg-cream/60 focus-visible:bg-cream/60 sm:min-h-0 sm:text-[11px]">
         <span>
           💬 Messages sent for this order
           {duplicates > 0 && (
@@ -1766,7 +1920,7 @@ function DeliveryRescuePanel({
                                 [attempt.id]: event.target.value,
                               }))
                             }
-                            className="mt-1 min-h-10 w-full rounded-xl border-2 border-cardline bg-cream/50 px-3 py-2 font-display text-xs font-bold text-ink outline-none focus:border-frog"
+                            className="mt-1 min-h-11 w-full rounded-xl border-2 border-cardline bg-cream/50 px-3 py-2 font-display text-base font-bold text-ink outline-none focus:border-frog sm:min-h-10 sm:text-xs"
                           />
                         </label>
                         <label className="font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft">
@@ -1781,7 +1935,7 @@ function DeliveryRescuePanel({
                                 [attempt.id]: event.target.value,
                               }))
                             }
-                            className="mt-1 min-h-10 w-full rounded-xl border-2 border-cardline bg-cream/50 px-3 py-2 font-display text-xs font-bold text-ink outline-none placeholder:text-ink-soft/60 focus:border-frog"
+                            className="mt-1 min-h-11 w-full rounded-xl border-2 border-cardline bg-cream/50 px-3 py-2 font-display text-base font-bold text-ink outline-none placeholder:text-ink-soft/60 focus:border-frog sm:min-h-10 sm:text-xs"
                           />
                         </label>
                       </div>
@@ -1798,7 +1952,7 @@ function DeliveryRescuePanel({
                             "Customer confirmed ✓"
                           )
                         }
-                        className="!px-3 !py-1.5 !text-xs"
+                        className="min-h-11 flex-1 !px-3 !text-xs sm:min-h-0 sm:flex-none sm:!py-1.5"
                       >
                         ✓ Confirmed
                       </Button>
@@ -1812,7 +1966,7 @@ function DeliveryRescuePanel({
                             "No answer recorded"
                           )
                         }
-                        className="!px-3 !py-1.5 !text-xs"
+                        className="min-h-11 flex-1 !px-3 !text-xs sm:min-h-0 sm:flex-none sm:!py-1.5"
                       >
                         ☎ No answer
                       </Button>
@@ -1826,7 +1980,7 @@ function DeliveryRescuePanel({
                             "Marked as needing a new date"
                           )
                         }
-                        className="!px-3 !py-1.5 !text-xs"
+                        className="min-h-11 flex-1 !px-3 !text-xs sm:min-h-0 sm:flex-none sm:!py-1.5"
                       >
                         📅 Needs new date
                       </Button>
@@ -1840,7 +1994,7 @@ function DeliveryRescuePanel({
                             "Delivery date and reminder saved"
                           )
                         }
-                        className="!px-3 !py-1.5 !text-xs"
+                        className="min-h-11 flex-1 !px-3 !text-xs sm:min-h-0 sm:flex-none sm:!py-1.5"
                       >
                         {isBusy ? "Saving…" : "Save date & note"}
                       </Button>
@@ -1850,7 +2004,7 @@ function DeliveryRescuePanel({
                         onClick={() =>
                           patchAttempt(attempt, { action: "resolve", notes }, "Moved to history")
                         }
-                        className="!px-3 !py-1.5 !text-xs"
+                        className="min-h-11 flex-1 !px-3 !text-xs sm:min-h-0 sm:flex-none sm:!py-1.5"
                       >
                         Close task
                       </Button>
@@ -1878,7 +2032,7 @@ function DeliveryRescuePanel({
 
         {history.length > 0 && (
           <details className="group border-t-2 border-cardline">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-display text-xs font-extrabold text-ink outline-none hover:bg-cream/50 focus-visible:bg-cream/50 sm:px-5">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-display text-sm font-extrabold text-ink outline-none hover:bg-cream/50 focus-visible:bg-cream/50 sm:px-5 sm:text-xs">
               <span>🧭 Recent delivery history · {history.length} attempt{history.length === 1 ? "" : "s"}</span>
               <span className="text-ink-soft group-open:rotate-180" aria-hidden="true">▾</span>
             </summary>
@@ -1914,7 +2068,7 @@ function DeliveryRescuePanel({
                       onClick={() =>
                         patchAttempt(attempt, { action: "reopen" }, "Restored to active calls")
                       }
-                      className="w-fit !px-3 !py-1 !text-[10px]"
+                      className="min-h-11 w-full !px-3 !text-xs sm:min-h-0 sm:w-fit sm:!py-1 sm:!text-[10px]"
                     >
                       Reopen
                     </Button>
@@ -1977,7 +2131,7 @@ function TrackingHealthPanel({ health }: { health: TrackingHealth }) {
                 <span className={`rounded-full px-2 py-1 font-display text-[10px] font-extrabold ${problem.notification_status === "sent" ? "bg-pond text-frog-dark" : problem.notification_status === "failed" ? "bg-flame-tint text-flame-dark" : "bg-gold/20 text-gold-dark"}`}>
                   WhatsApp {problem.notification_status ?? "not queued"}
                 </span>
-                <a href={phoneLink(problem.phone_number)} target="_blank" rel="noreferrer" className="rounded-xl bg-frog px-3 py-1.5 font-display text-xs font-extrabold text-white">
+                <a href={phoneLink(problem.phone_number)} target="_blank" rel="noreferrer" className="flex min-h-11 w-full items-center justify-center rounded-xl bg-frog px-3 py-2 font-display text-sm font-extrabold text-white sm:w-auto sm:text-xs">
                   Contact customer
                 </a>
               </div>
@@ -2101,7 +2255,7 @@ function AlertsPanel({
           const latest = forKind[0];
           const busy = busyKey === `${order.id}:${kind}`;
           return (
-            <div key={kind} className="flex items-center justify-between gap-3">
+            <div key={kind} className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="font-display text-sm font-bold text-ink">{ALERT_LABELS[kind]}</div>
                 <div className="font-display text-[11px] font-bold">
@@ -2118,7 +2272,7 @@ function AlertsPanel({
                 tone={sent ? "ghost" : "frog"}
                 onClick={() => onSend(order, kind, Boolean(sent))}
                 disabled={busy}
-                className="!px-3 !py-1.5 !text-xs"
+                className="min-h-11 !px-3 !text-xs sm:min-h-0 sm:!py-1.5"
               >
                 {busy
                   ? "Sending…"

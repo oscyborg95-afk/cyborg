@@ -218,13 +218,13 @@ export default function AiLearningPage() {
     <main className="mx-auto max-w-6xl space-y-5 p-4 pb-28 sm:p-6 sm:pb-28">
       <Link
         href="/ai"
-        className="inline-flex items-center gap-2 rounded-xl px-2 py-1 font-display text-sm font-extrabold text-ink-soft transition hover:bg-surface hover:text-grape-dark focus:outline-none focus:ring-2 focus:ring-grape"
+        className="inline-flex min-h-11 items-center gap-2 rounded-xl px-3 py-2 font-display text-sm font-extrabold text-ink-soft transition hover:bg-surface hover:text-grape-dark focus:outline-none focus:ring-2 focus:ring-grape"
       >
         ← AI Salesperson
       </Link>
 
       <header className="flex items-center gap-3 sm:gap-4">
-        <Froggy mood={hasProfile ? "happy" : "thinking"} size={72} className="shrink-0" />
+        <Froggy mood={hasProfile ? "happy" : "thinking"} size={60} className="shrink-0 sm:h-[72px] sm:w-[72px]" />
         <div className="min-w-0">
           <p className="font-display text-xs font-extrabold uppercase tracking-widest text-grape-dark">
             Learning studio
@@ -381,12 +381,12 @@ export default function AiLearningPage() {
                 <p className="text-xs font-bold text-ink-soft">Only approve conversations that represent your best selling style.</p>
               </div>
               {filter === "available" && visibleAvailableKeys.length > 0 && (
-                <label className="flex cursor-pointer items-center gap-2 rounded-xl border-2 border-cardline bg-surface-soft px-3 py-2 font-display text-xs font-extrabold text-ink">
+                <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border-2 border-cardline bg-surface-soft px-3 py-2 font-display text-xs font-extrabold text-ink">
                   <input
                     type="checkbox"
                     checked={allVisibleSelected}
                     onChange={toggleAllVisible}
-                    className="h-4 w-4 accent-[var(--color-grape)]"
+                    className="h-5 w-5 accent-[var(--color-grape)]"
                   />
                   Select visible
                 </label>
@@ -401,7 +401,7 @@ export default function AiLearningPage() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search customer, order number or product"
-                className="w-full rounded-2xl border-2 border-cardline bg-cream/60 py-3 pl-11 pr-4 font-display text-sm font-bold text-ink outline-none transition placeholder:text-ink-soft focus:border-grape focus:ring-2 focus:ring-grape/20"
+                className="min-h-12 w-full rounded-2xl border-2 border-cardline bg-cream/60 py-3 pl-11 pr-4 font-display text-base font-bold text-ink outline-none transition placeholder:text-ink-soft focus:border-grape focus:ring-2 focus:ring-grape/20 sm:text-sm"
               />
             </label>
 
@@ -415,7 +415,7 @@ export default function AiLearningPage() {
                     role="tab"
                     aria-selected={active}
                     onClick={() => setFilter(item.key)}
-                    className={`shrink-0 rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold transition focus:outline-none focus:ring-2 focus:ring-grape ${
+                    className={`min-h-11 shrink-0 rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold transition focus:outline-none focus:ring-2 focus:ring-grape ${
                       active
                         ? item.key === "available"
                           ? "border-grape bg-grape text-white"
@@ -574,7 +574,7 @@ export default function AiLearningPage() {
                             type="button"
                             disabled={removing === conversation.phone_key}
                             onClick={() => void removeConversation(conversation.phone_key)}
-                            className="rounded-lg bg-danger-ink px-3 py-2 font-display text-[11px] font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-danger-ink disabled:opacity-50"
+                            className="min-h-11 flex-1 rounded-xl bg-danger-ink px-3 py-2 font-display text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-danger-ink disabled:opacity-50"
                           >
                             {removing === conversation.phone_key ? "Removing…" : "Yes, remove"}
                           </button>
@@ -582,7 +582,7 @@ export default function AiLearningPage() {
                             type="button"
                             disabled={removing === conversation.phone_key}
                             onClick={() => setConfirming("")}
-                            className="rounded-lg border-2 border-cardline bg-surface px-3 py-2 font-display text-[11px] font-extrabold text-ink focus:outline-none focus:ring-2 focus:ring-grape disabled:opacity-50"
+                            className="min-h-11 flex-1 rounded-xl border-2 border-cardline bg-surface px-3 py-2 font-display text-xs font-extrabold text-ink focus:outline-none focus:ring-2 focus:ring-grape disabled:opacity-50"
                           >
                             Keep it
                           </button>
@@ -592,7 +592,7 @@ export default function AiLearningPage() {
                       <button
                         type="button"
                         onClick={() => setConfirming(conversation.phone_key)}
-                        className="font-display text-xs font-extrabold text-danger-ink underline decoration-2 underline-offset-4 focus:outline-none focus:ring-2 focus:ring-danger-ink"
+                        className="min-h-11 rounded-xl px-2 font-display text-xs font-extrabold text-danger-ink underline decoration-2 underline-offset-4 focus:outline-none focus:ring-2 focus:ring-danger-ink"
                       >
                         Remove from learning
                       </button>
@@ -606,7 +606,7 @@ export default function AiLearningPage() {
       </section>
 
       {selected.size > 0 && (
-        <div className="fixed inset-x-0 bottom-0 z-20 border-t-2 border-cardline bg-cream/95 p-3 shadow-[0_-8px_24px_rgba(63,58,52,0.12)] backdrop-blur-sm">
+        <div className="fixed inset-x-0 bottom-20 z-20 border-t-2 border-cardline bg-cream/95 p-3 shadow-[0_-8px_24px_rgba(63,58,52,0.12)] backdrop-blur-sm sm:bottom-0">
           <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
             <p className="font-display text-xs font-extrabold text-ink sm:text-sm">
               {selected.size} chat{selected.size === 1 ? "" : "s"} selected

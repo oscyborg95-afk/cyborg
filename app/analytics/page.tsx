@@ -54,15 +54,19 @@ export default function QuestPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(load, 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   // Fire confetti once when the board loads on a completed level.
   useEffect(() => {
     if (metrics && metrics.levelProgressPct >= 100) {
-      setCelebrate(true);
-      const t = setTimeout(() => setCelebrate(false), 3600);
-      return () => clearTimeout(t);
+      const start = window.setTimeout(() => setCelebrate(true), 0);
+      const end = window.setTimeout(() => setCelebrate(false), 3600);
+      return () => {
+        window.clearTimeout(start);
+        window.clearTimeout(end);
+      };
     }
   }, [metrics]);
 
@@ -74,9 +78,12 @@ export default function QuestPage() {
       if (localStorage.getItem("dc:questsClearDay") === today) return;
       localStorage.setItem("dc:questsClearDay", today);
     } catch {}
-    setCelebrate(true);
-    const t = setTimeout(() => setCelebrate(false), 3600);
-    return () => clearTimeout(t);
+    const start = window.setTimeout(() => setCelebrate(true), 0);
+    const end = window.setTimeout(() => setCelebrate(false), 3600);
+    return () => {
+      window.clearTimeout(start);
+      window.clearTimeout(end);
+    };
   }, [metrics]);
 
   async function saveSettings() {
@@ -93,7 +100,7 @@ export default function QuestPage() {
 
   if (!metrics || !settings) {
     return (
-      <main className="mx-auto max-w-5xl space-y-5 p-5 sm:p-6" aria-busy="true" aria-label="Loading quest dashboard">
+      <main className="mx-auto max-w-5xl space-y-4 p-4 sm:space-y-5 sm:p-6" aria-busy="true" aria-label="Loading quest dashboard">
         <Card className="flex items-center gap-4 p-4">
           <Froggy mood="thinking" size={72} />
           <div>
@@ -178,7 +185,7 @@ export default function QuestPage() {
   }
 
   return (
-    <main className="mx-auto max-w-5xl space-y-5 p-5 sm:p-6">
+    <main className="mx-auto max-w-5xl space-y-4 p-4 sm:space-y-5 sm:p-6">
       <Confetti run={celebrate} />
       {levelUp !== null && <LevelUpOverlay level={levelUp} onClose={dismissLevelUp} />}
       {levelUp === null && newBadges.length > 0 && (
@@ -193,7 +200,7 @@ export default function QuestPage() {
       {/* ── HERO: level ring + mascot ─────────────────────────────── */}
       <Card
         className={
-          "relative overflow-hidden p-6 " +
+          "relative overflow-hidden p-4 sm:p-6 " +
           (levelComplete ? "!border-gold shadow-[0_10px_0_-2px_rgba(255,200,0,0.35)]" : "")
         }
       >
@@ -254,8 +261,8 @@ export default function QuestPage() {
       </Card>
 
       {/* ── DAILY QUESTS: the reason to come back tomorrow ────────── */}
-      <Card className={"p-6 " + (metrics.quests.every((q) => q.done) ? "!border-gold" : "")}>
-        <div className="mb-4 flex items-center justify-between">
+      <Card className={"p-4 sm:p-6 " + (metrics.quests.every((q) => q.done) ? "!border-gold" : "")}>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h2 className="font-display text-lg font-extrabold text-ink">⚔️ Today&apos;s quests</h2>
           {metrics.quests.every((q) => q.done) ? (
             <span className="animate-pop rounded-full bg-gold/25 px-3 py-1 font-display text-xs font-extrabold text-gold-dark">
@@ -302,7 +309,7 @@ export default function QuestPage() {
       </Card>
 
       {/* ── STREAK ────────────────────────────────────────────────── */}
-      <Card className="p-6">
+      <Card className="p-4 sm:p-6">
         <div className="flex flex-col items-center gap-5 sm:flex-row sm:justify-between">
           <div className="flex items-center gap-4">
             <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-flame-tint">
@@ -319,14 +326,14 @@ export default function QuestPage() {
           </div>
 
           <div className="flex flex-col items-center gap-2 sm:items-end">
-            <div className="flex gap-1.5">
+            <div className="flex gap-1 sm:gap-1.5">
               {Array.from({ length: 7 }).map((_, i) => {
                 const lit = i >= 7 - Math.min(streak, 7);
                 return (
                   <div
                     key={i}
                     className={
-                      "flex h-9 w-9 items-center justify-center rounded-xl " +
+                      "flex h-8 w-8 items-center justify-center rounded-xl sm:h-9 sm:w-9 " +
                       (lit ? "bg-flame-tint" : "bg-[#f2ede3]")
                     }
                   >
@@ -355,19 +362,23 @@ export default function QuestPage() {
       </Card>
 
       {/* ── 14-DAY ACTIVITY CHART ─────────────────────────────────── */}
-      <Card className="p-6">
-        <div className="mb-4 flex items-center justify-between">
+      <Card className="p-4 sm:p-6">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-1">
           <h2 className="font-display text-lg font-extrabold text-ink">📊 Last 14 days</h2>
           <span className="font-display text-xs font-bold text-ink-soft">
             {metrics.days.reduce((s, d) => s + d.dispatched, 0)} dispatched ·{" "}
             {metrics.days.reduce((s, d) => s + d.delivered, 0)} delivered
           </span>
         </div>
-        <ActivityChart days={metrics.days} goal={metrics.dailyGoal} />
+        <div className="-mx-1 overflow-x-auto px-1" role="region" aria-label="Fourteen day activity chart; swipe horizontally for all days" tabIndex={0}>
+          <div className="min-w-[560px]">
+            <ActivityChart days={metrics.days} goal={metrics.dailyGoal} />
+          </div>
+        </div>
       </Card>
 
       {/* ── STAT TILES ────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 [&>*:last-child:nth-child(odd)]:col-span-2 sm:[&>*:last-child:nth-child(odd)]:col-span-1">
         <StatTile
           tint="bg-pond"
           emoji="🏆"
@@ -392,7 +403,7 @@ export default function QuestPage() {
       </div>
 
       {/* ── BADGES: the trophy cabinet ────────────────────────────── */}
-      <Card className="p-6">
+      <Card className="p-4 sm:p-6">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="font-display text-lg font-extrabold text-ink">🎖️ Badges</h2>
           <span className="font-display text-xs font-extrabold text-ink-soft">
@@ -432,11 +443,11 @@ export default function QuestPage() {
       </Card>
 
       {/* ── NET WORTH: the high score ─────────────────────────────── */}
-      <Card className="!border-frog p-6">
+      <Card className="!border-frog p-4 sm:p-6">
         <p className="font-display text-xs font-extrabold uppercase tracking-widest text-frog-dark">
           🎯 High score · Business net worth
         </p>
-        <p className="mt-1 font-display text-5xl font-extrabold text-ink">
+        <p className="mt-1 break-words font-display text-4xl font-extrabold text-ink sm:text-5xl">
           <CountUp value={metrics.netWorth} format={rs} />
         </p>
         <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-4">
@@ -505,7 +516,7 @@ export default function QuestPage() {
       <ProductsCard products={products} onChanged={load} />
 
       {/* ── SETTINGS ──────────────────────────────────────────────── */}
-      <Card className="p-6">
+      <Card className="p-4 sm:p-6">
         <h2 className="mb-4 font-display text-lg font-extrabold text-ink">🏪 Business profile</h2>
         <p className="-mt-3 mb-4 font-display text-xs font-bold text-ink-soft">
           Printed on every invoice.
@@ -610,7 +621,7 @@ export default function QuestPage() {
             spellCheck={false}
             autoComplete="off"
             placeholder={"AIzaSy…key-one\nAIzaSy…key-two (optional)"}
-            className="mt-1.5 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-mono text-sm font-semibold text-ink outline-none focus:border-frog"
+            className="mt-1.5 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-mono text-base font-semibold text-ink outline-none focus:border-frog sm:text-sm"
             value={settings.gemini_api_key}
             onChange={(e) => setSettings({ ...settings, gemini_api_key: e.target.value })}
           />
@@ -621,13 +632,13 @@ export default function QuestPage() {
             : "No key set — parsing falls back to the server's GEMINI_API_KEY."}
         </p>
 
-        <Button tone="frog" onClick={saveSettings} disabled={saving} className="mt-5">
+        <Button tone="frog" onClick={saveSettings} disabled={saving} className="mt-5 w-full sm:w-auto">
           {saving ? "Saving…" : "Save & recalculate"}
         </Button>
       </Card>
 
       {/* ── WHATSAPP MESSAGE TEMPLATES ────────────────────────────── */}
-      <Card className="p-6">
+      <Card className="p-4 sm:p-6">
         <h2 className="mb-1 font-display text-lg font-extrabold text-ink">
           💬 WhatsApp message templates
         </h2>
@@ -643,7 +654,7 @@ export default function QuestPage() {
             const overridden = Boolean(settings.templates?.[key]);
             return (
               <div key={key} className="rounded-xl border-2 border-cardline bg-cream/50 p-3">
-                <div className="mb-1 flex items-center justify-between gap-2">
+                <div className="mb-1 flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <p className="font-display text-sm font-extrabold text-ink">
                     {meta.label}
                     {overridden && (
@@ -652,7 +663,7 @@ export default function QuestPage() {
                       </span>
                     )}
                   </p>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     {meta.placeholders.map((ph) => (
                       <code
                         key={ph}
@@ -669,7 +680,7 @@ export default function QuestPage() {
                             templates: { ...settings.templates, [key]: undefined },
                           })
                         }
-                        className="rounded-lg px-2 py-0.5 font-display text-xs font-bold text-flame-dark hover:bg-flame-tint"
+                        className="min-h-11 rounded-lg px-3 font-display text-sm font-bold text-flame-dark hover:bg-flame-tint sm:min-h-0 sm:px-2 sm:py-0.5 sm:text-xs"
                       >
                         ↺ Reset
                       </button>
@@ -679,7 +690,7 @@ export default function QuestPage() {
                 <p className="mb-2 font-display text-[11px] font-bold text-ink-soft">{meta.hint}</p>
                 <textarea
                   rows={key === "shippedConfirmation" ? 7 : 4}
-                  className="w-full rounded-xl border-2 border-cardline bg-white px-3 py-2 text-sm font-semibold text-ink outline-none focus:border-frog"
+                  className="w-full rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-base font-semibold text-ink outline-none focus:border-frog sm:text-sm"
                   value={settings.templates?.[key] ?? DEFAULT_TEMPLATES[key]}
                   onChange={(e) =>
                     setSettings({
@@ -692,7 +703,7 @@ export default function QuestPage() {
             );
           })}
         </div>
-        <Button tone="frog" onClick={saveSettings} disabled={saving} className="mt-4">
+        <Button tone="frog" onClick={saveSettings} disabled={saving} className="mt-4 w-full sm:w-auto">
           {saving ? "Saving…" : "💾 Save templates"}
         </Button>
       </Card>
@@ -757,7 +768,7 @@ function MonthlyTrendCard({ months }: { months: MonthStat[] }) {
   const hasData = months.some((m) => m.shipped > 0 || m.delivered > 0);
   const maxRevenue = Math.max(...months.map((m) => m.revenue), 1);
   return (
-    <Card className="p-6">
+    <Card className="p-4 sm:p-6">
       <h2 className="font-display text-lg font-extrabold text-ink">📈 Monthly trends</h2>
       <p className="mb-4 font-display text-xs font-bold text-ink-soft">
         Month over month — revenue counts when the parcel lands, so the current month grows as
@@ -768,7 +779,33 @@ function MonthlyTrendCard({ months }: { months: MonthStat[] }) {
           Ship a few orders and your first month shows up here.
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-cardline/60" role="region" aria-label="Performance details table" tabIndex={0}>
+        <>
+        <div className="space-y-2 sm:hidden" aria-label="Monthly performance records">
+          {months.map((m, i) => {
+            const current = i === months.length - 1;
+            const profitable = m.netProfit >= 0;
+            return (
+              <article key={m.key} className={`rounded-2xl border-2 p-3 ${current ? "border-frog/50 bg-pond/60" : "border-cardline bg-cream/70"}`}>
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <h3 className="font-display text-base font-extrabold text-ink">{m.label}</h3>
+                  {current && <span className="rounded-full bg-frog/20 px-2 py-1 font-display text-xs font-extrabold text-frog-dark">CURRENT</span>}
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                  <MobileMetric label="Shipped" value={String(m.shipped)} />
+                  <MobileMetric label="Delivered" value={String(m.delivered)} tone="text-frog-dark" />
+                  <MobileMetric label="Returned" value={String(m.returned)} tone={m.returned > 0 ? "text-flame-dark" : "text-ink"} />
+                  <MobileMetric label="Revenue" value={rs(m.revenue)} />
+                  <MobileMetric label="Net profit" value={`${profitable ? "" : "−"}${rs(Math.abs(m.netProfit))}`} tone={profitable ? "text-frog-dark" : "text-flame-dark"} />
+                  <MobileMetric label="Margin" value={`${m.marginPct}%`} tone={profitable ? "text-ink" : "text-flame-dark"} />
+                </div>
+                <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-track" aria-label={`Revenue relative to best month: ${Math.round((m.revenue / maxRevenue) * 100)} percent`}>
+                  <div className="h-full rounded-full bg-frog" style={{ width: `${Math.round((m.revenue / maxRevenue) * 100)}%` }} />
+                </div>
+              </article>
+            );
+          })}
+        </div>
+        <div className="hidden overflow-x-auto rounded-xl border border-cardline/60 sm:block" role="region" aria-label="Performance details table" tabIndex={0}>
           <table className="w-full min-w-[560px] border-separate border-spacing-y-1">
             <thead>
               <tr className="font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft">
@@ -845,8 +882,18 @@ function MonthlyTrendCard({ months }: { months: MonthStat[] }) {
             </tbody>
           </table>
         </div>
+        </>
       )}
     </Card>
+  );
+}
+
+function MobileMetric({ label, value, tone = "text-ink" }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="min-w-0 rounded-xl bg-surface/70 px-2.5 py-2">
+      <p className="font-display text-xs font-bold text-ink-soft">{label}</p>
+      <p className={`break-words font-display text-base font-extrabold tabular-nums ${tone}`}>{value}</p>
+    </div>
   );
 }
 
@@ -865,16 +912,16 @@ function CustomerInsightsCard({ customers }: { customers: CustomerInsights }) {
         </p>
       ) : (
         <>
-          <div className="mb-3 grid grid-cols-3 gap-2">
+          <div className="mb-3 grid grid-cols-2 gap-2 [&>*:last-child]:col-span-2 sm:grid-cols-3 sm:[&>*:last-child]:col-span-1">
             <div className="rounded-xl bg-cream/70 p-2.5 text-center">
               <p className="font-display text-xl font-extrabold text-ink">{customers.buyers}</p>
-              <p className="font-display text-[10px] font-bold text-ink-soft">buyers</p>
+              <p className="font-display text-xs font-bold text-ink-soft">buyers</p>
             </div>
             <div className="rounded-xl bg-pond/60 p-2.5 text-center">
               <p className="font-display text-xl font-extrabold text-frog-dark">
                 {customers.repeatRatePct}%
               </p>
-              <p className="font-display text-[10px] font-bold text-ink-soft">
+              <p className="font-display text-xs font-bold text-ink-soft">
                 buy again ({customers.repeatBuyers})
               </p>
             </div>
@@ -882,7 +929,7 @@ function CustomerInsightsCard({ customers }: { customers: CustomerInsights }) {
               <p className="font-display text-xl font-extrabold text-ink">
                 {customers.repeatRevenuePct}%
               </p>
-              <p className="font-display text-[10px] font-bold text-ink-soft">
+              <p className="font-display text-xs font-bold text-ink-soft">
                 of revenue is repeat
               </p>
             </div>
@@ -1199,16 +1246,16 @@ function CourierOverridesEditor({
           </span>
         )}
       </summary>
-      <div className="grid grid-cols-2 gap-2 p-3 pt-0 sm:grid-cols-3 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-2 p-3 pt-0 min-[390px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
         {DISTRICTS.map((d) => (
-          <label key={d} className="font-display text-[11px] font-bold text-ink-soft">
+          <label key={d} className="font-display text-sm font-bold text-ink-soft sm:text-[11px]">
             {d}
             <input
               type="number"
               placeholder={`${settings.courier_cost_base}`}
               value={overrides[d] ?? ""}
               onChange={(e) => setDistrict(d, e.target.value)}
-              className="mt-0.5 w-full rounded-lg border-2 border-cardline bg-white px-2 py-1.5 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+              className="mt-1 min-h-11 w-full rounded-lg border-2 border-cardline bg-surface px-3 font-display text-base font-bold text-ink outline-none focus:border-frog sm:min-h-0 sm:px-2 sm:py-1.5 sm:text-sm"
             />
           </label>
         ))}
@@ -1233,13 +1280,18 @@ function AdSpendCard({ metrics }: { metrics: Metrics }) {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(load, 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   // Editing an existing day pre-fills its current amount.
   useEffect(() => {
     const existing = spend.find((s) => s.day === day);
-    setAmount(existing ? String(existing.amount) : "");
+    const timer = window.setTimeout(
+      () => setAmount(existing ? String(existing.amount) : ""),
+      0
+    );
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [day, spend.length]);
 
@@ -1263,17 +1315,17 @@ function AdSpendCard({ metrics }: { metrics: Metrics }) {
     w.spend > 0 && w.deliveredCount > 0 ? Math.round(w.spend / w.deliveredCount) : null;
 
   const inputCls =
-    "mt-1 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog";
+    "mt-1 min-h-11 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 font-display text-base font-bold text-ink outline-none focus:border-frog sm:min-h-0 sm:py-2 sm:text-sm";
 
   return (
-    <Card className="p-6">
+    <Card className="p-4 sm:p-6">
       <h2 className="mb-1 font-display text-lg font-extrabold text-ink">📣 Ad spend &amp; ROAS</h2>
       <p className="mb-4 font-display text-xs font-bold text-ink-soft">
         Log what you spent on Meta each day. ROAS = delivered COD revenue ÷ spend — revenue counts
         when the parcel is <em>delivered</em>, so give fresh campaigns 2–3 days before judging.
       </p>
 
-      <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
         <PerfTile label="Spend (7d)" value={rs(last7.spend)} />
         <PerfTile
           label="Delivered revenue (7d)"
@@ -1293,12 +1345,12 @@ function AdSpendCard({ metrics }: { metrics: Metrics }) {
         />
       </div>
 
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="font-display text-xs font-bold text-ink-soft">
+      <div className="grid grid-cols-1 items-end gap-3 min-[390px]:grid-cols-2 sm:flex sm:flex-wrap">
+        <label className="font-display text-sm font-bold text-ink-soft sm:text-xs">
           Day
           <input type="date" className={inputCls} value={day} onChange={(e) => setDay(e.target.value)} />
         </label>
-        <label className="font-display text-xs font-bold text-ink-soft">
+        <label className="font-display text-sm font-bold text-ink-soft sm:text-xs">
           Spend (Rs.)
           <input
             type="number"
@@ -1308,18 +1360,18 @@ function AdSpendCard({ metrics }: { metrics: Metrics }) {
             onChange={(e) => setAmount(e.target.value)}
           />
         </label>
-        <Button tone="frog" onClick={save} disabled={busy || amount === ""}>
+        <Button tone="frog" onClick={save} disabled={busy || amount === ""} className="w-full min-[390px]:col-span-2 sm:w-auto">
           {busy ? "Saving…" : "💾 Save day"}
         </Button>
       </div>
 
       {spend.length > 0 && (
-        <div className="mt-4 flex flex-wrap gap-1.5">
+        <div className="mt-4 flex gap-2 overflow-x-auto pb-1" aria-label="Recent ad spend days">
           {spend.slice(0, 14).map((s) => (
             <button
               key={s.day}
               onClick={() => setDay(s.day)}
-              className="rounded-full bg-cream px-2.5 py-1 font-display text-[11px] font-bold text-ink-soft transition hover:bg-pond hover:text-frog-dark"
+              className="min-h-11 shrink-0 rounded-full bg-cream px-3 font-display text-sm font-bold text-ink-soft transition hover:bg-pond hover:text-frog-dark sm:min-h-0 sm:py-1 sm:text-[11px]"
               title="Tap to edit"
             >
               {s.day.slice(5)} · {rs(s.amount)}
@@ -1392,10 +1444,10 @@ function ProductsCard({ products, onChanged }: { products: Product[]; onChanged:
   }
 
   const miniInput =
-    "w-full rounded-lg border-2 border-cardline bg-cream/60 px-2 py-1.5 font-display text-sm font-bold text-ink outline-none focus:border-frog";
+    "min-h-11 w-full rounded-lg border-2 border-cardline bg-cream/60 px-3 font-display text-base font-bold text-ink outline-none focus:border-frog sm:min-h-0 sm:px-2 sm:py-1.5 sm:text-sm";
 
   return (
-    <Card className="p-6">
+    <Card className="p-4 sm:p-6">
       <h2 className="mb-1 font-display text-lg font-extrabold text-ink">📦 Products &amp; stock</h2>
       <p className="mb-4 font-display text-xs font-bold text-ink-soft">
         Tap-to-fill presets in the dispatch form. Stock moves itself: −1 when an order books,
@@ -1415,39 +1467,54 @@ function ProductsCard({ products, onChanged }: { products: Product[]; onChanged:
           {products.map((p) => (
             <Fragment key={p.id}>
             <div
-              className="grid grid-cols-2 items-center gap-2 rounded-xl bg-cream/70 p-2 sm:grid-cols-[1fr_90px_90px_90px_70px]"
+              className="grid grid-cols-1 items-end gap-2 rounded-xl border-2 border-cardline/60 bg-cream/70 p-3 min-[390px]:grid-cols-2 sm:grid-cols-[1fr_90px_90px_90px_70px] sm:border-0 sm:p-2"
             >
-              <input
-                className={miniInput}
-                defaultValue={p.name}
-                onBlur={(e) => {
-                  const name = e.target.value.trim();
-                  if (name && name !== p.name) patch(p.id, { name });
-                }}
-              />
-              <input
-                type="number"
-                className={miniInput}
-                defaultValue={p.price}
-                onBlur={(e) => {
-                  const price = Number(e.target.value);
-                  if (!Number.isNaN(price) && price !== p.price) patch(p.id, { price });
-                }}
-              />
-              <input
-                type="number"
-                className={miniInput}
-                defaultValue={p.unit_cost}
-                onBlur={(e) => {
-                  const unit_cost = Number(e.target.value);
-                  if (!Number.isNaN(unit_cost) && unit_cost !== p.unit_cost)
-                    patch(p.id, { unit_cost });
-                }}
-              />
-              <div className="flex items-center gap-1">
+              <label className="font-display text-sm font-bold text-ink-soft sm:text-[0px]">
+                <span className="mb-1 block sm:hidden">Product</span>
+                <input
+                  aria-label={`${p.name} product name`}
+                  className={miniInput}
+                  defaultValue={p.name}
+                  onBlur={(e) => {
+                    const name = e.target.value.trim();
+                    if (name && name !== p.name) patch(p.id, { name });
+                  }}
+                />
+              </label>
+              <label className="font-display text-sm font-bold text-ink-soft sm:text-[0px]">
+                <span className="mb-1 block sm:hidden">Selling price</span>
+                <input
+                  aria-label={`${p.name} selling price`}
+                  type="number"
+                  className={miniInput}
+                  defaultValue={p.price}
+                  onBlur={(e) => {
+                    const price = Number(e.target.value);
+                    if (!Number.isNaN(price) && price !== p.price) patch(p.id, { price });
+                  }}
+                />
+              </label>
+              <label className="font-display text-sm font-bold text-ink-soft sm:text-[0px]">
+                <span className="mb-1 block sm:hidden">Unit cost</span>
+                <input
+                  aria-label={`${p.name} unit cost`}
+                  type="number"
+                  className={miniInput}
+                  defaultValue={p.unit_cost}
+                  onBlur={(e) => {
+                    const unit_cost = Number(e.target.value);
+                    if (!Number.isNaN(unit_cost) && unit_cost !== p.unit_cost)
+                      patch(p.id, { unit_cost });
+                  }}
+                />
+              </label>
+              <div>
+                <span className="mb-1 block font-display text-sm font-bold text-ink-soft sm:hidden">In stock</span>
+                <div className="flex items-center gap-1">
                 <button
+                  aria-label={`Remove one ${p.name} from stock`}
                   onClick={() => patch(p.id, { stock_units: Math.max(0, p.stock_units - 1) })}
-                  className="h-8 w-8 rounded-lg bg-[#f2ede3] font-display font-extrabold text-ink hover:bg-flame-tint"
+                  className="h-11 w-11 rounded-lg bg-surface-soft font-display font-extrabold text-ink hover:bg-flame-tint sm:h-8 sm:w-8"
                 >
                   −
                 </button>
@@ -1460,23 +1527,25 @@ function ProductsCard({ products, onChanged }: { products: Product[]; onChanged:
                   {p.stock_units}
                 </span>
                 <button
+                  aria-label={`Add one ${p.name} to stock`}
                   onClick={() => patch(p.id, { stock_units: p.stock_units + 1 })}
-                  className="h-8 w-8 rounded-lg bg-[#f2ede3] font-display font-extrabold text-ink hover:bg-pond"
+                  className="h-11 w-11 rounded-lg bg-surface-soft font-display font-extrabold text-ink hover:bg-pond sm:h-8 sm:w-8"
                 >
                   +
                 </button>
+                </div>
               </div>
-              <div className="flex justify-end gap-1">
+              <div className="flex gap-2 min-[390px]:col-span-2 sm:col-span-1 sm:justify-end sm:gap-1">
                 <button
                   onClick={() => setReceivingId(receivingId === p.id ? null : p.id)}
-                  className="rounded-lg px-2 py-1 font-display text-xs font-bold text-frog-dark hover:bg-pond"
+                  className="min-h-11 flex-1 rounded-lg px-3 font-display text-sm font-bold text-frog-dark hover:bg-pond sm:min-h-0 sm:flex-none sm:px-2 sm:py-1 sm:text-xs"
                   title="Buy new stock (updates average cost)"
                 >
                   {receivingId === p.id ? "Cancel" : "＋ Buy"}
                 </button>
                 <button
                   onClick={() => remove(p.id, p.name)}
-                  className="rounded-lg px-2 py-1 font-display text-xs font-bold text-ink-soft hover:bg-flame-tint hover:text-[#c04545]"
+                  className="min-h-11 rounded-lg px-3 font-display text-sm font-bold text-ink-soft hover:bg-flame-tint hover:text-danger-ink sm:min-h-0 sm:px-2 sm:py-1 sm:text-xs"
                 >
                   Delete
                 </button>
@@ -1496,7 +1565,7 @@ function ProductsCard({ products, onChanged }: { products: Product[]; onChanged:
         </div>
       )}
 
-      <div className="grid grid-cols-2 items-end gap-2 sm:grid-cols-[1fr_90px_90px_90px_auto]">
+      <div className="grid grid-cols-1 items-end gap-3 min-[390px]:grid-cols-2 sm:grid-cols-[1fr_90px_90px_90px_auto] sm:gap-2">
         <label className="font-display text-xs font-bold text-ink-soft">
           New product
           <input
@@ -1533,7 +1602,7 @@ function ProductsCard({ products, onChanged }: { products: Product[]; onChanged:
             onChange={(e) => setDraft({ ...draft, stock_units: e.target.value })}
           />
         </label>
-        <Button tone="frog" onClick={add} disabled={busy || !draft.name.trim()}>
+        <Button tone="frog" onClick={add} disabled={busy || !draft.name.trim()} className="w-full min-[390px]:col-span-2 sm:col-span-1 sm:w-auto">
           + Add
         </Button>
       </div>
@@ -1567,36 +1636,36 @@ function ReceiveRow({ product, onDone }: { product: Product; onDone: () => void 
   }
 
   const field =
-    "w-24 rounded-lg border-2 border-cardline bg-white px-2 py-1.5 font-display text-sm font-bold text-ink outline-none focus:border-frog";
+    "mt-1 min-h-11 w-full rounded-lg border-2 border-cardline bg-surface px-3 font-display text-base font-bold text-ink outline-none focus:border-frog sm:w-28 sm:py-1.5 sm:text-sm";
 
   return (
     <div className="mb-2 rounded-xl border-2 border-frog/40 bg-pond/40 p-3">
       <p className="mb-2 font-display text-xs font-extrabold text-ink">
         📥 Buy new stock — {product.name}
       </p>
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="font-display text-xs font-bold text-ink-soft">
+      <div className="grid grid-cols-1 items-end gap-3 min-[390px]:grid-cols-2 sm:flex sm:flex-wrap">
+        <label className="font-display text-sm font-bold text-ink-soft sm:text-xs">
           Quantity
           <input
             type="number"
-            className={`${field} mt-1`}
+            className={field}
             value={qty}
             onChange={(e) => setQty(e.target.value)}
             placeholder="e.g. 50"
             autoFocus
           />
         </label>
-        <label className="font-display text-xs font-bold text-ink-soft">
+        <label className="font-display text-sm font-bold text-ink-soft sm:text-xs">
           Cost per unit (Rs.)
           <input
             type="number"
             step="0.01"
-            className={`${field} mt-1`}
+            className={field}
             value={cost}
             onChange={(e) => setCost(e.target.value)}
           />
         </label>
-        <Button tone="frog" onClick={confirm} disabled={busy || q <= 0}>
+        <Button tone="frog" onClick={confirm} disabled={busy || q <= 0} className="w-full min-[390px]:col-span-2 sm:w-auto">
           {busy ? "Adding…" : "Add stock"}
         </Button>
       </div>
@@ -1627,14 +1696,14 @@ function StatTile({
   sub: string;
 }) {
   return (
-    <Card className="p-5">
+    <Card className="p-3 sm:p-5">
       <div className={`mb-3 flex h-11 w-11 items-center justify-center rounded-xl text-2xl ${tint}`}>
         {emoji}
       </div>
       <p className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
         {label}
       </p>
-      <p className="mt-0.5 font-display text-3xl font-extrabold text-ink">{value}</p>
+      <p className="mt-0.5 break-words font-display text-2xl font-extrabold text-ink sm:text-3xl">{value}</p>
       <p className="font-display text-xs font-bold text-ink-soft">{sub}</p>
     </Card>
   );

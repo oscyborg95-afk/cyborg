@@ -5,7 +5,7 @@
 // breakdown and a scannable Code-128 barcode of the courier tracking ID.
 // Browser print → save the whole batch as one PDF or send straight to paper.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BusinessSettings, Order, ShippingManifest } from "@/lib/types";
 import { Barcode } from "../components/barcode";
 import { Froggy } from "../components/froggy";
@@ -33,6 +33,9 @@ export default function InvoicesPage() {
   const [rangeTo, setRangeTo] = useState(today);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [loaded, setLoaded] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const previewCloseRef = useRef<HTMLButtonElement>(null);
 
   const load = useCallback(async () => {
     const [ordersRes, settingsRes] = await Promise.all([
@@ -50,8 +53,43 @@ export default function InvoicesPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(load, 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    if (!previewOpen) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    previewCloseRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPreviewOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = previewRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+      previousFocus?.focus();
+    };
+  }, [previewOpen]);
 
   const manifestByOrder = useMemo(() => {
     const map = new Map<string, ShippingManifest>();
@@ -94,7 +132,7 @@ export default function InvoicesPage() {
   return (
     <div className="min-h-full">
       {/* ── Controls (hidden in print) ─────────────────────────────── */}
-      <div className="print-hide mx-auto max-w-5xl space-y-4 p-5 sm:p-6">
+      <div className="print-hide mx-auto max-w-5xl space-y-4 p-4 sm:p-6">
         <div className="flex items-center gap-3">
           <Froggy mood={selected.length > 0 ? "happy" : "idle"} size={56} />
           <div>
@@ -114,12 +152,22 @@ export default function InvoicesPage() {
           </Card>
         )}
 
-        <Card className="flex min-w-0 flex-wrap items-end gap-4 p-4">
+        {!loaded && (
+          <Card className="flex items-center gap-3 p-4" aria-busy="true">
+            <Froggy mood="thinking" size={48} />
+            <div>
+              <p className="font-display text-base font-extrabold text-ink">Finding printable shipments…</p>
+              <p className="text-sm font-semibold text-ink-soft">Checking orders and courier tracking IDs.</p>
+            </div>
+          </Card>
+        )}
+
+        <Card className="flex min-w-0 flex-col items-stretch gap-4 p-4 sm:flex-row sm:flex-wrap sm:items-end">
           <fieldset className="min-w-0 space-y-3">
             <legend className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
               Invoice dates
             </legend>
-            <div className="flex flex-wrap gap-2">
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
               {([
                 ["single", "Single day"],
                 ["range", "Date range"],
@@ -127,7 +175,7 @@ export default function InvoicesPage() {
               ] as const).map(([mode, label]) => (
                 <label
                   key={mode}
-                  className={`cursor-pointer rounded-xl border-2 px-3 py-2 font-display text-sm font-extrabold transition-colors focus-within:ring-2 focus-within:ring-frog focus-within:ring-offset-2 ${
+                  className={`flex min-h-11 cursor-pointer items-center justify-center rounded-xl border-2 px-2 py-2 text-center font-display text-sm font-extrabold leading-tight transition-colors focus-within:ring-2 focus-within:ring-frog focus-within:ring-offset-2 sm:px-3 ${
                     filterMode === mode
                       ? "border-frog bg-pond text-ink"
                       : "border-cardline bg-cream/60 text-ink-soft hover:border-frog/60"
@@ -148,20 +196,20 @@ export default function InvoicesPage() {
           </fieldset>
 
           {filterMode === "single" && (
-            <label className="font-display text-sm font-bold text-ink-soft">
+            <label className="flex flex-col gap-1 font-display text-sm font-bold text-ink-soft sm:block">
               Day
               <input
                 type="date"
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
-                className="ml-2 rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+                className="min-h-11 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 font-display text-base font-bold text-ink outline-none focus:border-frog sm:ml-2 sm:w-auto sm:text-sm"
               />
             </label>
           )}
 
           {filterMode === "range" && (
-            <div className="flex min-w-0 flex-wrap items-start gap-3">
-              <label className="font-display text-sm font-bold text-ink-soft">
+            <div className="grid min-w-0 grid-cols-1 gap-3 sm:flex sm:flex-wrap sm:items-start">
+              <label className="flex flex-col gap-1 font-display text-sm font-bold text-ink-soft sm:block">
                 From
                 <input
                   type="date"
@@ -170,10 +218,10 @@ export default function InvoicesPage() {
                   aria-describedby={!rangeIsValid ? "invoice-range-error" : undefined}
                   aria-invalid={!rangeIsValid}
                   onChange={(e) => setRangeFrom(e.target.value)}
-                  className="ml-2 rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+                  className="min-h-11 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 font-display text-base font-bold text-ink outline-none focus:border-frog sm:ml-2 sm:w-auto sm:text-sm"
                 />
               </label>
-              <label className="font-display text-sm font-bold text-ink-soft">
+              <label className="flex flex-col gap-1 font-display text-sm font-bold text-ink-soft sm:block">
                 To
                 <input
                   type="date"
@@ -182,7 +230,7 @@ export default function InvoicesPage() {
                   aria-describedby={!rangeIsValid ? "invoice-range-error" : undefined}
                   aria-invalid={!rangeIsValid}
                   onChange={(e) => setRangeTo(e.target.value)}
-                  className="ml-2 rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+                  className="min-h-11 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 font-display text-base font-bold text-ink outline-none focus:border-frog sm:ml-2 sm:w-auto sm:text-sm"
                 />
               </label>
               {!rangeIsValid && (
@@ -193,18 +241,18 @@ export default function InvoicesPage() {
             </div>
           )}
 
-          <span className="font-display text-sm font-bold text-ink">
+          <span className="rounded-xl bg-pond/70 px-3 py-2 font-display text-sm font-bold text-ink sm:bg-transparent sm:px-0 sm:py-0">
             {selected.length} of {eligible.length} shipments selected · {sheets.length}{" "}
             {sheets.length === 1 ? "sheet" : "sheets"}
           </span>
-          <Button
-            tone="frog"
-            className="w-full sm:ml-auto sm:w-auto"
-            disabled={selected.length === 0}
-            onClick={() => window.print()}
-          >
-            🖨️ Print / Save PDF
-          </Button>
+          <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex">
+            <Button tone="sky" className="sm:hidden" disabled={selected.length === 0} onClick={() => setPreviewOpen(true)}>
+              👀 Preview
+            </Button>
+            <Button tone="frog" disabled={selected.length === 0} onClick={() => window.print()}>
+              🖨️ <span className="sm:hidden">Print</span><span className="hidden sm:inline">Print / Save PDF</span>
+            </Button>
+          </div>
         </Card>
 
         {loaded && eligible.length === 0 && (
@@ -230,21 +278,23 @@ export default function InvoicesPage() {
             <p className="mb-2 font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
               Include / exclude
             </p>
-            <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {eligible.map((o) => (
                 <label
                   key={o.id}
-                  className="flex items-center gap-2 rounded-lg px-2 py-1 font-display text-sm font-bold text-ink hover:bg-pond/50"
+                  className="flex min-h-14 items-start gap-3 rounded-xl border-2 border-transparent bg-cream/50 px-3 py-2 font-display text-sm font-bold text-ink transition hover:border-frog/40 hover:bg-pond/50"
                 >
                   <input
                     type="checkbox"
                     checked={!excluded.has(o.id)}
                     onChange={() => toggle(o.id)}
-                    className="h-4 w-4 accent-[var(--color-frog)]"
+                    className="mt-0.5 h-5 w-5 shrink-0 accent-[var(--color-frog)]"
                   />
-                  {o.customer_name}
-                  <span className="text-ink-soft">
-                    · {o.district} · {rs(o.total_cod)} · {manifestByOrder.get(o.id)?.tracking_id}
+                  <span className="min-w-0">
+                    <span className="block text-base text-ink">{o.customer_name}</span>
+                    <span className="block break-words text-sm text-ink-soft">
+                      {o.district} · {rs(o.total_cod)} · {manifestByOrder.get(o.id)?.tracking_id}
+                    </span>
                   </span>
                 </label>
               ))}
@@ -253,17 +303,36 @@ export default function InvoicesPage() {
         )}
 
         {selected.length > 0 && (
-          <p className="font-display text-xs font-bold text-ink-soft">
-            👇 Print preview below — exactly what comes out of the printer.
+          <p className="font-display text-sm font-bold text-ink-soft sm:text-xs">
+            <span className="sm:hidden">Tap Preview to inspect the exact A4 output before printing.</span>
+            <span className="hidden sm:inline">👇 Print preview below — exactly what comes out of the printer.</span>
           </p>
         )}
       </div>
 
       {/* ── A4 sheets (the only thing that prints) ─────────────────── */}
-      <div className="print-area mx-auto flex w-full flex-col items-start gap-6 overflow-x-auto px-3 pb-10 sm:items-center sm:px-0">
-        {settings &&
-          sheets.map((sheet, i) => (
-            <div key={i} className="invoice-sheet">
+      <div
+        ref={previewRef}
+        className={`${previewOpen ? "fixed inset-0 z-50 flex" : "hidden"} print-area flex-col bg-cream pb-[env(safe-area-inset-bottom)] sm:static sm:mx-auto sm:flex sm:w-full sm:items-center sm:gap-6 sm:bg-transparent sm:px-0 sm:pb-10 print:static print:flex print:bg-white print:pb-0`}
+        role={previewOpen ? "dialog" : undefined}
+        aria-modal={previewOpen ? true : undefined}
+        aria-label={previewOpen ? "Invoice print preview" : undefined}
+      >
+        <div className="print-hide sticky top-0 z-10 flex w-full items-center justify-between border-b-2 border-cardline bg-surface px-4 py-3 sm:hidden">
+          <div>
+            <h2 className="font-display text-lg font-extrabold text-ink">Print preview</h2>
+            <p className="text-sm font-semibold text-ink-soft">{selected.length} invoices · {sheets.length} {sheets.length === 1 ? "sheet" : "sheets"}</p>
+          </div>
+          <button ref={previewCloseRef} type="button" onClick={() => setPreviewOpen(false)} aria-label="Close invoice preview" className="flex h-11 w-11 items-center justify-center rounded-xl border-2 border-cardline bg-surface-soft font-display text-lg font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-frog">✕</button>
+        </div>
+        <div className="print-hide flex w-full items-center justify-between border-b border-cardline bg-sky-tint px-4 py-2 sm:hidden">
+          <p className="text-sm font-semibold text-sky-dark">Preview scaled to fit. Printing uses exact A4 size.</p>
+          <Button tone="frog" onClick={() => window.print()} className="!px-3 !py-2 !text-sm">🖨️ Print</Button>
+        </div>
+        <div className="min-h-0 w-full flex-1 overflow-auto px-4 py-4 sm:contents print:contents">
+          {settings &&
+            sheets.map((sheet, i) => (
+              <div key={i} className="invoice-sheet mx-auto [zoom:.35] min-[350px]:[zoom:.4] min-[390px]:[zoom:.44] min-[430px]:[zoom:.48] sm:[zoom:1] print:[zoom:1]">
               {sheet.map((order) => (
                 <InvoiceCell
                   key={order.id}
@@ -276,8 +345,9 @@ export default function InvoicesPage() {
               {Array.from({ length: 8 - sheet.length }).map((_, j) => (
                 <div key={`pad-${j}`} className="invoice-cell invoice-cell-empty" />
               ))}
-            </div>
-          ))}
+              </div>
+            ))}
+        </div>
       </div>
     </div>
   );

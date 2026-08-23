@@ -39,7 +39,7 @@ const money = (value: number) =>
   `Rs. ${Number(value || 0).toLocaleString("en-LK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const inputCls =
-  "mt-1 w-full rounded-xl border-2 border-cardline bg-white/70 px-3 py-2 font-display text-sm font-bold text-ink outline-none focus:border-gold";
+  "mt-1 min-h-11 w-full rounded-xl border-2 border-cardline bg-white/70 px-3 py-2 font-display text-base font-bold text-ink outline-none focus:border-gold sm:min-h-0 sm:text-sm";
 
 export function RemittancePanel({
   outstandingCount,
@@ -158,7 +158,7 @@ export function RemittancePanel({
   }
 
   return (
-    <Card className="!border-gold bg-gold/10 p-4 sm:p-5">
+    <Card className="min-w-0 !border-gold bg-gold/10 p-4 sm:p-5">
       <section aria-labelledby="payout-summary-title">
         <div className="mb-3">
           <h2 id="payout-summary-title" className="font-display text-lg font-extrabold text-ink">Courier paid you {summary ? money(summary.total_paid_to_me) : "—"}</h2>
@@ -193,7 +193,7 @@ export function RemittancePanel({
 
       <div className="my-4 border-t-2 border-gold/30" />
       <div className="flex flex-wrap items-start gap-4">
-        <div className="min-w-64 flex-1">
+        <div className="min-w-0 flex-1 sm:min-w-64">
           <p className="font-display text-sm font-extrabold text-ink">
             💵 Friday courier settlement
           </p>
@@ -201,7 +201,7 @@ export function RemittancePanel({
             Upload the weekly courier invoice, verify the expected amount, then record the actual cash received.
           </p>
         </div>
-        <label className="cursor-pointer rounded-xl border-2 border-gold bg-white/70 px-4 py-2 font-display text-xs font-extrabold text-ink transition hover:bg-white">
+        <label className="flex min-h-11 w-full cursor-pointer items-center justify-center rounded-xl border-2 border-gold bg-white/70 px-4 py-2 text-center font-display text-sm font-extrabold text-ink transition hover:bg-white sm:w-auto sm:text-xs">
           {busy ? "Reading…" : "📎 Choose InvoiceDetails.xlsx"}
           <input
             type="file"
@@ -252,7 +252,7 @@ export function RemittancePanel({
 
           {preview.ignored.length > 0 && (
             <details className="rounded-xl bg-white/60 px-3 py-2">
-              <summary className="cursor-pointer font-display text-xs font-extrabold text-ink-soft">
+              <summary className="flex min-h-11 cursor-pointer items-center font-display text-sm font-extrabold text-ink-soft sm:min-h-0 sm:text-xs">
                 View {preview.ignored.length} ignored invoice row{preview.ignored.length === 1 ? "" : "s"}
               </summary>
               <div className="mt-2 max-h-36 space-y-1 overflow-y-auto">
@@ -289,8 +289,8 @@ export function RemittancePanel({
               Notes (optional)
               <input className={inputCls} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Bank reference, tax note, adjustment…" />
             </label>
-            <label className="flex items-center gap-2 rounded-xl bg-white/70 px-3 py-2 font-display text-xs font-bold text-ink">
-              <input type="checkbox" checked={cashApplied} onChange={(e) => setCashApplied(e.target.checked)} />
+            <label className="flex min-h-11 items-center gap-3 rounded-xl bg-white/70 px-3 py-2 font-display text-sm font-bold text-ink sm:text-xs">
+              <input className="h-5 w-5" type="checkbox" checked={cashApplied} onChange={(e) => setCashApplied(e.target.checked)} />
               Add receipt to bank cash
             </label>
           </div>
@@ -303,6 +303,7 @@ export function RemittancePanel({
             tone="gold"
             onClick={recordPayout}
             disabled={busy || preview.matched_count === 0 || !amountReceived || !paidAt}
+            className="min-h-11 w-full sm:w-auto"
           >
             {busy ? "Recording…" : "✅ Record actual payout"}
           </Button>
@@ -320,7 +321,43 @@ export function RemittancePanel({
         {history.length === 0 ? (
           <div className="rounded-xl border-2 border-dashed border-cardline bg-white/40 p-6 text-center text-xs font-bold text-ink-soft">No courier payouts have been recorded yet.</div>
         ) : (
-          <div className="overflow-x-auto rounded-xl border-2 border-cardline bg-white/60">
+          <>
+          <div className="space-y-3 sm:hidden" aria-label="Recent courier settlements">
+            {history.slice(0, 10).map((batch) => {
+              const deductions =
+                Number(batch.delivery_charges || 0) +
+                Number(batch.commission || 0) +
+                Number(batch.invoice_vat || 0) +
+                Number(batch.additional_tax || 0) +
+                Number(batch.other_deductions || 0);
+              return (
+                <article key={batch.id} className="rounded-2xl border-2 border-cardline bg-white/70 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h4 className="font-display text-base font-extrabold text-ink">{batch.invoice_no}</h4>
+                      <p className="text-sm font-bold text-ink-soft">
+                        Paid {new Date(batch.paid_at).toLocaleDateString("en-LK", { timeZone: "Asia/Colombo", day: "numeric", month: "short", year: "numeric" })}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="font-display text-lg font-extrabold text-frog-dark">{money(batch.amount_received)}</p>
+                      {!batch.cash_applied && <p className="text-xs font-bold text-ink-soft">Bank unchanged</p>}
+                    </div>
+                  </div>
+                  <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 rounded-xl bg-cream/60 p-3 text-sm">
+                    <div><dt className="font-bold text-ink-soft">Expected</dt><dd className="font-extrabold text-ink">{money(batch.invoice_payable)}</dd></div>
+                    <div><dt className="font-bold text-ink-soft">Gross COD</dt><dd className="font-extrabold text-ink">{money(batch.gross_cod)}</dd></div>
+                    <div><dt className="font-bold text-ink-soft">Deductions</dt><dd className="font-extrabold text-gold-dark">{money(deductions)}</dd></div>
+                    <div><dt className="font-bold text-ink-soft">Variance</dt><dd className={`font-extrabold ${Math.abs(batch.variance) < 0.01 ? "text-frog-dark" : "text-flame-dark"}`}>{money(batch.variance)}</dd></div>
+                  </dl>
+                  <a className="mt-3 flex min-h-11 items-center justify-center rounded-xl border-2 border-cardline bg-surface px-3 font-display text-sm font-extrabold text-sky-dark focus:outline-none focus:ring-2 focus:ring-sky" href={`/api/remittance/${batch.id}/invoice`}>
+                    Download invoice file
+                  </a>
+                </article>
+              );
+            })}
+          </div>
+          <div className="hidden overflow-x-auto rounded-xl border-2 border-cardline bg-white/60 sm:block">
             <table className="w-full min-w-[720px] text-left font-display text-xs">
               <thead className="border-b-2 border-cardline bg-surface-soft text-[10px] uppercase text-ink-soft">
                 <tr>
@@ -356,6 +393,7 @@ export function RemittancePanel({
               </tbody>
             </table>
           </div>
+          </>
         )}
       </section>
     </Card>

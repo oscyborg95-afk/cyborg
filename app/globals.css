@@ -199,6 +199,44 @@ body {
   font-family: var(--font-body);
 }
 
+/* Mobile app shell: reserve the lily-pad dock and native safe areas. */
+.app-content {
+  padding-bottom: calc(4.15rem + env(safe-area-inset-bottom));
+  overscroll-behavior-y: contain;
+}
+
+.lily-dock {
+  padding-bottom: max(0.35rem, env(safe-area-inset-bottom));
+  box-shadow: 0 -8px 24px rgba(63, 58, 52, 0.09);
+}
+
+.mobile-sheet {
+  padding-bottom: calc(1.25rem + env(safe-area-inset-bottom));
+  animation: sheet-rise 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes sheet-rise {
+  from { transform: translateY(2rem); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@media (hover: hover) {
+  .mobile-dock-item:hover > span:first-of-type { transform: translateY(-2px); }
+}
+
+@media (min-width: 1024px) {
+  .app-content { padding-bottom: 0; }
+}
+
+@media (display-mode: standalone) {
+  body { user-select: none; }
+  input, textarea, select, [contenteditable="true"] { user-select: text; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-sheet, .mobile-dock-item, .mobile-dock-item > span { animation: none; transition: none; }
+}
+
 /* Chunky Duolingo-style pressable button. Tone sets bg + darker bottom edge. */
 .btn3d {
   display: inline-flex;

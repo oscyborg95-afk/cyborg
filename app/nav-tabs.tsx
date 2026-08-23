@@ -11,334 +11,183 @@ interface NavItem {
   desc: string;
 }
 
-interface ToolGroup {
-  category: string;
-  items: NavItem[];
-}
-
 const PRIMARY_TABS: readonly NavItem[] = [
-  { href: "/", label: "Workspace", emoji: "💬", desc: "Live chat, desk & actions" },
-  { href: "/orders", label: "Orders", emoji: "📦", desc: "Fulfillment & dispatches" },
-  { href: "/customers", label: "Customers", emoji: "👥", desc: "CRM & profiles" },
+  { href: "/", label: "Workspace", emoji: "💬", desc: "Live inbox" },
+  { href: "/orders", label: "Orders", emoji: "📦", desc: "Fulfillment" },
+  { href: "/customers", label: "Customers", emoji: "👥", desc: "CRM profiles" },
 ];
 
-const TOOL_GROUPS: readonly ToolGroup[] = [
+const TOOL_GROUPS: readonly { category: string; items: readonly NavItem[] }[] = [
   {
     category: "Growth & Automation",
     items: [
-      { href: "/ai", label: "AI Salesperson", emoji: "✨", desc: "Automated responses & AI sales" },
-      { href: "/followups", label: "Auto Follow-ups", emoji: "🔔", desc: "Chase cold leads automatically" },
-      { href: "/broadcast", label: "WhatsApp Blast", emoji: "📣", desc: "Bulk customer messaging" },
+      { href: "/ai", label: "AI Salesperson", emoji: "✨", desc: "Automated responses" },
+      { href: "/followups", label: "Auto Follow-ups", emoji: "🔔", desc: "Recover cold leads" },
+      { href: "/broadcast", label: "WhatsApp Blast", emoji: "📣", desc: "Bulk messaging" },
     ],
   },
   {
     category: "Finance & Insights",
     items: [
-      { href: "/invoices", label: "Invoices", emoji: "🖨️", desc: "Thermal & A4 packing slips" },
-      { href: "/analytics", label: "Quest & Analytics", emoji: "🏆", desc: "XP progress & dispatch stats" },
+      { href: "/invoices", label: "Invoices", emoji: "🖨️", desc: "Packing slips" },
+      { href: "/analytics", label: "Quest & Analytics", emoji: "🏆", desc: "Progress and stats" },
     ],
   },
 ];
 
+function isActive(pathname: string, href: string) {
+  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+}
+
 export function NavTabs() {
   const pathname = usePathname();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  // Check if current route is within the Tools dropdown
+  const [desktopOpen, setDesktopOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const desktopRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const isToolActive = TOOL_GROUPS.some((group) =>
-    group.items.some((item) => pathname.startsWith(item.href))
+    group.items.some((item) => isActive(pathname, item.href))
   );
 
-  // Find active item for mobile trigger label
-  const activePrimary = PRIMARY_TABS.find((t) =>
-    t.href === "/" ? pathname === "/" : pathname.startsWith(t.href)
-  );
-  const activeTool = TOOL_GROUPS.flatMap((g) => g.items).find((t) =>
-    pathname.startsWith(t.href)
-  );
-  const currentActiveLabel = activePrimary?.label || activeTool?.label || "Navigation";
-  const currentActiveEmoji = activePrimary?.emoji || activeTool?.emoji || "🧭";
-
-  // Close menus on route change
   useEffect(() => {
-    setDropdownOpen(false);
-    setMobileMenuOpen(false);
-  }, [pathname]);
-
-  // Click outside to close dropdown
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setDropdownOpen(false);
+    const onPointer = (event: MouseEvent) => {
+      if (desktopRef.current && !desktopRef.current.contains(event.target as Node)) {
+        setDesktopOpen(false);
       }
-    }
-    if (dropdownOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
     };
-  }, [dropdownOpen]);
-
-  // Keyboard navigation (Escape key closes menus)
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
+    const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setDropdownOpen(false);
-        setMobileMenuOpen(false);
+        setDesktopOpen(false);
+        setMoreOpen(false);
       }
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
   }, []);
 
-  // Lock body scroll when mobile menu is open
   useEffect(() => {
-    if (mobileMenuOpen) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
+    if (!moreOpen) return;
+    const oldOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeRef.current?.focus();
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = oldOverflow;
     };
-  }, [mobileMenuOpen]);
+  }, [moreOpen]);
 
   return (
-    <nav aria-label="Main Navigation" className="flex items-center gap-1.5 min-w-0">
-      {/* Desktop Navigation (lg+) */}
-      <div className="hidden lg:flex items-center gap-1.5 min-w-0">
-        {/* Primary core tabs */}
-        {PRIMARY_TABS.map((t) => {
-          const active = t.href === "/" ? pathname === "/" : pathname.startsWith(t.href);
+    <>
+      <nav aria-label="Main navigation" className="hidden items-center gap-1.5 lg:flex">
+        {PRIMARY_TABS.map((item) => {
+          const active = isActive(pathname, item.href);
           return (
             <Link
-              key={t.href}
-              href={t.href}
-              className={
-                "flex items-center gap-2 rounded-xl px-3 py-1.5 font-display text-sm font-extrabold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-frog " +
-                (active
-                  ? "bg-pond text-frog-dark shadow-2xs"
-                  : "text-ink-soft hover:bg-surface-soft hover:text-ink")
-              }
+              key={item.href}
+              href={item.href}
+              aria-current={active ? "page" : undefined}
+              className={`flex min-h-11 items-center gap-2 rounded-xl px-3 font-display text-sm font-extrabold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-frog ${
+                active ? "bg-pond text-frog-dark shadow-2xs" : "text-ink-soft hover:bg-surface-soft hover:text-ink"
+              }`}
             >
-              <span className="text-base leading-none" aria-hidden="true">
-                {t.emoji}
-              </span>
-              <span>{t.label}</span>
+              <span aria-hidden="true">{item.emoji}</span>
+              {item.label}
             </Link>
           );
         })}
-
-        {/* Tools Dropdown Trigger */}
-        <div className="relative" ref={dropdownRef}>
+        <div className="relative" ref={desktopRef}>
           <button
             type="button"
-            onClick={() => setDropdownOpen((prev) => !prev)}
-            aria-expanded={dropdownOpen}
-            aria-haspopup="true"
-            aria-label="More tools and feature menu"
-            className={
-              "flex items-center gap-2 rounded-xl px-3 py-1.5 font-display text-sm font-extrabold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-frog " +
-              (isToolActive || dropdownOpen
-                ? "bg-pond text-frog-dark shadow-2xs"
-                : "text-ink-soft hover:bg-surface-soft hover:text-ink")
-            }
+            onClick={() => setDesktopOpen((open) => !open)}
+            aria-expanded={desktopOpen}
+            aria-haspopup="menu"
+            className={`flex min-h-11 items-center gap-2 rounded-xl px-3 font-display text-sm font-extrabold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-frog ${
+              isToolActive || desktopOpen ? "bg-pond text-frog-dark" : "text-ink-soft hover:bg-surface-soft hover:text-ink"
+            }`}
           >
-            <span className="text-base leading-none" aria-hidden="true">
-              ✨
-            </span>
-            <span>Tools</span>
-            {isToolActive && (
-              <span
-                className="h-2 w-2 rounded-full bg-frog animate-pulse"
-                title="Active tool open"
-              />
-            )}
-            <svg
-              className={`h-4 w-4 transition-transform duration-200 ${
-                dropdownOpen ? "rotate-180" : ""
-              }`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2.5}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-            </svg>
+            <span aria-hidden="true">✨</span> Tools <span aria-hidden="true">⌄</span>
           </button>
-
-          {/* Tools Dropdown Menu */}
-          {dropdownOpen && (
-            <div
-              role="menu"
-              className="absolute right-0 mt-2 w-72 card3d bg-surface p-2.5 shadow-2xl border-2 border-cardline animate-pop z-50"
-            >
-              {TOOL_GROUPS.map((group, gIdx) => (
-                <div key={group.category} className={gIdx > 0 ? "mt-2 pt-2 border-t border-cardline" : ""}>
-                  <div className="px-2.5 py-1 text-[11px] font-extrabold uppercase tracking-wider text-ink-soft">
-                    {group.category}
-                  </div>
-                  <div className="space-y-1 mt-0.5">
-                    {group.items.map((item) => {
-                      const active = pathname.startsWith(item.href);
-                      return (
-                        <Link
-                          key={item.href}
-                          href={item.href}
-                          role="menuitem"
-                          className={
-                            "flex items-start gap-2.5 rounded-xl p-2 font-display text-sm transition focus-visible:outline-2 focus-visible:outline-frog " +
-                            (active
-                              ? "bg-pond text-frog-dark font-extrabold"
-                              : "text-ink hover:bg-surface-soft")
-                          }
-                        >
-                          <span className="text-lg leading-none mt-0.5" aria-hidden="true">
-                            {item.emoji}
-                          </span>
-                          <div className="flex-1 min-w-0">
-                            <div className="font-extrabold leading-tight">{item.label}</div>
-                            <div className="text-xs font-semibold text-ink-soft truncate mt-0.5">
-                              {item.desc}
-                            </div>
-                          </div>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                </div>
+          {desktopOpen && (
+            <div role="menu" className="card3d absolute right-0 z-50 mt-2 w-72 border-2 border-cardline bg-surface p-2.5 shadow-2xl">
+              {TOOL_GROUPS.flatMap((group) => group.items).map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  role="menuitem"
+                  onClick={() => setDesktopOpen(false)}
+                  className={`flex items-center gap-3 rounded-xl p-2.5 font-display text-sm transition focus-visible:outline-2 focus-visible:outline-frog ${
+                    isActive(pathname, item.href) ? "bg-pond font-extrabold text-frog-dark" : "text-ink hover:bg-surface-soft"
+                  }`}
+                >
+                  <span className="text-lg" aria-hidden="true">{item.emoji}</span>
+                  <span><strong className="block">{item.label}</strong><small className="font-body font-semibold text-ink-soft">{item.desc}</small></span>
+                </Link>
               ))}
             </div>
           )}
         </div>
-      </div>
+      </nav>
 
-      {/* Mobile / Tablet Controls (< lg) */}
-      <div className="flex min-w-0 items-center gap-2 lg:hidden">
-        {/* Mobile Menu Button */}
+      <nav aria-label="Mobile app navigation" className="lily-dock fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t-2 border-cardline bg-surface px-2 pt-1.5 lg:hidden">
+        {PRIMARY_TABS.map((item) => {
+          const active = isActive(pathname, item.href);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              aria-current={active ? "page" : undefined}
+              className={`mobile-dock-item relative flex min-h-14 flex-col items-center justify-center gap-0.5 rounded-2xl font-display text-[11px] font-extrabold transition focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-frog ${active ? "text-frog-dark" : "text-ink-soft"}`}
+            >
+              {active && <span className="absolute top-0 h-1 w-8 rounded-full bg-frog" />}
+              <span className="text-xl leading-none" aria-hidden="true">{item.emoji}</span>
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
         <button
           type="button"
-          onClick={() => setMobileMenuOpen(true)}
-          aria-label="Open navigation menu"
-          className="flex min-w-0 max-w-[9.5rem] items-center gap-1.5 whitespace-nowrap rounded-xl border-2 border-cardline bg-surface px-2.5 py-1.5 font-display text-sm font-extrabold text-ink transition hover:bg-pond/60 focus-visible:outline-2 focus-visible:outline-frog sm:gap-2 sm:px-3"
+          onClick={() => setMoreOpen(true)}
+          aria-expanded={moreOpen}
+          aria-haspopup="dialog"
+          className={`mobile-dock-item relative flex min-h-14 flex-col items-center justify-center gap-0.5 rounded-2xl font-display text-[11px] font-extrabold transition focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-frog ${isToolActive ? "text-frog-dark" : "text-ink-soft"}`}
         >
-          <span className="hidden text-base leading-none min-[400px]:inline" aria-hidden="true">
-            {currentActiveEmoji}
-          </span>
-          <span className="truncate font-extrabold">{currentActiveLabel}</span>
-          <svg
-            className="h-4 w-4 text-ink-soft ml-0.5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2.5}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
+          {isToolActive && <span className="absolute top-0 h-1 w-8 rounded-full bg-frog" />}
+          <span className="text-xl leading-none" aria-hidden="true">•••</span>
+          <span>More</span>
         </button>
-      </div>
+      </nav>
 
-      {/* Mobile Navigation Drawer Overlay */}
-      {mobileMenuOpen && (
-        <div
-          className="fixed inset-0 z-50 flex flex-col bg-surface/98 backdrop-blur-md animate-pop lg:hidden"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Mobile Navigation Menu"
-        >
-          {/* Drawer Header */}
-          <div className="flex items-center justify-between border-b-2 border-cardline p-4 bg-surface">
-            <div className="flex items-center gap-2">
-              <span className="text-xl" aria-hidden="true">
-                🧭
-              </span>
-              <span className="font-display text-lg font-extrabold text-ink">
-                Command Navigation
-              </span>
+      {moreOpen && (
+        <div className="fixed inset-0 z-50 flex items-end bg-ink/45 lg:hidden" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setMoreOpen(false)}>
+          <section role="dialog" aria-modal="true" aria-labelledby="more-tools-title" className="mobile-sheet max-h-[86dvh] w-full overflow-y-auto rounded-t-[2rem] border-x-2 border-t-2 border-cardline bg-surface px-4 pb-5 pt-3 shadow-2xl">
+            <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-cardline" aria-hidden="true" />
+            <div className="mb-4 flex items-center justify-between">
+              <div><h2 id="more-tools-title" className="font-display text-xl font-extrabold text-ink">More tools</h2><p className="text-sm font-semibold text-ink-soft">Everything else, one thumb away.</p></div>
+              <button ref={closeRef} type="button" onClick={() => setMoreOpen(false)} aria-label="Close more tools" className="flex h-11 w-11 items-center justify-center rounded-xl border-2 border-cardline bg-surface-soft font-display text-lg font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-frog">✕</button>
             </div>
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(false)}
-              aria-label="Close navigation menu"
-              className="flex h-9 w-9 items-center justify-center rounded-xl border-2 border-cardline bg-surface font-display text-base font-extrabold text-ink hover:bg-danger-bg hover:text-danger-ink transition focus-visible:outline-2 focus-visible:outline-frog"
-            >
-              ✕
-            </button>
-          </div>
-
-          {/* Drawer Content */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-6">
-            {/* Primary Desk */}
-            <div>
-              <div className="px-1 mb-2 text-xs font-extrabold uppercase tracking-wider text-ink-soft">
-                Core Operations
-              </div>
-              <div className="grid gap-2">
-                {PRIMARY_TABS.map((t) => {
-                  const active = t.href === "/" ? pathname === "/" : pathname.startsWith(t.href);
-                  return (
-                    <Link
-                      key={t.href}
-                      href={t.href}
-                      className={
-                        "flex items-center gap-3 rounded-2xl border-2 p-3 font-display transition " +
-                        (active
-                          ? "border-frog bg-pond text-frog-dark font-extrabold shadow-sm"
-                          : "border-cardline bg-surface text-ink hover:bg-surface-soft")
-                      }
-                    >
-                      <span className="text-2xl leading-none" aria-hidden="true">
-                        {t.emoji}
-                      </span>
-                      <div>
-                        <div className="font-extrabold text-base">{t.label}</div>
-                        <div className="text-xs text-ink-soft font-semibold">{t.desc}</div>
-                      </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Categorized Tools */}
             {TOOL_GROUPS.map((group) => (
-              <div key={group.category}>
-                <div className="px-1 mb-2 text-xs font-extrabold uppercase tracking-wider text-ink-soft">
-                  {group.category}
-                </div>
+              <div key={group.category} className="mb-5">
+                <h3 className="mb-2 font-display text-xs font-extrabold uppercase tracking-wider text-ink-soft">{group.category}</h3>
                 <div className="grid gap-2">
-                  {group.items.map((item) => {
-                    const active = pathname.startsWith(item.href);
-                    return (
-                      <Link
-                        key={item.href}
-                        href={item.href}
-                        className={
-                          "flex items-center gap-3 rounded-2xl border-2 p-3 font-display transition " +
-                          (active
-                            ? "border-frog bg-pond text-frog-dark font-extrabold shadow-sm"
-                            : "border-cardline bg-surface text-ink hover:bg-surface-soft")
-                        }
-                      >
-                        <span className="text-2xl leading-none" aria-hidden="true">
-                          {item.emoji}
-                        </span>
-                        <div>
-                          <div className="font-extrabold text-base">{item.label}</div>
-                          <div className="text-xs text-ink-soft font-semibold">{item.desc}</div>
-                        </div>
-                      </Link>
-                    );
-                  })}
+                  {group.items.map((item) => (
+                    <Link key={item.href} href={item.href} onClick={() => setMoreOpen(false)} className={`flex min-h-16 items-center gap-3 rounded-2xl border-2 p-3 transition focus-visible:outline-2 focus-visible:outline-frog ${isActive(pathname, item.href) ? "border-frog bg-pond" : "border-cardline bg-surface-soft"}`}>
+                      <span className="text-2xl" aria-hidden="true">{item.emoji}</span>
+                      <span className="min-w-0"><strong className="block font-display text-base font-extrabold text-ink">{item.label}</strong><span className="block text-sm font-semibold text-ink-soft">{item.desc}</span></span>
+                    </Link>
+                  ))}
                 </div>
               </div>
             ))}
-          </div>
+            <div className="rounded-2xl border-2 border-sky/40 bg-sky-tint p-3 text-sm font-semibold text-ink">
+              <strong className="font-display text-sky-dark">📲 Install on iPhone</strong>
+              <p className="mt-1">In Safari, tap Share, then “Add to Home Screen”. On Android, use “Install app” from the browser menu.</p>
+            </div>
+          </section>
         </div>
       )}
-    </nav>
+    </>
   );
 }

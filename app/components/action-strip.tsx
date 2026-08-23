@@ -119,7 +119,7 @@ export function ActionStrip({
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left font-display text-xs font-extrabold text-ink transition hover:bg-pond/40"
+        className="flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left font-display text-sm font-extrabold text-ink transition hover:bg-pond/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-frog"
       >
         <span aria-hidden="true">{urgent > 0 ? "🔥" : "⚡"}</span>
         <span className="flex-1">
@@ -153,7 +153,7 @@ export function ActionStrip({
                         ? "/orders"
                         : `/customers/${encodeURIComponent(item.phone_key)}`
                     }
-                    className="block text-left"
+                    className="block min-h-11 py-1 text-left focus:outline-none focus:ring-2 focus:ring-frog"
                   >
                     <ItemBody item={item} style={style} cod={cod} />
                   </Link>
@@ -161,17 +161,17 @@ export function ActionStrip({
                   <button
                     type="button"
                     onClick={() => onOpenChat(item.chat_id as string)}
-                    className="block w-full text-left"
+                    className="block min-h-11 w-full py-1 text-left focus:outline-none focus:ring-2 focus:ring-frog"
                   >
                     <ItemBody item={item} style={style} cod={cod} />
                   </button>
                 )}
-                <div className="mt-1.5 flex gap-1.5">
+                <div className="mt-2 grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     disabled={busy === item.id}
                     onClick={() => void update(item.id, "resolved")}
-                    className="rounded-lg border border-frog bg-pond px-2 py-0.5 font-display text-[10px] font-extrabold text-frog-dark disabled:opacity-50"
+                    className="min-h-11 rounded-xl border-2 border-frog bg-pond px-3 py-2 font-display text-xs font-extrabold text-frog-dark focus:outline-none focus:ring-2 focus:ring-frog disabled:opacity-50 sm:min-h-0 sm:py-1.5"
                   >
                     Done
                   </button>
@@ -179,7 +179,7 @@ export function ActionStrip({
                     type="button"
                     disabled={busy === item.id}
                     onClick={() => void update(item.id, "snoozed")}
-                    className="rounded-lg border border-cardline bg-white px-2 py-0.5 font-display text-[10px] font-extrabold text-ink-soft disabled:opacity-50"
+                    className="min-h-11 rounded-xl border-2 border-cardline bg-surface px-3 py-2 font-display text-xs font-extrabold text-ink-soft focus:outline-none focus:ring-2 focus:ring-sky disabled:opacity-50 sm:min-h-0 sm:py-1.5"
                   >
                     Snooze 1h
                   </button>

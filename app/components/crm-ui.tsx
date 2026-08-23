@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { AgentMode, AgentRunStatus, ChatStateValue, CustomerLanguage } from "@/lib/types";
 
 export const fieldClass =
-  "w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-display text-sm font-bold text-ink outline-none transition focus:border-frog focus:ring-2 focus:ring-frog/20 disabled:cursor-not-allowed";
+  "min-h-11 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-display text-base font-bold text-ink outline-none transition focus:border-frog focus:ring-2 focus:ring-frog/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm";
 
 export function AiStateBadge({
   mode,
@@ -52,14 +52,14 @@ export function AiStateBadge({
   }
 
   return (
-    <div className="relative inline-block">
+    <div className="relative inline-block max-w-full">
       <button
         type="button"
         disabled={busy}
         onClick={() => setOpen((v) => !v)}
         title={title || "Click to change Global AI Mode"}
         className={`inline-flex items-center gap-2 rounded-xl border-2 font-display font-extrabold tracking-wide transition ${config.shell} ${
-          compact ? "px-2 py-1 text-[10px]" : "px-3 py-2 text-xs"
+          compact ? "min-h-11 px-3 py-2 text-[10px] sm:min-h-0 sm:px-2 sm:py-1" : "min-h-11 px-3 py-2 text-xs"
         } ${busy ? "opacity-60 cursor-wait" : "cursor-pointer"}`}
       >
         <span className={`relative h-2.5 w-2.5 rounded-full ${config.dot}`}>
@@ -70,13 +70,13 @@ export function AiStateBadge({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-48 rounded-xl border-2 border-cardline bg-surface p-1.5 shadow-xl animate-pop">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-56 max-w-[calc(100vw-2rem)] rounded-xl border-2 border-cardline bg-surface p-1.5 shadow-xl animate-pop">
           <div className="px-2 py-1 font-display text-[10px] font-extrabold uppercase tracking-wider text-ink-soft border-b border-cardline/60 mb-1">
             Set Global AI Mode
           </div>
           <button
             onClick={() => void handleSelect("auto")}
-            className={`w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 font-display text-xs font-extrabold text-left transition ${
+            className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 font-display text-xs font-extrabold text-left transition ${
               mode === "auto" ? "bg-pond text-frog-dark" : "text-ink hover:bg-surface-soft"
             }`}
           >
@@ -85,7 +85,7 @@ export function AiStateBadge({
           </button>
           <button
             onClick={() => void handleSelect("draft")}
-            className={`w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 font-display text-xs font-extrabold text-left transition ${
+            className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 font-display text-xs font-extrabold text-left transition ${
               mode === "draft" ? "bg-grape-tint text-grape-dark" : "text-ink hover:bg-surface-soft"
             }`}
           >
@@ -94,7 +94,7 @@ export function AiStateBadge({
           </button>
           <button
             onClick={() => void handleSelect("off")}
-            className={`w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 font-display text-xs font-extrabold text-left transition ${
+            className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 font-display text-xs font-extrabold text-left transition ${
               mode === "off" ? "bg-surface-soft text-ink-soft" : "text-ink hover:bg-surface-soft"
             }`}
           >
@@ -153,4 +153,3 @@ export function timeAgo(value: string | number | null): string {
   if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
   return new Date(time).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
-

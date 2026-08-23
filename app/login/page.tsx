@@ -34,56 +34,69 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-5 p-6">
-      <Froggy mood={error ? "thinking" : "happy"} size={100} />
-      <Card className="w-full max-w-sm p-6 text-center">
+    <main className="flex min-h-dvh w-full flex-col items-center justify-center gap-4 overflow-y-auto px-4 py-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] sm:gap-5 sm:p-6">
+      <Froggy mood={error ? "thinking" : "happy"} size={88} />
+      <Card className="w-full max-w-sm p-5 text-center sm:p-6">
         <h1 className="font-display text-2xl font-extrabold text-ink">🔐 WhatsApp Command Center</h1>
         <p className="mt-1 font-display text-sm font-bold text-ink-soft">
           {mode === "login" ? "Sign in to your business workspace." : "Create an isolated business workspace."}
         </p>
+        <form aria-busy={busy} onSubmit={(event) => { event.preventDefault(); void submit(); }} className="mt-4 space-y-3">
         {mode === "signup" && (
+          <label className="block text-left">
+            <span className="sr-only">Business name</span>
           <input
-            className="mt-4 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+            className="min-h-12 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-display text-base font-bold text-ink outline-none focus:border-frog focus:ring-2 focus:ring-frog/20"
             placeholder="Business name"
+            autoComplete="organization"
             value={businessName}
             onChange={(e) => setBusinessName(e.target.value)}
           />
+          </label>
         )}
+        <label className="block text-left">
+          <span className="sr-only">Email address</span>
         <input
           type="email"
           autoFocus
-          className={`${mode === "signup" ? "mt-2" : "mt-4"} w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-display text-sm font-bold text-ink outline-none focus:border-frog`}
+          autoComplete="email"
+          className="min-h-12 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-display text-base font-bold text-ink outline-none focus:border-frog focus:ring-2 focus:ring-frog/20"
           placeholder={mode === "login" ? "Email (legacy account: leave blank)" : "Email"}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
+        </label>
+        <label className="block text-left">
+          <span className="sr-only">Password</span>
         <input
           type="password"
-          className="mt-2 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-display text-sm font-bold text-ink outline-none focus:border-frog"
+          autoComplete={mode === "login" ? "current-password" : "new-password"}
+          className="min-h-12 w-full rounded-xl border-2 border-cardline bg-cream/60 px-3 py-2.5 font-display text-base font-bold text-ink outline-none focus:border-frog focus:ring-2 focus:ring-frog/20"
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
         />
+        </label>
         {error && (
-          <p className="mt-2 font-display text-xs font-bold text-[#c04545]">{error}</p>
+          <p role="alert" className="rounded-xl border-2 border-danger-line bg-danger-bg p-3 text-left font-display text-sm font-bold text-danger-ink">{error}</p>
         )}
         <Button
+          type="submit"
           tone="frog"
-          onClick={submit}
           disabled={busy || !password || (mode === "signup" && (!email || !businessName))}
-          className="mt-4 w-full !py-3"
+          className="min-h-12 w-full !py-3"
         >
           {busy ? "Working…" : mode === "login" ? "Sign in 🐸" : "Create workspace 🐸"}
         </Button>
+        </form>
         <button
           type="button"
-          className="mt-3 font-display text-xs font-bold text-ink-soft underline"
+          className="mt-3 min-h-11 rounded-xl px-3 font-display text-sm font-bold text-ink-soft underline focus:outline-none focus:ring-2 focus:ring-frog"
           onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(null); }}
         >
           {mode === "login" ? "Create a new business account" : "I already have an account"}
         </button>
       </Card>
-    </div>
+    </main>
   );
 }

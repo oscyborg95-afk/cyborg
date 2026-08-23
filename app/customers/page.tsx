@@ -111,7 +111,7 @@ export default function CustomersPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
+    <main className="mx-auto max-w-6xl space-y-5 p-4 pb-28 sm:p-6 sm:pb-6">
       <header className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
         <div className="flex min-w-0 items-start gap-3 sm:contents">
           <Froggy mood="happy" size={52} />
@@ -124,7 +124,7 @@ export default function CustomersPage() {
           type="button"
           onClick={exportCsv}
           disabled={loading || filtered.length === 0}
-          className="w-full rounded-xl border-2 border-grape bg-grape-tint px-4 py-2 font-display text-xs font-extrabold text-grape-dark transition hover:bg-grape hover:text-white focus:outline-none focus:ring-2 focus:ring-grape disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+          className="min-h-11 w-full rounded-xl border-2 border-grape bg-grape-tint px-4 py-2 font-display text-sm font-extrabold text-grape-dark transition hover:bg-grape hover:text-white focus:outline-none focus:ring-2 focus:ring-grape disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
         >
           ↓ Export {filtered.length} to CSV
         </button>
@@ -152,10 +152,10 @@ export default function CustomersPage() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search name, phone, message or tag"
-            className="w-full rounded-2xl border-2 border-cardline bg-surface py-3 pl-11 pr-4 font-display text-sm font-bold text-ink outline-none transition focus:border-grape focus:ring-2 focus:ring-grape/20"
+            className="min-h-12 w-full rounded-2xl border-2 border-cardline bg-surface py-3 pl-11 pr-4 font-display text-base font-bold text-ink outline-none transition focus:border-grape focus:ring-2 focus:ring-grape/20 sm:text-sm"
           />
         </label>
-        <div className="flex flex-wrap gap-2" aria-label="Customer segment filters">
+        <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0" aria-label="Customer segment filters">
           {FILTERS.map((filter) => {
             const count = customers.filter((customer) => matchesSegment(customer, filter.key)).length;
             return (
@@ -163,7 +163,7 @@ export default function CustomersPage() {
                 type="button"
                 key={filter.key}
                 onClick={() => setSegment(filter.key)}
-                className={`shrink-0 rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold transition focus:outline-none focus:ring-2 focus:ring-grape ${
+                className={`min-h-11 shrink-0 rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold transition focus:outline-none focus:ring-2 focus:ring-grape ${
                   segment === filter.key
                     ? "border-grape bg-grape-tint text-grape-dark"
                     : "border-cardline bg-surface text-ink-soft hover:border-grape"
@@ -223,8 +223,8 @@ export default function CustomersPage() {
                       <span className={`mt-1 inline-block rounded-lg px-2 py-1 font-display text-[10px] font-extrabold uppercase ${segmentColor}`}>{customerSegment}</span>
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 text-center sm:text-left">
-                    <div>
+                  <div className="grid grid-cols-2 gap-2 text-left sm:grid-cols-3">
+                    <div className="col-span-2 sm:col-span-1">
                       <p className="font-display text-sm font-extrabold text-frog-dark">{money(customer.lifetime_revenue)}</p>
                       <p className="text-[10px] font-bold uppercase text-ink-soft">Delivered</p>
                     </div>
@@ -237,14 +237,20 @@ export default function CustomersPage() {
                       <p className="text-[10px] font-bold uppercase text-ink-soft">Last purchase</p>
                     </div>
                     {customer.tags.length > 0 && (
-                      <div className="col-span-3 flex flex-wrap gap-1 pt-1">
+                      <div className="col-span-2 flex gap-1 overflow-x-auto pt-1 sm:col-span-3 sm:flex-wrap">
                         {customer.tags.slice(0, 4).map((tag) => <span key={tag} className="rounded-md bg-surface-soft px-2 py-1 text-[10px] font-extrabold text-ink-soft">#{tag}</span>)}
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-2 sm:flex-col">
-                    <Link href={`/customers/${encodeURIComponent(customer.phone_key)}`} className="flex-1 rounded-xl border-2 border-grape bg-grape px-3 py-2 text-center font-display text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-grape">View profile</Link>
-                    {customer.chat_id && <Link href={`/?chat=${encodeURIComponent(customer.chat_id)}`} className="flex-1 rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-center font-display text-xs font-extrabold text-ink hover:border-grape focus:outline-none focus:ring-2 focus:ring-grape">Open chat</Link>}
+                  <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-col">
+                    <Link href={`/customers/${encodeURIComponent(customer.phone_key)}`} className="flex min-h-11 items-center justify-center rounded-xl border-2 border-grape bg-grape px-3 py-2 text-center font-display text-sm font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-grape">View profile</Link>
+                    {customer.chat_id && (
+                      <details className="sm:hidden">
+                        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-center rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-center font-display text-sm font-extrabold text-ink focus:outline-none focus:ring-2 focus:ring-grape">More actions · ▾</summary>
+                        <Link href={`/?chat=${encodeURIComponent(customer.chat_id)}`} className="mt-2 flex min-h-11 items-center justify-center rounded-xl border-2 border-cardline bg-surface-soft px-3 py-2 text-center font-display text-sm font-extrabold text-ink focus:outline-none focus:ring-2 focus:ring-grape">Open chat</Link>
+                      </details>
+                    )}
+                    {customer.chat_id && <Link href={`/?chat=${encodeURIComponent(customer.chat_id)}`} className="hidden min-h-11 items-center justify-center rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-center font-display text-sm font-extrabold text-ink hover:border-grape focus:outline-none focus:ring-2 focus:ring-grape sm:flex">Open chat</Link>}
                   </div>
                 </div>
               </Card>
