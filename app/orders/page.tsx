@@ -1035,6 +1035,17 @@ export default function OrdersPage() {
               </button>
             ))}
           </div>
+          {(statusFilter === "booked" || statusFilter === "pending") && (
+            <Link
+              href={`/announcements?audience=${statusFilter}`}
+              className="inline-flex min-h-11 items-center gap-2 rounded-xl border-2 border-grape bg-grape-tint px-3 py-2 font-display text-xs font-extrabold text-grape-dark transition hover:bg-grape/20"
+            >
+              📢 Notify these customers
+              <span className="font-bold text-grape-dark/70">
+                holiday, delay or courier strike
+              </span>
+            </Link>
+          )}
         </div>
 
         {/* Orders Table or Empty State */}

@@ -24,6 +24,7 @@ const TOOL_GROUPS: readonly { category: string; items: readonly NavItem[] }[] = 
       { href: "/ai", label: "AI Salesperson", emoji: "✨", desc: "Automated responses" },
       { href: "/followups", label: "Auto Follow-ups", emoji: "🔔", desc: "Recover cold leads" },
       { href: "/broadcast", label: "WhatsApp Blast", emoji: "📣", desc: "Bulk messaging" },
+      { href: "/announcements", label: "Announcement", emoji: "📢", desc: "Tell in-flight orders" },
     ],
   },
   {

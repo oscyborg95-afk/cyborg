@@ -1476,13 +1476,155 @@ export async function listOrderNotifications(
     .slice(0, limit);
 }
 
-export async function claimDueTrackingNotifications(limit = 10): Promise<TrackingNotificationJob[]> {
+// One order that could receive a manual announcement, with everything the
+// compose screen needs to decide: which parcel it is, and whether we already
+// messaged this customer recently (so a holiday notice does not land minutes
+// after an automated "out for delivery").
+export interface AnnouncementCandidate {
+  order_id: string;
+  order_no: string | null;
+  customer_name: string;
+  phone_number: string;
+  city: string;
+  district: string;
+  total_cod: number;
+  order_status: OrderStatus;
+  tracking_id: string | null;
+  courier_name: string | null;
+  booked_at: string;
+  last_message_at: string | null;
+}
+
+export async function listAnnouncementCandidates(
+  statuses: OrderStatus[]
+): Promise<AnnouncementCandidate[]> {
+  if (statuses.length === 0) return [];
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    await ensureTrackingOpsSchema(pool);
+    const { rows } = await pool.query(
+      `select o.id as order_id, o.order_no, o.customer_name, o.phone_number, o.city,
+              o.district, o.total_cod, o.order_status,
+              m.tracking_id, m.courier_name,
+              coalesce(m.created_at, o.created_at) as booked_at,
+              n.last_message_at
+         from orders o
+         left join lateral (
+           select tracking_id, courier_name, created_at from shipping_manifests
+            where order_id = o.id order by created_at desc limit 1
+         ) m on true
+         left join lateral (
+           select max(coalesce(sent_at, created_at)) as last_message_at
+             from tracking_notification_jobs
+            where order_id = o.id and recipient = 'customer' and status = 'sent'
+         ) n on true
+        where o.archived_at is null and o.order_status = any($1::varchar[])
+        order by coalesce(m.created_at, o.created_at) desc`,
+      [statuses]
+    );
+    return rows as AnnouncementCandidate[];
+  }
+  const manifestFor = (orderId: string) =>
+    [...memManifests.values()]
+      .filter((m) => m.order_id === orderId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null;
+  const lastMessageFor = (orderId: string) =>
+    [...memNotificationJobs.values()]
+      .filter((j) => j.order_id === orderId && j.recipient === "customer" && j.status === "sent")
+      .map((j) => j.sent_at ?? j.created_at)
+      .sort()
+      .pop() ?? null;
+  return [...memOrders.values()]
+    .filter((o) => !o.archived_at && statuses.includes(o.order_status))
+    .map((o) => {
+      const manifest = manifestFor(o.id);
+      return {
+        order_id: o.id,
+        order_no: o.order_no ?? null,
+        customer_name: o.customer_name,
+        phone_number: o.phone_number,
+        city: o.city,
+        district: o.district,
+        total_cod: o.total_cod,
+        order_status: o.order_status,
+        tracking_id: manifest?.tracking_id ?? null,
+        courier_name: manifest?.courier_name ?? null,
+        booked_at: manifest?.created_at ?? o.created_at,
+        last_message_at: lastMessageFor(o.id),
+      };
+    })
+    .sort((a, b) => b.booked_at.localeCompare(a.booked_at));
+}
+
+// Queue one operator-written announcement. The dedupe key carries the batch id,
+// so a double-tapped Send cannot enqueue the same customer twice and the drain
+// can be scoped to a single batch. Returns false when the row already existed.
+export async function enqueueAnnouncement(input: {
+  order_id: string;
+  chat_id: string;
+  body: string;
+  dedupe_key: string;
+  next_attempt_at?: string;
+}): Promise<boolean> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const result = await pool.query(
+      `insert into tracking_notification_jobs
+        (order_id, recipient, chat_id, body, notification_type, dedupe_key, next_attempt_at)
+       values($1,'customer',$2,$3,'announcement',$4,$5)
+       on conflict(dedupe_key) where dedupe_key is not null do nothing`,
+      [input.order_id, input.chat_id, input.body, input.dedupe_key,
+       input.next_attempt_at ?? new Date().toISOString()]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+  if ([...memNotificationJobs.values()].some((job) => job.dedupe_key === input.dedupe_key)) {
+    return false;
+  }
+  const now = new Date().toISOString();
+  const job: TrackingNotificationJob = {
+    id: randomUUID(), webhook_event_id: null, order_id: input.order_id,
+    recipient: "customer", alert_kind: null, chat_id: input.chat_id, body: input.body,
+    notification_type: "announcement", dedupe_key: input.dedupe_key,
+    delivery_attempt_id: undefined, status: "pending", attempts: 0,
+    next_attempt_at: input.next_attempt_at ?? now, last_error: "",
+    created_at: now, sent_at: null,
+  };
+  memNotificationJobs.set(job.id, job);
+  return true;
+}
+
+// Progress for one announcement batch, for the send screen's live tally.
+export async function listAnnouncementBatchJobs(
+  batchId: string
+): Promise<TrackingNotificationJob[]> {
+  const prefix = `announce:${batchId}:`;
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const { rows } = await pool.query(
+      `select * from tracking_notification_jobs
+        where dedupe_key like $1 || '%' order by created_at asc`,
+      [prefix]
+    );
+    return rows as TrackingNotificationJob[];
+  }
+  return [...memNotificationJobs.values()]
+    .filter((job) => job.dedupe_key?.startsWith(prefix))
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+// `dedupePrefix` narrows the claim to one batch, so the announcement screen can
+// pace its own sends without racing the tracking queue's own drain.
+export async function claimDueTrackingNotifications(
+  limit = 10,
+  dedupePrefix?: string
+): Promise<TrackingNotificationJob[]> {
   if (pool) {
     await ensureTrackingOpsSchema(pool);
     const { rows } = await pool.query(
       `with due as (
          select id from tracking_notification_jobs
-          where (
+          where ($2::text is null or dedupe_key like $2 || '%') and (
             (status in ('pending','failed') and next_attempt_at <= now())
             or (
               status='processing' and
@@ -1494,13 +1636,13 @@ export async function claimDueTrackingNotifications(limit = 10): Promise<Trackin
        update tracking_notification_jobs j set
          status = 'processing', attempts = attempts + 1, claimed_at=now()
         from due where j.id = due.id returning j.*`,
-      [limit]
+      [limit, dedupePrefix ?? null]
     );
     return rows as TrackingNotificationJob[];
   }
   const now = Date.now();
   return [...memNotificationJobs.values()]
-    .filter((j) => ["pending", "failed"].includes(j.status) && new Date(j.next_attempt_at).getTime() <= now && j.attempts < 6)
+    .filter((j) => (!dedupePrefix || j.dedupe_key?.startsWith(dedupePrefix)) && ["pending", "failed"].includes(j.status) && new Date(j.next_attempt_at).getTime() <= now && j.attempts < 6)
     .slice(0, limit)
     .map((j) => {
       const claimed = { ...j, status: "processing" as const, attempts: j.attempts + 1 };

@@ -21,11 +21,14 @@ export class WorkerTimeoutError extends Error {
 }
 
 export class WorkerResponseError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string
-  ) {
+  // Assigned in the body rather than as a constructor parameter property:
+  // node --experimental-strip-types cannot strip those, and the test runner
+  // imports this module transitively.
+  readonly status: number;
+
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
   }
 }
 
