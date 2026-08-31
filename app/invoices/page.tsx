@@ -129,6 +129,43 @@ export default function InvoicesPage() {
   const missingProfile =
     settings && !settings.business_name && !settings.business_address ? true : false;
 
+  // The browser's "Save as PDF" names the file after document.title, so build the
+  // name the operator would otherwise type by hand: business, dates, batch size.
+  const printFileName = useMemo(() => {
+    const brand = settings?.business_name?.trim() || "Invoices";
+    const span =
+      filterMode === "all"
+        ? "all dates"
+        : filterMode === "single"
+          ? date
+          : rangeFrom === rangeTo
+            ? rangeFrom
+            : `${rangeFrom} to ${rangeTo}`;
+    const count = `${selected.length} invoice${selected.length === 1 ? "" : "s"}`;
+    // Windows and macOS both reject these in filenames; the browser would
+    // silently mangle them into something worse than a dash.
+    return `${brand} ${span} (${count})`.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim();
+  }, [settings, filterMode, date, rangeFrom, rangeTo, selected.length]);
+
+  // Swapped in around the print itself — on beforeprint rather than only in the
+  // button handler, so Ctrl+P gets the same filename — and put back afterwards.
+  useEffect(() => {
+    const appTitle = document.title;
+    const stamp = () => {
+      document.title = printFileName;
+    };
+    const restore = () => {
+      document.title = appTitle;
+    };
+    window.addEventListener("beforeprint", stamp);
+    window.addEventListener("afterprint", restore);
+    return () => {
+      window.removeEventListener("beforeprint", stamp);
+      window.removeEventListener("afterprint", restore);
+      restore();
+    };
+  }, [printFileName]);
+
   return (
     <div className="min-h-full">
       {/* ── Controls (hidden in print) ─────────────────────────────── */}
@@ -253,6 +290,11 @@ export default function InvoicesPage() {
               🖨️ <span className="sm:hidden">Print</span><span className="hidden sm:inline">Print / Save PDF</span>
             </Button>
           </div>
+          {selected.length > 0 && (
+            <p className="mt-2 text-xs font-semibold text-ink-soft">
+              Saves as <span className="font-mono text-ink">{printFileName}.pdf</span> — no renaming needed.
+            </p>
+          )}
         </Card>
 
         {loaded && eligible.length === 0 && (

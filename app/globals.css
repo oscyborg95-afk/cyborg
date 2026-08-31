@@ -471,10 +471,13 @@ body {
   .print-hide {
     display: none !important;
   }
-  /* The layout's scroll wrapper must not clip pages. */
+  /* The layout's scroll wrapper must not clip pages — and its .app-content gutter
+     for the mobile dock is ~66px of dead space that spilled every batch onto one
+     extra blank sheet. */
   body > main {
     overflow: visible !important;
     height: auto !important;
+    padding: 0 !important;
   }
   .print-area {
     gap: 0 !important;
@@ -482,7 +485,11 @@ body {
   }
   .invoice-sheet {
     box-shadow: none;
-    break-after: page;
+  }
+  /* Break BEFORE each sheet after the first. A trailing `break-after: page` on
+     the final sheet made the browser emit one blank page at the end of the PDF. */
+  .invoice-sheet + .invoice-sheet {
+    break-before: page;
   }
 }
 
