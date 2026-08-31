@@ -6,6 +6,7 @@ import {
   type DeliveryNotificationInput,
 } from "./db.ts";
 import { ownerCallDueAt, type NormalizedDeliveryEvent } from "./delivery-events.ts";
+import { orderValue, owesRefund } from "./payments.ts";
 import { phoneToChatId } from "./phone.ts";
 import { makeTemplates } from "./templates.ts";
 import type { Order } from "./types.ts";
@@ -66,6 +67,10 @@ function ownerAlertBody(
 // without reading a word. Reschedules are frequent and batched into the daily
 // digest; this stays immediate and per-parcel.
 function returnAlertBody(order: Order, event: NormalizedDeliveryEvent): string {
+  // A returned COD parcel just costs the courier legs. A returned bank-transfer
+  // parcel means we are sitting on the customer's money and owe it back — a
+  // different, louder problem, so it gets its own line.
+  const refundDue = owesRefund(order) ? orderValue(order) : 0;
   const value = Number(order.total_cod);
   return [
     "🔴🔴🔴 PARCEL RETURNED 🔴🔴🔴",
@@ -75,6 +80,9 @@ function returnAlertBody(order: Order, event: NormalizedDeliveryEvent): string {
     `Phone: ${order.phone_number}`,
     `Order: ${order.order_no ?? order.id}`,
     Number.isFinite(value) && value > 0 ? `COD value lost: Rs. ${value.toLocaleString("en-LK")}` : "",
+    refundDue > 0
+      ? `💸 REFUND OWED: Rs. ${refundDue.toLocaleString("en-LK")} — they paid by bank transfer.`
+      : "",
     `Attempts made: ${event.attemptNo}`,
     cleanReason(event.reason) ? `Courier reason: ${cleanReason(event.reason)}` : "",
     "",

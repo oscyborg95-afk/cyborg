@@ -11,6 +11,7 @@ import {
 import type { NewOrder } from "@/lib/types";
 import { stopFollowUpsForConversion } from "@/lib/followups";
 import { itemsSummary, parseItems } from "@/lib/items";
+import { codToCollect, orderValue, paymentMethodOf } from "@/lib/payments";
 
 export async function GET() {
   try {
@@ -47,6 +48,12 @@ export async function POST(req: NextRequest) {
     : Number(body.product_price ?? 0);
   const shippingFee = Number(body.shipping_fee ?? 0);
   const discount = Number(body.discount ?? 0);
+  const paymentMethod = paymentMethodOf(body);
+  const value = orderValue({
+    product_price: productPrice,
+    shipping_fee: shippingFee,
+    discount,
+  });
 
   try {
     const order = await createOrder({
@@ -64,7 +71,10 @@ export async function POST(req: NextRequest) {
       product_price: productPrice,
       shipping_fee: shippingFee,
       discount,
-      total_cod: Math.max(0, productPrice + shippingFee - discount),
+      total_cod: codToCollect(value, paymentMethod),
+      payment_method: paymentMethod,
+      replaces_order_id:
+        paymentMethod === "replacement" ? body.replaces_order_id || null : null,
     });
     // The lead converted — nothing should keep chasing them for an address or a
     // confirmation. Never let this fail the order that was actually saved.

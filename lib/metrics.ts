@@ -6,9 +6,10 @@ import type {
   ShippingManifest,
   TrackingEvent,
 } from "./types";
-import { courierCostFor } from "./districts";
-import { isTerminalCourierReturn } from "./courier-status";
-import { phoneKey } from "./risk";
+import { courierCostFor } from "./districts.ts";
+import { isTerminalCourierReturn } from "./courier-status.ts";
+import { orderRevenue, paymentMethodOf } from "./payments.ts";
+import { phoneKey } from "./risk.ts";
 
 // Level thresholds by cumulative SHIPPED orders (anything handed to a courier).
 // Level N is complete at LEVELS[N]. Progress moves the moment you book an order,
@@ -86,6 +87,14 @@ export interface ReturnLoss {
   monthLoss: number;
 }
 
+// What our own packing mistakes cost this month. A replacement parcel earns no
+// revenue but still burns a unit of stock and a courier leg, so it is a pure
+// loss — one that used to be invisible because it was booked as a discount.
+export interface MistakeCost {
+  monthCount: number; // replacement parcels settled this month
+  monthLoss: number; // their COGS + courier cost
+}
+
 // One product's runway: how many days of stock are left at the recent pace.
 export interface ReorderItem {
   productId: string;
@@ -104,6 +113,13 @@ export interface CashFlow {
   tiedInStock: number; // inventory value
   expectedLanding: number; // in-flight COD discounted by the blended return rate
   returnRatePct: number; // blended return rate used for the discount
+  // Bank-transfer money banked this month. It never flows through the courier,
+  // so no remittance will ever bring it in — this is the figure to check your
+  // bank statement against and fold into bank_cash yourself. Deliberately not
+  // auto-applied: bank_cash is operator-maintained, and writing to it here
+  // would double-count the moment you record the same deposit by hand.
+  prepaidThisMonth: number;
+  prepaidThisMonthCount: number;
 }
 
 // One calendar month of business history — the growth report's row.
@@ -186,6 +202,7 @@ export interface Metrics {
   // --- Profit & cash-flow brain --------------------------------------------
   pnl: { month: PnlWindow; last7: PnlWindow };
   returnLoss: ReturnLoss;
+  mistakeCost: MistakeCost;
   reorder: ReorderItem[]; // most urgent first
   cashFlow: CashFlow;
   // --- Decision reports ------------------------------------------------------
@@ -422,7 +439,9 @@ export function computeMetrics(
   // --- Ad spend vs. delivered revenue (trailing 7/14 Colombo days) -----------
   // Revenue is attributed to the day the parcel was DELIVERED (first delivered
   // tracking event per order) — the day the cash actually became real.
-  const codByOrder = new Map(orders.map((o) => [o.id, Number(o.total_cod)]));
+  // Revenue, not collected cash: a bank-transfer sale earned its full value
+  // even though the courier collected Rs. 0, and a replacement earned nothing.
+  const revenueByOrder = new Map(orders.map((o) => [o.id, orderRevenue(o)]));
   const deliveredDayByOrder = new Map<string, string>();
   for (const e of events) {
     if (e.outcome === "delivered" && !deliveredDayByOrder.has(e.order_id)) {
@@ -439,7 +458,7 @@ export function computeMetrics(
     let deliveredCount = 0;
     for (const [orderId, day] of deliveredDayByOrder) {
       if (day >= from && day <= today) {
-        revenue += codByOrder.get(orderId) ?? 0;
+        revenue += revenueByOrder.get(orderId) ?? 0;
         deliveredCount++;
       }
     }
@@ -493,7 +512,7 @@ export function computeMetrics(
       if (!inWindow(day)) continue;
       const o = orderById.get(orderId);
       if (!o) continue;
-      revenue += Number(o.total_cod);
+      revenue += orderRevenue(o);
       cogs += orderCogs(o);
       courierCost += courierCostFor(o.district, settings.courier_cost_base, settings.courier_cost_overrides);
       deliveredCount++;
@@ -533,6 +552,22 @@ export function computeMetrics(
     monthCount: monthReturnCount,
     monthLoss: monthReturnCount * Number(settings.courier_return_cost),
   };
+
+  // Cost of re-sending parcels we packed wrong. Booked on the same settlement
+  // day the P&L uses, so this figure is a readable slice of that month's loss
+  // rather than a second, differently-timed number.
+  let mistakeCount = 0;
+  let mistakeLoss = 0;
+  for (const [orderId, day] of deliveredDayByOrder) {
+    if (!inMonth(day)) continue;
+    const o = orderById.get(orderId);
+    if (!o || paymentMethodOf(o) !== "replacement") continue;
+    mistakeCount++;
+    mistakeLoss +=
+      orderCogs(o) +
+      courierCostFor(o.district, settings.courier_cost_base, settings.courier_cost_overrides);
+  }
+  const mistakeCost: MistakeCost = { monthCount: mistakeCount, monthLoss: mistakeLoss };
 
   // Reorder radar: units shipped per product over the last 14 days sets the pace;
   // current stock ÷ pace = days of cover left. Anything under a week is urgent.
@@ -585,12 +620,24 @@ export function computeMetrics(
     completedDelivered + completedReturned > 0
       ? completedReturned / (completedDelivered + completedReturned)
       : 0;
+  let prepaidThisMonth = 0;
+  let prepaidThisMonthCount = 0;
+  for (const o of orders) {
+    if (paymentMethodOf(o) !== "bank_transfer") continue;
+    if (o.order_status === "pending") continue; // not shipped, not yet real
+    if (!inMonth(dayKey(new Date(o.created_at)))) continue;
+    prepaidThisMonth += orderRevenue(o);
+    prepaidThisMonthCount++;
+  }
+
   const cashFlow: CashFlow = {
     collected: settings.bank_cash,
     floating: cashInFlight + awaitingPayout,
     tiedInStock: stockValue,
     expectedLanding: cashInFlight * (1 - blendedReturnRate),
     returnRatePct: Math.round(blendedReturnRate * 100),
+    prepaidThisMonth,
+    prepaidThisMonthCount,
   };
 
   // --- Monthly trend report ---------------------------------------------------
@@ -622,7 +669,7 @@ export function computeMetrics(
     if (!o) continue;
     const m = bucketFor(monthOf(day));
     m.delivered++;
-    m.revenue += Number(o.total_cod);
+    m.revenue += orderRevenue(o);
     m.cogs += orderCogs(o);
     m.courier += courierCostFor(o.district, settings.courier_cost_base, settings.courier_cost_overrides);
   }
@@ -683,7 +730,7 @@ export function computeMetrics(
     }
     if (o.order_status === "delivered") {
       c.delivered++;
-      c.revenue += Number(o.total_cod);
+      c.revenue += orderRevenue(o);
     }
   }
   let buyers = 0;
@@ -926,6 +973,7 @@ export function computeMetrics(
     adPerf: { last7: windowStats(7), last14: windowStats(14) },
     pnl,
     returnLoss,
+    mistakeCost,
     reorder,
     cashFlow,
     months,

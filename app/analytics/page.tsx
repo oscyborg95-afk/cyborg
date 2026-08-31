@@ -1108,6 +1108,21 @@ function ProfitCard({ metrics }: { metrics: Metrics }) {
         </div>
       )}
 
+      {metrics.mistakeCost.monthCount > 0 && (
+        <div className="mt-4 flex items-center gap-2 rounded-xl border-2 border-flame/40 bg-flame-tint px-3 py-2">
+          <span className="text-lg">🔁</span>
+          <p className="font-display text-xs font-extrabold text-flame-dark">
+            Re-sends cost you {rs(metrics.mistakeCost.monthLoss)} this month
+            <span className="font-bold text-ink-soft">
+              {" "}
+              · {metrics.mistakeCost.monthCount} parcel
+              {metrics.mistakeCost.monthCount === 1 ? "" : "s"} shipped again for free after a
+              packing mistake
+            </span>
+          </p>
+        </div>
+      )}
+
       {metrics.returnLoss.monthCount > 0 && (
         <div className="mt-4 flex items-center gap-2 rounded-xl border-2 border-flame/40 bg-flame-tint px-3 py-2">
           <span className="text-lg">🩸</span>
@@ -1164,6 +1179,22 @@ function CashFlowCard({ cash }: { cash: CashFlow }) {
           riding right now should really bring in.
         </p>
       </div>
+      {cash.prepaidThisMonth > 0 && (
+        <div className="mt-3 rounded-xl bg-sky-tint px-3 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-display text-sm font-extrabold text-ink">🏦 Paid by transfer</span>
+            <span className="font-display text-sm font-extrabold tabular-nums text-sky-dark">
+              {rs(cash.prepaidThisMonth)}
+            </span>
+          </div>
+          <p className="mt-0.5 font-display text-[11px] font-bold text-ink-soft">
+            {cash.prepaidThisMonthCount} order
+            {cash.prepaidThisMonthCount === 1 ? "" : "s"} this month came straight to your bank — no
+            courier remittance will ever bring this in. Check it against your statement and add it
+            to Collected in Settings.
+          </p>
+        </div>
+      )}
     </Card>
   );
 }

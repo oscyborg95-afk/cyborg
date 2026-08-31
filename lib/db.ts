@@ -184,6 +184,17 @@ async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
   if (ready.has(tenantId)) return;
   await db.query("alter table orders add column if not exists idempotency_key varchar");
   await db.query("alter table orders add column if not exists archived_at timestamptz");
+  // Payment method replaced the old "zero the parcel with a full discount"
+  // workaround; legacy rows default to cod, which is what they always were.
+  await db.query(
+    "alter table orders add column if not exists payment_method varchar not null default 'cod'"
+  );
+  await db.query(
+    "alter table orders add column if not exists replaces_order_id uuid references orders(id) on delete set null"
+  );
+  await db.query(
+    "create index if not exists idx_orders_replaces on orders(replaces_order_id) where replaces_order_id is not null"
+  );
   await db.query(
     "create unique index if not exists uq_orders_idempotency_key on orders(idempotency_key) where idempotency_key is not null"
   );
@@ -258,8 +269,8 @@ export async function createOrder(
       `insert into orders
          (order_no, customer_name, phone_number, phone_2, raw_address, parsed_address, city, city_id, district,
           product_id, item_name, items, product_price, shipping_fee, discount, total_cod,
-          idempotency_key, order_status)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'pending')
+          payment_method, replaces_order_id, idempotency_key, order_status)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'pending')
        on conflict (idempotency_key) where idempotency_key is not null do nothing
        returning *`,
       [
@@ -280,6 +291,8 @@ export async function createOrder(
         input.shipping_fee,
         input.discount,
         input.total_cod,
+        input.payment_method ?? "cod",
+        input.replaces_order_id ?? null,
         idempotencyKey,
       ]
     );
@@ -299,6 +312,8 @@ export async function createOrder(
     id: randomUUID(),
     order_no: `${prefix}-${seq}`,
     order_status: "pending",
+    payment_method: input.payment_method ?? "cod",
+    replaces_order_id: input.replaces_order_id ?? null,
     remitted_at: null,
     idempotency_key: idempotencyKey,
     archived_at: null,

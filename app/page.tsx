@@ -6,6 +6,12 @@ import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
 import { chatIdToPhone } from "@/lib/phone";
 import { makeTemplates } from "@/lib/templates";
 import { itemsSubtotal } from "@/lib/items";
+import {
+  PAYMENT_METHODS,
+  PAYMENT_METHOD_META,
+  isPrepaid,
+  type PaymentMethod,
+} from "@/lib/payments";
 import { customerRisk, phoneKey } from "@/lib/risk";
 import type { Metrics } from "@/lib/metrics";
 import { getWorkerConnection, workerClientFetch } from "@/lib/worker-client";
@@ -68,6 +74,9 @@ interface Draft {
   items: OrderItem[]; // multi-product cart — subtotal feeds the COD total
   shipping_fee: string;
   discount: string;
+  payment_method: PaymentMethod;
+  // Only meaningful for a replacement: the order we packed wrong.
+  replaces_order_id: string;
 }
 
 const inputCls =
@@ -741,12 +750,18 @@ export default function Workspace() {
 
   // --- Quick actions (dynamic action bar) ---------------------------------
 
+  // What the sale is worth …
   const draftTotal = draft
     ? Math.max(
         0,
         itemsSubtotal(draft.items) + Number(draft.shipping_fee || 0) - Number(draft.discount || 0)
       )
     : 0;
+  // … and what the courier is actually told to collect. A bank transfer is
+  // already in the bank and a replacement is ours to eat, so both ship at Rs. 0
+  // without touching the discount field.
+  const draftPrepaid = draft ? draft.payment_method !== "cod" : false;
+  const draftCod = draftPrepaid ? 0 : draftTotal;
 
   async function quickAskAddress() {
     await sendText(t.askAddress());
@@ -812,6 +827,8 @@ export default function Workspace() {
         items: [],
         shipping_fee: String(data.shipping_fee),
         discount: "",
+        payment_method: "cod",
+        replaces_order_id: "",
       });
       await setChatState("CONFIRMED");
     } catch (err) {
@@ -843,6 +860,8 @@ export default function Workspace() {
           raw_address: messages.filter((m) => !m.fromMe).slice(-12).map((m) => m.body).join("\n"),
           shipping_fee: Number(draft.shipping_fee || 0),
           discount: Number(draft.discount || 0),
+          payment_method: draft.payment_method,
+          replaces_order_id: draft.replaces_order_id || null,
         }),
       });
       const data = await res.json();
@@ -850,7 +869,13 @@ export default function Workspace() {
       if (data.manifest?.pdf_label_url) window.open(data.manifest.pdf_label_url, "_blank");
       setNotice(`Booked ✓ ${data.manifest.tracking_id}`);
       // Draft the customer confirmation but let the operator send it manually.
-      setConfirmText(t.shippedConfirmation(data.order.total_cod, data.manifest.tracking_id));
+      setConfirmText(
+        t.shippedConfirmation(
+          data.order.total_cod,
+          data.manifest.tracking_id,
+          isPrepaid(data.order)
+        )
+      );
       setCelebrate(true);
       playChime("win"); // user just clicked DISPATCH — gesture-safe
       setTimeout(() => setCelebrate(false), 3600);
@@ -1525,8 +1550,75 @@ export default function Workspace() {
                     />
                   </label>
                 </div>
+                {/* How the customer settles. A bank transfer or a replacement
+                    ships at Rs. 0 without faking it as a full discount. */}
+                <div>
+                  <p className="font-display text-xs font-bold text-ink-soft">Payment</p>
+                  <div className="mt-1 grid grid-cols-3 gap-1.5">
+                    {PAYMENT_METHODS.map((m) => {
+                      const meta = PAYMENT_METHOD_META[m];
+                      const on = draft.payment_method === m;
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() =>
+                            setDraft((d) =>
+                              d
+                                ? {
+                                    ...d,
+                                    payment_method: m,
+                                    replaces_order_id:
+                                      m === "replacement" ? d.replaces_order_id : "",
+                                  }
+                                : d
+                            )
+                          }
+                          className={`rounded-xl border-2 px-2 py-1.5 font-display text-[11px] font-extrabold transition ${
+                            on
+                              ? "border-frog bg-frog/15 text-ink"
+                              : "border-cardline bg-cream/60 text-ink-soft hover:border-frog/50"
+                          }`}
+                        >
+                          {meta.emoji} {meta.short}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-1 text-[11px] font-semibold leading-snug text-ink-soft">
+                    {PAYMENT_METHOD_META[draft.payment_method].hint}
+                  </p>
+                </div>
+                {/* Linking the replacement to the parcel we got wrong is what
+                    turns these into a measurable cost instead of a mystery. */}
+                {draft.payment_method === "replacement" && (
+                  <label className="block font-display text-xs font-bold text-ink-soft">
+                    Replacing which order?
+                    <select
+                      className={inputCls}
+                      value={draft.replaces_order_id}
+                      onChange={(e) => setDraftField("replaces_order_id", e.target.value)}
+                    >
+                      <option value="">— not linked —</option>
+                      {activeOrders.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.order_no ?? o.id.slice(0, 8)} · {o.item_name || "order"} · Rs.{" "}
+                          {o.total_cod}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <div className="rounded-xl bg-gold/15 px-3 py-2 font-display text-sm font-extrabold text-ink">
-                  Total COD: Rs. {draftTotal}
+                  Courier collects: Rs. {draftCod}
+                  {draftPrepaid && (
+                    <span className="ml-1 font-bold text-ink-soft">
+                      · order value Rs. {draftTotal}{" "}
+                      {draft.payment_method === "bank_transfer"
+                        ? "(already paid)"
+                        : "(our cost)"}
+                    </span>
+                  )}
                 </div>
                 <Button
                   tone="frog"

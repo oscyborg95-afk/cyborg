@@ -5,6 +5,15 @@ import Link from "next/link";
 import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
 import { makeTemplates } from "@/lib/templates";
 import { itemsSubtotal } from "@/lib/items";
+import {
+  PAYMENT_METHODS,
+  PAYMENT_METHOD_META,
+  isPrepaid,
+  owesRefund,
+  orderValue,
+  paymentMethodOf,
+  type PaymentMethod,
+} from "@/lib/payments";
 import { phoneToChatId } from "@/lib/phone";
 import {
   customerRisk,
@@ -47,6 +56,8 @@ interface ReviewForm {
   items: OrderItem[]; // multi-product cart — subtotal feeds the COD total
   shipping_fee: string;
   discount: string;
+  payment_method: PaymentMethod;
+  replaces_order_id: string; // only meaningful for a replacement
 }
 
 const STATUS_STYLE: Record<OrderStatus, string> = {
@@ -78,7 +89,11 @@ function confirmationBlock(
   overrides: MessageTemplates = {},
   businessName = "Your Store"
 ): string {
-  return makeTemplates(overrides, businessName).shippedConfirmation(order.total_cod, manifest?.tracking_id);
+  return makeTemplates(overrides, businessName).shippedConfirmation(
+    order.total_cod,
+    manifest?.tracking_id,
+    isPrepaid(order)
+  );
 }
 
 // Visual style for each timeline outcome.
@@ -116,6 +131,8 @@ function ordersToCsv(orders: Order[], manifests: ShippingManifest[]): string {
     "shipping_fee",
     "discount",
     "total_cod",
+    "payment_method",
+    "order_value",
     "status",
     "tracking_id",
     "courier",
@@ -139,6 +156,8 @@ function ordersToCsv(orders: Order[], manifests: ShippingManifest[]): string {
       o.shipping_fee,
       o.discount,
       o.total_cod,
+      paymentMethodOf(o),
+      orderValue(o),
       o.order_status,
       m?.tracking_id ?? "",
       m?.courier_name ?? "",
@@ -326,6 +345,8 @@ export default function OrdersPage() {
         items: [],
         shipping_fee: String(data.shipping_fee),
         discount: "",
+        payment_method: "cod",
+        replaces_order_id: "",
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Parsing failed");
@@ -347,6 +368,8 @@ export default function OrdersPage() {
           raw_address: rawText,
           shipping_fee: Number(form.shipping_fee || 0),
           discount: Number(form.discount || 0),
+          payment_method: form.payment_method,
+          replaces_order_id: form.replaces_order_id || null,
         }),
       });
       const data = await res.json();
@@ -612,7 +635,10 @@ export default function OrdersPage() {
     URL.revokeObjectURL(a.href);
   }
 
-  const setField = (field: Exclude<keyof ReviewForm, "items" | "city_id">, value: string) => {
+  const setField = (
+    field: Exclude<keyof ReviewForm, "items" | "city_id" | "payment_method">,
+    value: string
+  ) => {
     setForm((f) => {
       if (!f) return f;
       const next = { ...f, [field]: value };
@@ -621,12 +647,16 @@ export default function OrdersPage() {
     });
   };
 
-  const totalCod = form
+  // Order value vs. what the courier collects — identical for COD, and Rs. 0 to
+  // collect on a bank transfer or a replacement.
+  const orderTotal = form
     ? Math.max(
         0,
         itemsSubtotal(form.items) + Number(form.shipping_fee || 0) - Number(form.discount || 0)
       )
     : 0;
+  const formPrepaid = form ? form.payment_method !== "cod" : false;
+  const totalCod = formPrepaid ? 0 : orderTotal;
 
   return (
     <main className="mx-auto min-w-0 max-w-5xl space-y-5 p-4 sm:p-6">
@@ -862,9 +892,54 @@ export default function OrdersPage() {
                 onChange={(e) => setField("discount", e.target.value)}
               />
             </label>
-            <div className="flex items-end rounded-xl bg-gold/15 px-3 py-2 font-display text-sm font-extrabold text-ink">
-              Total COD: Rs. {totalCod}
+            <div className="flex flex-col justify-end rounded-xl bg-gold/15 px-3 py-2 font-display text-sm font-extrabold text-ink">
+              <span>Courier collects: Rs. {totalCod}</span>
+              {formPrepaid && (
+                <span className="text-[11px] font-bold text-ink-soft">
+                  Order value Rs. {orderTotal}{" "}
+                  {form.payment_method === "bank_transfer" ? "(already paid)" : "(our cost)"}
+                </span>
+              )}
             </div>
+          </div>
+          {/* How the customer settles — replaces the old habit of zeroing the
+              parcel with a full-amount discount. */}
+          <div className="mt-3">
+            <p className="font-display text-xs font-bold text-ink-soft">Payment method</p>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {PAYMENT_METHODS.map((m) => {
+                const meta = PAYMENT_METHOD_META[m];
+                const on = form.payment_method === m;
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() =>
+                      setForm((f) =>
+                        f
+                          ? {
+                              ...f,
+                              payment_method: m,
+                              replaces_order_id:
+                                m === "replacement" ? f.replaces_order_id : "",
+                            }
+                          : f
+                      )
+                    }
+                    className={`rounded-xl border-2 px-3 py-1.5 font-display text-xs font-extrabold transition ${
+                      on
+                        ? "border-frog bg-frog/15 text-ink"
+                        : "border-cardline bg-cream/60 text-ink-soft hover:border-frog/50"
+                    }`}
+                  >
+                    {meta.emoji} {meta.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-[11px] font-semibold text-ink-soft">
+              {PAYMENT_METHOD_META[form.payment_method].hint}
+            </p>
           </div>
           <Button tone="frog" onClick={handleSave} disabled={saving} className="mt-4">
             {saving ? "Saving…" : "💾 Save order"}
@@ -1091,12 +1166,30 @@ export default function OrdersPage() {
                       </p>
                     </div>
                     <div className="shrink-0 text-right">
-                      <p className="font-display text-lg font-extrabold text-ink">Rs. {Number(order.total_cod).toLocaleString("en-LK")}</p>
+                      <p className="font-display text-lg font-extrabold text-ink">
+                        Rs.{" "}
+                        {Number(
+                          isPrepaid(order) ? orderValue(order) : order.total_cod
+                        ).toLocaleString("en-LK")}
+                      </p>
+                      {isPrepaid(order) && (
+                        <p className="text-[11px] font-extrabold text-ink-soft">
+                          {PAYMENT_METHOD_META[paymentMethodOf(order)].emoji}{" "}
+                          {PAYMENT_METHOD_META[paymentMethodOf(order)].short}
+                        </p>
+                      )}
                       <p className="text-xs font-bold text-ink-soft">
                         {new Date(order.created_at).toLocaleDateString("en-LK", { day: "numeric", month: "short" })}
                       </p>
                     </div>
                   </div>
+
+                  {owesRefund(order) && (
+                    <p className="mt-3 rounded-xl bg-flame-tint px-3 py-2 font-display text-xs font-extrabold text-flame-dark">
+                      💸 Refund owed — paid by bank transfer, parcel returned. Rs.{" "}
+                      {orderValue(order).toLocaleString("en-LK")} is still yours to send back.
+                    </p>
+                  )}
 
                   <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl bg-cream/55 p-3">
                     <div className="min-w-0">
@@ -1254,7 +1347,15 @@ export default function OrdersPage() {
                         </td>
                         <td className="py-2.5 pr-3 font-semibold text-ink">{order.district}</td>
                         <td className="py-2.5 pr-3 font-display font-bold text-ink">
-                          Rs. {order.total_cod}
+                          Rs. {isPrepaid(order) ? orderValue(order) : order.total_cod}
+                          {isPrepaid(order) && (
+                            <div className="mt-0.5 font-display text-[10px] font-extrabold text-ink-soft">
+                              {PAYMENT_METHOD_META[paymentMethodOf(order)].emoji}{" "}
+                              {paymentMethodOf(order) === "bank_transfer"
+                                ? "paid by transfer"
+                                : "replacement — no revenue"}
+                            </div>
+                          )}
                         </td>
                         <td className="py-2.5 pr-3">
                           <select
@@ -1275,6 +1376,14 @@ export default function OrdersPage() {
                           {order.order_status === "delivered" && (
                             <div className="mt-0.5 font-display text-[10px] font-extrabold text-ink-soft">
                               {order.remitted_at ? "💵 paid out" : "⏳ awaiting payout"}
+                            </div>
+                          )}
+                          {owesRefund(order) && (
+                            <div
+                              className="mt-1 inline-block rounded-full bg-flame-tint px-2 py-0.5 font-display text-[10px] font-extrabold text-flame-dark"
+                              title="This customer paid by bank transfer and the parcel came back — you are holding their money."
+                            >
+                              💸 Refund owed
                             </div>
                           )}
                         </td>

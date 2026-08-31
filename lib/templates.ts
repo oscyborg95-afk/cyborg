@@ -28,8 +28,13 @@ export const TEMPLATE_META: Record<
   },
   shippedConfirmation: {
     label: "🚚 Shipped confirmation",
-    hint: "Drafted after every dispatch — you review it before sending.",
+    hint: "Drafted after every COD dispatch — you review it before sending.",
     placeholders: ["{{business}}", "{{total}}", "{{tracking}}"],
+  },
+  shippedConfirmationPrepaid: {
+    label: "🏦 Shipped confirmation (already paid)",
+    hint: "Used instead of the COD version for bank transfers and replacements — says nothing is owed to the courier.",
+    placeholders: ["{{business}}", "{{tracking}}"],
   },
   trackingAlert: {
     label: "📦 Tracking alert",
@@ -88,6 +93,16 @@ export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
     `━━━━━━━━━━━━━━\n` +
     `ⓘ මෙය {{business}} පද්ධතියෙන් ස්වයංක්‍රීයව (automatically) ජනනය කරන ලද පණිවිඩයකි.`,
 
+  shippedConfirmationPrepaid:
+    `🌿 *{{business}}*\n\n` +
+    `ආයුබෝවන්! 🙏 ඔබගේ ඇණවුම සාර්ථකව තහවුරු කර, delivery සඳහා යොමු කර ඇත. ✅\n\n` +
+    `📦 Tracking අංකය: *{{tracking}}*\n` +
+    `✅ ගෙවීම දැනටමත් ලැබී ඇත — courier ට ගෙවීමට කිසිවක් නැත.\n` +
+    `🚚 සාමාන්‍යයෙන් වැඩ කරන දින 1–3ක් ඇතුළත ඔබ වෙත ලැබෙනු ඇත.\n\n` +
+    `ඔබගේ ඇණවුමට බොහොම ස්තූතියි! 💚 ඕනෑම ගැටලුවක් ඇත්නම් මෙම chat එකට reply කරන්න.\n\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `ⓘ මෙය {{business}} පද්ධතියෙන් ස්වයංක්‍රීයව (automatically) ජනනය කරන ලද පණිවිඩයකි.`,
+
   trackingAlert: `ඔබේ පැකේජය courier වෙත භාර දුන්නා 📦\nTracking අංකය: {{tracking}}\nදවස් 1–2ක් ඇතුළත ලැබෙයි!`,
 
   delayBonus: `Delivery එක ටිකක් delay වුණා, සමාවෙන්න 🙏\nඒ වෙනුවෙන් ඔබේ ඊළඟ order එකට 10% discount එකක් දෙනවා! 🎁`,
@@ -128,8 +143,12 @@ export function makeTemplates(overrides: MessageTemplates = {}, businessName = "
   return {
     askAddress: () => renderTemplate(src("askAddress"), vars()),
     codConfirm: (totalCod: number) => renderTemplate(src("codConfirm"), vars({ total: totalCod })),
-    shippedConfirmation: (totalCod: number, trackingId?: string) =>
-      renderTemplate(src("shippedConfirmation"), vars({ total: totalCod, tracking: trackingId })),
+    // A prepaid parcel ships at total_cod 0; sending the COD wording would tell
+    // the customer to pay "Rs. 0", so the prepaid variant is used instead.
+    shippedConfirmation: (totalCod: number, trackingId?: string, prepaid = false) =>
+      prepaid
+        ? renderTemplate(src("shippedConfirmationPrepaid"), vars({ tracking: trackingId }))
+        : renderTemplate(src("shippedConfirmation"), vars({ total: totalCod, tracking: trackingId })),
     trackingAlert: (trackingId: string) =>
       renderTemplate(src("trackingAlert"), vars({ tracking: trackingId })),
     delayBonus: () => renderTemplate(src("delayBonus"), vars()),

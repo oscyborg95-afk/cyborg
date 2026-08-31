@@ -17,6 +17,7 @@ import {
   groupOrdersByCustomerIdentity,
   orderIdentityKeys,
 } from "./customer-identity";
+import { orderRevenue } from "./payments";
 import { chatIdToPhone } from "./phone";
 import { phoneKey } from "./risk";
 import { workerFetch } from "./wa";
@@ -67,7 +68,9 @@ function summarize(
     active_orders: active.length,
     total_orders: sorted.length,
     active_cod_total: active.reduce((sum, order) => sum + Number(order.total_cod || 0), 0),
-    lifetime_revenue: delivered.reduce((sum, order) => sum + Number(order.total_cod || 0), 0),
+    // Revenue, not collected cash — a customer who pays by bank transfer is
+    // still one of your best customers, not a Rs. 0 one.
+    lifetime_revenue: delivered.reduce((sum, order) => sum + orderRevenue(order), 0),
     last_order_at: sorted[0]?.created_at ?? null,
     latest_message: chat?.lastMessage ?? "",
     latest_message_at: chat?.timestamp ?? null,

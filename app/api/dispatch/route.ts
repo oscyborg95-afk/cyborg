@@ -6,6 +6,7 @@ import {
 } from "@/lib/db";
 import { bookCourierOrder } from "@/lib/couriers";
 import { itemsSummary, parseItems } from "@/lib/items";
+import { codToCollect, orderValue, paymentMethodOf } from "@/lib/payments";
 
 // The one-click "Book & Print Waybill" action:
 // save order → book courier → chat state = SHIPPED.
@@ -30,6 +31,8 @@ export async function POST(req: NextRequest) {
     product_price = 0,
     shipping_fee = 0,
     discount = 0,
+    payment_method = "cod",
+    replaces_order_id = null,
   } = body;
 
   if (!chat_id || !customer_name || !phone_number || !parsed_address || !district) {
@@ -52,6 +55,15 @@ export async function POST(req: NextRequest) {
     : Number(product_price);
   const shippingFee = Number(shipping_fee);
   const discountValue = Number(discount);
+  // Prepaid parcels (bank transfer / replacement) ship with the courier told to
+  // collect Rs. 0 — but the discount field stays clean, so revenue reporting can
+  // still tell a paid-by-transfer sale from a free replacement.
+  const paymentMethod = paymentMethodOf({ payment_method });
+  const value = orderValue({
+    product_price: productPrice,
+    shipping_fee: shippingFee,
+    discount: discountValue,
+  });
   const cityId = Number(city_id) || null; // "" / 0 / NaN → resolve by name instead
 
   try {
@@ -72,7 +84,9 @@ export async function POST(req: NextRequest) {
       product_price: productPrice,
       shipping_fee: shippingFee,
       discount: discountValue,
-      total_cod: Math.max(0, productPrice + shippingFee - discountValue),
+      total_cod: codToCollect(value, paymentMethod),
+      payment_method: paymentMethod,
+      replaces_order_id: paymentMethod === "replacement" ? replaces_order_id || null : null,
     }, undefined, idempotencyKey);
 
     const booked = await bookOrderOnce(pendingOrder.id, (order) =>

@@ -21,8 +21,13 @@ create table if not exists orders (
   items          jsonb, -- [{product_id,name,qty,price}] for multi-product orders
   product_price  numeric not null default 0,
   shipping_fee   numeric not null default 0,
-  discount       numeric not null default 0,
-  total_cod      numeric not null default 0,
+  discount       numeric not null default 0, -- genuine price reductions only
+  total_cod      numeric not null default 0, -- what the courier collects: 0 when prepaid
+  -- cod | bank_transfer | replacement. Prepaid methods ship at total_cod 0 but
+  -- a bank transfer still earned full revenue; a replacement earned nothing.
+  payment_method varchar not null default 'cod',
+  -- The order whose packing mistake this replacement parcel is fixing.
+  replaces_order_id uuid references orders(id) on delete set null,
   order_status   varchar not null default 'pending', -- pending → booked → delivered → returned
   idempotency_key varchar,
   archived_at    timestamptz,
@@ -302,6 +307,9 @@ create table if not exists courier_remittance_lines (
 alter table orders add column if not exists city varchar not null default '';
 alter table orders add column if not exists item_name varchar not null default '';
 alter table orders add column if not exists discount numeric not null default 0;
+alter table orders add column if not exists payment_method varchar not null default 'cod';
+alter table orders add column if not exists replaces_order_id uuid references orders(id) on delete set null;
+create index if not exists idx_orders_replaces on orders(replaces_order_id) where replaces_order_id is not null;
 alter table orders add column if not exists product_id uuid references products(id) on delete set null;
 alter table orders add column if not exists phone_2 varchar not null default '';
 alter table orders add column if not exists city_id int;

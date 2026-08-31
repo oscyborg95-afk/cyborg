@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createOrder, getOrder } from "@/lib/db";
+import { paymentMethodOf } from "@/lib/payments";
 
 // Second-attempt flow for returned parcels: clone the order as a fresh pending
 // one (same customer, items, and totals). The operator books it with the normal
@@ -35,6 +36,10 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       shipping_fee: Number(order.shipping_fee),
       discount: Number(order.discount),
       total_cod: Number(order.total_cod),
+      // A re-book is the same sale on a second attempt, so it settles the same
+      // way — including a prepaid one, where the money is already in the bank.
+      payment_method: paymentMethodOf(order),
+      replaces_order_id: order.replaces_order_id ?? null,
     });
     return NextResponse.json({ order: clone }, { status: 201 });
   } catch (err) {

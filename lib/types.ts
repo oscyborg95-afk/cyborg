@@ -1,5 +1,10 @@
 export type OrderStatus = "pending" | "booked" | "delivered" | "returned";
 
+// How the customer settles an order. "cod" is the default; the other two are
+// prepaid — the courier collects nothing. See lib/payments.ts for the money
+// semantics each one implies.
+export type PaymentMethod = "cod" | "bank_transfer" | "replacement";
+
 // One line of a multi-product order. `product_id` links back to stock when the
 // line came from a preset chip; free-typed lines carry null.
 export interface OrderItem {
@@ -28,7 +33,14 @@ export interface Order {
   product_price: number;
   shipping_fee: number;
   discount: number;
+  // What the courier is asked to collect: the order value for COD, Rs. 0 for a
+  // bank transfer or a replacement (both already settled before shipping).
   total_cod: number;
+  // How the customer pays. null/undefined on legacy rows = "cod".
+  payment_method?: PaymentMethod | null;
+  // For a replacement parcel, the order whose packing mistake caused it. Lets
+  // the cost of those mistakes be measured instead of vanishing into discounts.
+  replaces_order_id?: string | null;
   order_status: OrderStatus;
   // When the courier's COD payout for this delivered order was received.
   // null/undefined = delivered cash still with the courier ("awaiting payout").
@@ -278,6 +290,7 @@ export type TemplateKey =
   | "askAddress"
   | "codConfirm"
   | "shippedConfirmation"
+  | "shippedConfirmationPrepaid"
   | "trackingAlert"
   | "delayBonus"
   | "followUpAddress"
