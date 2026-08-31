@@ -256,8 +256,15 @@ function MediaBubble({ msg }: { msg: WaMessage }) {
   );
 }
 
+// Below xl the three panes are a navigation stack, not columns. Their depth is
+// mirrored into session history so the Android/browser back button walks
+// dispatch → chat → inbox instead of closing the installed app.
+type MobileView = "inbox" | "chat" | "dispatch";
+const PANE_DEPTH: Record<MobileView, number> = { inbox: 0, chat: 1, dispatch: 2 };
+const isPaneStackLayout = () => !window.matchMedia("(min-width: 1280px)").matches;
+
 export default function Workspace() {
-  const [mobileView, setMobileView] = useState<"inbox" | "chat" | "dispatch">("inbox");
+  const [mobileView, setMobileView] = useState<MobileView>("inbox");
   const [chats, setChats] = useState<WaChat[]>([]);
   const [activeChatId, setActiveChatId] = useState<null | string>(null);
   const [messages, setMessages] = useState<WaMessage[]>([]);
@@ -293,6 +300,55 @@ export default function Workspace() {
   const activeChatIdRef = useRef<string | null>(null);
   const dispatchKeyRef = useRef<{ chatId: string; key: string } | null>(null);
   activeChatIdRef.current = activeChatId;
+  const mobileViewRef = useRef<MobileView>("inbox");
+  // How many history entries this component pushed, so we never pop past our own.
+  const paneEntriesRef = useRef(0);
+
+  // Drilling in pushes a history entry; backing out pops one so the gesture and
+  // the hardware back button stay in sync. Next patches pushState to graft its
+  // own router state onto ours, so a plain object here is safe.
+  const showPane = useCallback((next: MobileView) => {
+    const current = mobileViewRef.current;
+    if (current === next) return;
+    // Track the pane eagerly: two taps landing in the same commit would
+    // otherwise both read the stale value and push a duplicate history entry.
+    mobileViewRef.current = next;
+    if (!isPaneStackLayout()) {
+      setMobileView(next);
+      return;
+    }
+    const delta = PANE_DEPTH[current] - PANE_DEPTH[next];
+    if (delta < 0) {
+      paneEntriesRef.current += 1;
+      window.history.pushState({ mobileView: next }, "");
+      setMobileView(next);
+      return;
+    }
+    // history.go(-n) fires a single popstate for the destination, which reconciles
+    // the pane. Only fall back to a bare setState if none of the stack is ours.
+    const steps = Math.min(delta, paneEntriesRef.current);
+    if (steps > 0) window.history.go(-steps);
+    else setMobileView(next);
+  }, []);
+
+  useEffect(() => {
+    // A restored entry (reload, bfcache, or back into the app) can still carry a
+    // pane from a previous visit, but the component always mounts at the inbox.
+    // Make the entry we start on agree, so the first back press doesn't restore a
+    // pane the user never opened. Spreading the existing state keeps Next's
+    // router internals — and skips its replaceState patch, which defers to __NA.
+    if (window.history.state?.mobileView) {
+      window.history.replaceState({ ...window.history.state, mobileView: "inbox" }, "");
+    }
+    const onPopState = (event: PopStateEvent) => {
+      const view = (event.state as { mobileView?: MobileView } | null)?.mobileView ?? "inbox";
+      paneEntriesRef.current = PANE_DEPTH[view];
+      mobileViewRef.current = view;
+      setMobileView(view);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const prevWaReadyRef = useRef<boolean | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -337,7 +393,7 @@ export default function Workspace() {
       if (hasRequested && requested) {
         deepLinkHandledRef.current = true;
         setActiveChatId(requested);
-        setMobileView("chat");
+        showPane("chat");
         workerClientFetch(`${WORKER_URL}/read`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -354,7 +410,7 @@ export default function Workspace() {
     } else if (data.offline) {
       setWorkerOffline(true);
     }
-  }, []);
+  }, [showPane]);
 
   const loadStates = useCallback(async () => {
     const res = await fetch("/api/chat-state");
@@ -463,7 +519,7 @@ export default function Workspace() {
       if (chatId !== activeChatIdRef.current) return;
       activeChatIdRef.current = null;
       setActiveChatId(null);
-      setMobileView("inbox");
+      showPane("inbox");
       setMessages([]);
       setDraft(null);
       setConfirmText(null);
@@ -522,7 +578,7 @@ export default function Workspace() {
       window.clearInterval(statusPoll);
       socket?.disconnect();
     };
-  }, [loadChats, loadStates, loadOrders, loadProducts, loadWaStatus, loadSettings, loadMetrics]);
+  }, [loadChats, loadStates, loadOrders, loadProducts, loadWaStatus, loadSettings, loadMetrics, showPane]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -561,7 +617,7 @@ export default function Workspace() {
 
   async function selectChat(chatId: string) {
     setActiveChatId(chatId);
-    setMobileView("chat");
+    showPane("chat");
     setDraft(null);
     setConfirmText(null);
     setNotice(null);
@@ -599,7 +655,7 @@ export default function Workspace() {
 
       activeChatIdRef.current = null;
       setActiveChatId(null);
-      setMobileView("inbox");
+      showPane("inbox");
       setChats((prev) => prev.filter((chat) => chat.id !== chatId));
       setMessages([]);
       setDraft(null);
@@ -1188,7 +1244,7 @@ export default function Workspace() {
         {activeChat ? (
           <>
             <div className="flex flex-wrap items-center gap-2 border-b-2 border-cardline bg-surface/75 px-2 py-2 sm:px-4 xl:flex-nowrap xl:gap-3">
-              <button type="button" onClick={() => setMobileView("inbox")} aria-label="Back to inbox" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-cardline bg-surface font-display text-xl font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-frog xl:hidden">‹</button>
+              <button type="button" onClick={() => showPane("inbox")} aria-label="Back to inbox" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-cardline bg-surface font-display text-xl font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-frog xl:hidden">‹</button>
               <Avatar jid={activeChat.id} name={activeChat.name} size={38} />
               <div className="min-w-0 flex-1">
                 <div className="font-display text-base font-extrabold text-ink">
@@ -1196,7 +1252,7 @@ export default function Workspace() {
                 </div>
                 <div className="truncate text-xs font-semibold text-ink-soft">{activePhone}</div>
               </div>
-              <button type="button" onClick={() => setMobileView("dispatch")} aria-label="Open dispatch tools" className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-grape bg-grape-tint px-3 font-display text-sm font-extrabold text-grape-dark focus-visible:outline-2 focus-visible:outline-grape xl:hidden"><span aria-hidden="true">🚚</span><span className="hidden min-[360px]:inline">Dispatch</span></button>
+              <button type="button" onClick={() => showPane("dispatch")} aria-label="Open dispatch tools" className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 border-grape bg-grape-tint px-3 font-display text-sm font-extrabold text-grape-dark focus-visible:outline-2 focus-visible:outline-grape xl:hidden"><span aria-hidden="true">🚚</span><span className="hidden min-[360px]:inline">Dispatch</span></button>
               <select
                 aria-label="Chat order state"
                 className="order-last min-h-11 flex-1 rounded-xl border-2 border-cardline bg-surface px-2 font-display text-sm font-bold text-ink outline-none focus:border-frog xl:order-none xl:ml-auto xl:min-h-0 xl:flex-none xl:py-1.5 xl:text-xs"
@@ -1393,7 +1449,7 @@ export default function Workspace() {
       {/* RIGHT: logistics copilot */}
       <aside className={`${mobileView === "dispatch" ? "flex" : "hidden"} h-full min-h-0 min-w-0 flex-col overflow-y-auto bg-surface/95 p-4 xl:flex xl:bg-surface/55`} aria-label="Dispatch tools">
         <div className="sticky top-0 z-10 -mx-4 -mt-4 mb-3 flex items-center gap-3 border-b-2 border-cardline bg-surface/95 px-4 py-3 xl:static xl:m-0 xl:mb-2 xl:block xl:border-0 xl:bg-transparent xl:p-0">
-          <button type="button" onClick={() => setMobileView("chat")} aria-label="Close dispatch tools" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-cardline bg-surface-soft font-display text-xl font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-frog xl:hidden">‹</button>
+          <button type="button" onClick={() => showPane("chat")} aria-label="Close dispatch tools" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-cardline bg-surface-soft font-display text-xl font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-frog xl:hidden">‹</button>
           <div className="min-w-0 flex-1"><h2 className="font-display text-lg font-extrabold text-ink xl:text-xs xl:uppercase xl:tracking-wide xl:text-ink-soft">Dispatch copilot</h2><p className="truncate text-sm font-semibold text-ink-soft xl:hidden">{activeChat ? `Prepare ${activeChat.name}'s COD order` : "Open a chat first"}</p></div>
         </div>
         <Coach lines={coachLines} size={56} className="mb-3" />

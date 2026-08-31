@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>You're offline</title>
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbf7ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#12171b" />
+    <!--
+      Deliberately standalone: this file is precached by the service worker and
+      served to any tenant on this device, so it must never contain rendered
+      account data. Styles are inlined because the app's CSS is hashed per build.
+    -->
+    <style>
+      :root {
+        --cream: #fbf7ef;
+        --ink: #3f3a34;
+        --ink-soft: #8a8178;
+        --cardline: #e9e2d6;
+        --surface: #ffffff;
+        --frog: #58cc02;
+        --frog-dark: #48a600;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --cream: #12171b;
+          --ink: #f3eee6;
+          --ink-soft: #b5c1c5;
+          --cardline: #3a4b50;
+          --surface: #1d282d;
+          --frog-dark: #7edb37;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: calc(1.5rem + env(safe-area-inset-top)) 1.25rem
+          calc(1.5rem + env(safe-area-inset-bottom));
+        background: var(--cream);
+        color: var(--ink);
+        font-family: "Nunito", ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+        font-weight: 600;
+        text-align: center;
+      }
+      .card {
+        width: 100%;
+        max-width: 22rem;
+        border: 2px solid var(--cardline);
+        border-radius: 1.75rem;
+        background: var(--surface);
+        padding: 2rem 1.5rem;
+        box-shadow: 0 10px 30px rgb(63 58 52 / 0.09);
+      }
+      h1 {
+        margin: 1rem 0 0.5rem;
+        font-size: 1.5rem;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+      }
+      p { margin: 0; color: var(--ink-soft); line-height: 1.5; }
+      button {
+        margin-top: 1.75rem;
+        width: 100%;
+        min-height: 3.25rem;
+        border: 0;
+        border-radius: 1rem;
+        background: var(--frog);
+        border-bottom: 4px solid var(--frog-dark);
+        color: #fff;
+        font: inherit;
+        font-size: 1rem;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      button:active { transform: translateY(2px); border-bottom-width: 2px; }
+      .status { margin-top: 1rem; font-size: 0.8125rem; color: var(--ink-soft); }
+      @media (prefers-reduced-motion: no-preference) {
+        .frog { animation: bob 2.4s ease-in-out infinite; }
+        @keyframes bob {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-6px); }
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="frog" aria-hidden="true" style="font-size: 3.5rem; line-height: 1">🐸</div>
+      <h1>No connection</h1>
+      <p>Your orders and chats are safe — this device just can't reach the server right now.</p>
+      <button type="button" id="retry">Try again</button>
+      <p class="status" id="status">Waiting for a network…</p>
+    </main>
+    <script>
+      var status = document.getElementById("status");
+      function retry() {
+        status.textContent = "Reconnecting…";
+        location.reload();
+      }
+      document.getElementById("retry").addEventListener("click", retry);
+      // Bounce back automatically the moment the device regains a network.
+      window.addEventListener("online", retry);
+      if (navigator.onLine) status.textContent = "Network is back — tap to reload.";
+    </script>
+  </body>
+</html>

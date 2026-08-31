@@ -1056,7 +1056,7 @@ function ProfitCard({ metrics }: { metrics: Metrics }) {
               key={k}
               onClick={() => setWin(k)}
               className={
-                "rounded-lg px-3 py-1 font-display text-xs font-extrabold transition " +
+                "min-h-11 rounded-lg px-3 py-1 font-display text-xs font-extrabold transition xl:min-h-0 " +
                 (win === k ? "bg-frog text-white" : "text-ink-soft hover:text-ink")
               }
             >
