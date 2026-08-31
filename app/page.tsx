@@ -1531,7 +1531,7 @@ export default function Workspace() {
                 <Button
                   tone="frog"
                   onClick={dispatch}
-                  disabled={dispatching || draftTotal <= 0}
+                  disabled={dispatching || draft.items.length === 0}
                   className="w-full !py-3"
                 >
                   {dispatching ? "🚀 Dispatching…" : "🚀 DISPATCH — book & message"}
