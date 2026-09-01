@@ -18,7 +18,7 @@ import {
   recordCustomerEvent,
   updateCustomerProfile,
 } from "./crm-db";
-import { getSettings, listChatStates, listOrdersForCrm } from "./db";
+import { getSettings, listChatStates, listAllOrders } from "./db";
 import { insideQuietHours } from "./agent-policy";
 import {
   FOLLOW_UP_TRIGGER_STATES,
@@ -109,7 +109,7 @@ async function enrollColdLeads(): Promise<number> {
   const [states, profiles, orders, activeKeys] = await Promise.all([
     listChatStates(),
     listCustomerProfiles(),
-    listOrdersForCrm(),
+    listAllOrders(),
     getActiveEnrollmentKeys(),
   ]);
   const profileByKey = new Map(profiles.map((p) => [p.phone_key, p]));
@@ -173,7 +173,7 @@ async function dispatchDue(maxSends: number): Promise<FollowUpSweepResult> {
   const business = await getSettings().then((s) => s.business_name).catch(() => "");
   const states = await listChatStates();
   const stateByKey = new Map(states.map((s) => [phoneKey(s.phone_number), s.state]));
-  const orders = await listOrdersForCrm();
+  const orders = await listAllOrders();
   const orderedKeys = new Set<string>();
   for (const order of orders) {
     orderedKeys.add(phoneKey(order.phone_number));

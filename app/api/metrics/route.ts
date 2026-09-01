@@ -2,21 +2,24 @@ import { NextResponse } from "next/server";
 import {
   getSettings,
   listAdSpend,
+  listAllOrders,
   listManifests,
-  listOrders,
   listProducts,
-  listTrackingEvents,
+  listSettlementEvents,
 } from "@/lib/db";
 import { computeMetrics } from "@/lib/metrics";
 
 export async function GET() {
   try {
     const [orders, manifests, settings, products, events, adSpend] = await Promise.all([
-      listOrders(true),
+      // Lifetime counters (level, badges, monthly P&L) are cumulative, so the
+      // metrics feed has to be every order — the 200-row operational cap froze
+      // them in place once the shop passed 200 orders.
+      listAllOrders(),
       listManifests(),
       getSettings(),
       listProducts(),
-      listTrackingEvents(),
+      listSettlementEvents(),
       listAdSpend(),
     ]);
     return NextResponse.json({

@@ -65,6 +65,7 @@ create table if not exists tracking_events (
   created_at timestamptz not null default now()
 );
 create index if not exists idx_tracking_events_order on tracking_events(order_id, created_at);
+create index if not exists idx_tracking_events_outcome on tracking_events(outcome, created_at);
 
 -- Record of the automated tracking-driven customer WhatsApp alerts actually
 -- sent (out for delivery / delivered / returned), so the same alert is never

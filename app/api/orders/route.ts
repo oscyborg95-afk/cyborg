@@ -5,7 +5,7 @@ import {
   listCustomerAlerts,
   listManifests,
   listOrders,
-  listTrackingEvents,
+  listTrackingEventsForOrders,
   usingSupabase,
 } from "@/lib/db";
 import type { NewOrder } from "@/lib/types";
@@ -15,10 +15,13 @@ import { codToCollect, orderValue, paymentMethodOf } from "@/lib/payments";
 
 export async function GET() {
   try {
-    const [orders, manifests, events, alerts, deliveryAttempts] = await Promise.all([
-      listOrders(),
+    // The timeline is fetched for the orders this screen actually shows: a
+    // whole-table read used to be capped at the 2000 OLDEST events, which hid
+    // every recent checkpoint once the table grew past that.
+    const orders = await listOrders();
+    const [manifests, events, alerts, deliveryAttempts] = await Promise.all([
       listManifests(),
-      listTrackingEvents(),
+      listTrackingEventsForOrders(orders.map((o) => o.id)),
       listCustomerAlerts(),
       listDeliveryAttempts(),
     ]);

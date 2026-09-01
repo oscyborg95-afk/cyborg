@@ -376,9 +376,11 @@ export async function listOrders(includeArchived = false): Promise<Order[]> {
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
-// CRM/reporting queries must never inherit the 200-row operational screen cap.
-// These include archived orders because they remain part of customer history.
-export async function listOrdersForCrm(): Promise<Order[]> {
+// CRM, reporting and lifetime-metric queries must never inherit the 200-row
+// operational screen cap — a capped feed makes cumulative counters (level
+// progress, badges, monthly P&L) stall once the shop passes 200 orders.
+// Archived orders are included because they remain part of the history.
+export async function listAllOrders(): Promise<Order[]> {
   if (pool) {
     await ensureOrderNoSchema(pool);
     const { rows } = await pool.query("select * from orders order by created_at desc");
@@ -635,9 +637,14 @@ export async function listInFlightTrackedOrders(): Promise<
   return out;
 }
 
+// Unbounded and ordered: the old `limit 500` had no ORDER BY, so past 500
+// manifests Postgres returned an arbitrary slice — today's dispatches could be
+// missing from it, breaking the daily goal, the streak and the activity chart.
 export async function listManifests(): Promise<ShippingManifest[]> {
   if (pool) {
-    const { rows } = await pool.query("select * from shipping_manifests limit 500");
+    const { rows } = await pool.query(
+      "select * from shipping_manifests order by created_at desc"
+    );
     return rows as ShippingManifest[];
   }
   return [...memManifests.values()];
@@ -669,6 +676,8 @@ async function ensureTrackingOpsSchema(db: Queryable): Promise<void> {
        created_at timestamptz not null default now())`
   );
   await db.query("create index if not exists idx_tracking_events_order on tracking_events(order_id, created_at)");
+  // Serves the settlement-event scan behind every metrics refresh.
+  await db.query("create index if not exists idx_tracking_events_outcome on tracking_events(outcome, created_at)");
   await db.query("create unique index if not exists uq_manifests_tracking on shipping_manifests(tracking_id)");
   await db.query(
     `create table if not exists courier_webhook_events (
@@ -1904,11 +1913,20 @@ export async function addTrackingEvent(
   });
 }
 
-export async function listTrackingEvents(): Promise<TrackingEvent[]> {
+// Metrics only ever reads settlement events: the first `delivered` and the
+// first terminal `returned` per order. Filtering in SQL keeps this proportional
+// to orders instead of to every in-transit checkpoint ever recorded. Unbounded
+// on purpose — delivery speed and the badge cabinet are lifetime records, so a
+// window would quietly erode them. Ascending because the callers take the
+// FIRST event per order; the old `order by created_at asc limit 2000` kept the
+// OLDEST 2000 rows, so past that every new delivery was invisible.
+export async function listSettlementEvents(): Promise<TrackingEvent[]> {
   if (pool) {
     try {
       const { rows } = await pool.query(
-        "select * from tracking_events order by created_at asc limit 2000"
+        `select * from tracking_events
+          where outcome in ('delivered', 'returned')
+          order by created_at asc`
       );
       return rows as TrackingEvent[];
     } catch (err) {
@@ -1916,7 +1934,35 @@ export async function listTrackingEvents(): Promise<TrackingEvent[]> {
       throw err;
     }
   }
-  return [...memTrackingEvents].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  return memTrackingEvents
+    .filter((e) => e.outcome === "delivered" || e.outcome === "returned")
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+// The workspace and the customer drawer render the full courier timeline, but
+// only for the orders actually on screen — scoped by id so the
+// (order_id, created_at) index does the work and the payload stays
+// proportional to what is displayed.
+export async function listTrackingEventsForOrders(orderIds: string[]): Promise<TrackingEvent[]> {
+  if (orderIds.length === 0) return [];
+  if (pool) {
+    try {
+      const { rows } = await pool.query(
+        `select * from tracking_events
+          where order_id = any($1::uuid[])
+          order by created_at asc`,
+        [orderIds]
+      );
+      return rows as TrackingEvent[];
+    } catch (err) {
+      if (isUndefinedTable(err)) return [];
+      throw err;
+    }
+  }
+  const ids = new Set(orderIds);
+  return memTrackingEvents
+    .filter((e) => ids.has(e.order_id))
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
 export async function getLatestTrackingEvent(order_id: string): Promise<TrackingEvent | null> {

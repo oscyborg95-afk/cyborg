@@ -249,6 +249,9 @@ export function computeMetrics(
   manifests: ShippingManifest[],
   settings: BusinessSettings,
   products: Product[] = [],
+  // Settlement events only ('delivered' / 'returned'), oldest first — every
+  // read below filters to those two outcomes and takes the first one per
+  // order, so the feed is narrowed in SQL. Keep it ascending.
   events: TrackingEvent[] = [],
   adSpend: AdSpend[] = []
 ): Metrics {

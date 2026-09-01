@@ -3,8 +3,8 @@ import {
   listCustomerAlerts,
   listCustomerOrders,
   listManifests,
-  listOrdersForCrm,
-  listTrackingEvents,
+  listAllOrders,
+  listTrackingEventsForOrders,
 } from "./db";
 import {
   ensureCustomerProfile,
@@ -81,7 +81,7 @@ function summarize(
 export async function listCustomerSummaries(): Promise<CustomerSummary[]> {
   const [profiles, orders, states, chats] = await Promise.all([
     listCustomerProfiles(),
-    listOrdersForCrm(),
+    listAllOrders(),
     listChatStates(),
     workerFetch<WaChat[]>("/chats").catch(() => []),
   ]);
@@ -123,11 +123,14 @@ export async function listCustomerSummaries(): Promise<CustomerSummary[]> {
 
 export async function getCustomerDetail(phoneKeyValue: string) {
   const key = phoneKey(phoneKeyValue);
-  const [summaries, orders, manifests, trackingEvents, alerts, events, runs] = await Promise.all([
+  // This customer's orders come first so the courier timeline can be fetched
+  // for exactly those ids — reading the whole table returned only the 2000
+  // oldest events, so a recent customer's timeline came back empty.
+  const orders = await listCustomerOrders(key);
+  const [summaries, manifests, trackingEvents, alerts, events, runs] = await Promise.all([
     listCustomerSummaries(),
-    listCustomerOrders(key),
     listManifests(),
-    listTrackingEvents(),
+    listTrackingEventsForOrders(orders.map((order) => order.id)),
     listCustomerAlerts(),
     listCustomerEvents(key),
     listAgentRuns(key),
@@ -153,7 +156,7 @@ export async function getCustomerDetail(phoneKeyValue: string) {
     customer,
     orders,
     manifests: manifests.filter((manifest) => orderIds.has(manifest.order_id)),
-    tracking_events: trackingEvents.filter((event) => orderIds.has(event.order_id)),
+    tracking_events: trackingEvents, // already scoped to this customer's orders
     alerts: alerts.filter((alert) => orderIds.has(alert.order_id)),
     events,
     agent_runs: runs,

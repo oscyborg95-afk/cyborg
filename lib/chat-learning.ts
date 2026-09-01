@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { listOrdersForCrm } from "./db";
+import { listAllOrders } from "./db";
 import { detectLanguageHeuristic } from "./language";
 import {
   groupOrdersByCustomerIdentity,
@@ -316,7 +316,7 @@ async function approvedKeys(): Promise<Set<string>> {
 
 export async function listLearningCandidates(): Promise<LearningCandidate[]> {
   const [orders, chats, approved] = await Promise.all([
-    listOrdersForCrm(),
+    listAllOrders(),
     listAvailableChats(),
     approvedKeys(),
   ]);
