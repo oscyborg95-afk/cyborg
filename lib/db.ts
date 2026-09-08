@@ -1846,12 +1846,13 @@ export async function adjustProductStock(
 export async function receiveProductStock(
   id: string,
   quantity: number,
-  unitCost: number
+  unitCost: number,
+  db: Queryable | null = pool
 ): Promise<Product | null> {
-  if (pool) {
+  if (db) {
     // Both SET expressions read the pre-update column values, so this is a
     // correct single-statement weighted average with no read-then-write race.
-    const { rows } = await pool.query(
+    const { rows } = await db.query(
       `update products set
          unit_cost = case when (stock_units + $2) > 0
            then (stock_units * unit_cost + $2 * $3) / (stock_units + $2)

@@ -15,6 +15,7 @@
     "@anthropic-ai/sdk": "^0.110.0",
     "@supabase/supabase-js": "^2.110.0",
     "@types/pg": "^8.20.0",
+    "date-holidays": "^3.36.1",
     "jsbarcode": "^3.12.3",
     "next": "16.2.10",
     "pg": "^8.22.0",

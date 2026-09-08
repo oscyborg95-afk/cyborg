@@ -30,6 +30,7 @@ const TOOL_GROUPS: readonly { category: string; items: readonly NavItem[] }[] = 
   {
     category: "Finance & Insights",
     items: [
+      { href: "/inventory", label: "Stock Planner", emoji: "🌱", desc: "Reorder before stockouts" },
       { href: "/invoices", label: "Invoices", emoji: "🖨️", desc: "Packing slips" },
       { href: "/analytics", label: "Quest & Analytics", emoji: "🏆", desc: "Progress and stats" },
     ],

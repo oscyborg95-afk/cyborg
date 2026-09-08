@@ -45,6 +45,82 @@ create table if not exists products (
   created_at  timestamptz not null default now()
 );
 
+-- Replenishment control: supplier rules, closures, and a durable purchase audit.
+create sequence if not exists purchase_order_number_seq start 1001;
+create table if not exists suppliers (
+  id uuid primary key default gen_random_uuid(),
+  name varchar not null,
+  whatsapp_phone varchar not null,
+  lead_time_working_days int not null default 1 check (lead_time_working_days between 1 and 30),
+  working_weekdays jsonb not null default '[1,2,3,4,5,6]'::jsonb,
+  active boolean not null default true,
+  automatic_send boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create table if not exists product_supplier_configs (
+  id uuid primary key default gen_random_uuid(),
+  product_id uuid not null references products(id) on delete cascade,
+  supplier_id uuid not null references suppliers(id) on delete cascade,
+  moq int not null default 1 check (moq > 0),
+  pack_size int not null default 1 check (pack_size > 0),
+  supplier_sku varchar not null default '',
+  unit_cost numeric,
+  preferred boolean not null default false,
+  target_cover_days int not null default 14 check (target_cover_days between 1 and 90),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(product_id, supplier_id)
+);
+create unique index if not exists uq_product_preferred_supplier on product_supplier_configs(product_id) where preferred;
+create table if not exists courier_closures (
+  id uuid primary key default gen_random_uuid(),
+  date date not null,
+  name varchar not null,
+  supplier_id uuid references suppliers(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(date, supplier_id)
+);
+create index if not exists idx_courier_closures_date on courier_closures(date);
+create table if not exists purchase_orders (
+  id uuid primary key default gen_random_uuid(),
+  reference varchar not null unique,
+  supplier_id uuid not null references suppliers(id),
+  status varchar not null default 'draft' check (status in ('draft','sent','confirmed','received','cancelled','failed')),
+  recommendation_snapshot jsonb not null default '{}'::jsonb,
+  message_body text not null default '',
+  expected_delivery_date date not null,
+  dedupe_key varchar not null unique,
+  automatic boolean not null default false,
+  sent_at timestamptz,
+  received_at timestamptz,
+  error text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_purchase_orders_status on purchase_orders(status, created_at desc);
+create table if not exists purchase_order_lines (
+  id uuid primary key default gen_random_uuid(),
+  purchase_order_id uuid not null references purchase_orders(id) on delete cascade,
+  product_id uuid not null references products(id),
+  recommended_quantity int not null,
+  ordered_quantity int not null,
+  received_quantity int not null default 0,
+  unit_cost numeric,
+  unique(purchase_order_id, product_id)
+);
+create index if not exists idx_purchase_order_lines_product on purchase_order_lines(product_id);
+create table if not exists purchase_order_receipts (
+  id uuid primary key default gen_random_uuid(),
+  purchase_order_line_id uuid not null references purchase_order_lines(id) on delete cascade,
+  idempotency_key varchar not null,
+  quantity int not null,
+  unit_cost numeric not null,
+  created_at timestamptz not null default now(),
+  unique(purchase_order_line_id, idempotency_key)
+);
+
 create table if not exists shipping_manifests (
   id              uuid primary key default gen_random_uuid(),
   order_id        uuid not null references orders(id) on delete cascade,
