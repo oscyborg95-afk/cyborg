@@ -4,6 +4,10 @@ export interface GoogleGenerateContentRequest {
   headers: Record<string, string>;
 }
 
+function useVertexAi(): boolean {
+  return process.env.GOOGLE_GENAI_USE_VERTEXAI?.trim().toLowerCase() === "true";
+}
+
 function requiredCloudProject(): string {
   const project = process.env.GOOGLE_CLOUD_PROJECT?.trim();
   if (!project) {
@@ -18,7 +22,10 @@ export function googleGenerateContentRequest(
   apiKey: string,
   model: string
 ): GoogleGenerateContentRequest {
-  if (apiKey.startsWith("AQ.")) {
+  // AI Studio now issues `AQ...` authorization keys as well as legacy `AIza...`
+  // keys. The key prefix therefore cannot identify Vertex AI. Keep the Gemini
+  // Developer API as the default and require an explicit opt-in for Vertex AI.
+  if (useVertexAi()) {
     const project = requiredCloudProject();
     const location = process.env.GOOGLE_CLOUD_LOCATION?.trim() || "global";
     return {

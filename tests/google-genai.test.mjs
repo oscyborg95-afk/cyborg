@@ -12,11 +12,22 @@ test("AI Studio keys use the Gemini Developer API", () => {
   assert.equal(request.headers["x-goog-api-key"], "AIza-test");
 });
 
-test("Agent Platform keys use the configured Cloud project and location", () => {
+test("AI Studio authorization keys use the Gemini Developer API", () => {
+  const request = googleGenerateContentRequest("AQ.test", "gemini-test");
+  assert.equal(request.provider, "gemini-developer-api");
+  assert.equal(
+    request.url,
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent"
+  );
+});
+
+test("Vertex AI uses the configured Cloud project and location when explicitly enabled", () => {
   const previousProject = process.env.GOOGLE_CLOUD_PROJECT;
   const previousLocation = process.env.GOOGLE_CLOUD_LOCATION;
+  const previousUseVertex = process.env.GOOGLE_GENAI_USE_VERTEXAI;
   process.env.GOOGLE_CLOUD_PROJECT = "example-project";
   process.env.GOOGLE_CLOUD_LOCATION = "global";
+  process.env.GOOGLE_GENAI_USE_VERTEXAI = "true";
   try {
     const request = googleGenerateContentRequest("AQ.test", "gemini-test");
     assert.equal(request.provider, "google-cloud-agent-platform");
@@ -30,12 +41,16 @@ test("Agent Platform keys use the configured Cloud project and location", () => 
     else process.env.GOOGLE_CLOUD_PROJECT = previousProject;
     if (previousLocation === undefined) delete process.env.GOOGLE_CLOUD_LOCATION;
     else process.env.GOOGLE_CLOUD_LOCATION = previousLocation;
+    if (previousUseVertex === undefined) delete process.env.GOOGLE_GENAI_USE_VERTEXAI;
+    else process.env.GOOGLE_GENAI_USE_VERTEXAI = previousUseVertex;
   }
 });
 
-test("Agent Platform keys fail clearly when the Cloud project is missing", () => {
+test("Vertex AI fails clearly when the Cloud project is missing", () => {
   const previousProject = process.env.GOOGLE_CLOUD_PROJECT;
+  const previousUseVertex = process.env.GOOGLE_GENAI_USE_VERTEXAI;
   delete process.env.GOOGLE_CLOUD_PROJECT;
+  process.env.GOOGLE_GENAI_USE_VERTEXAI = "true";
   try {
     assert.throws(
       () => googleGenerateContentRequest("AQ.test", "gemini-test"),
@@ -43,5 +58,7 @@ test("Agent Platform keys fail clearly when the Cloud project is missing", () =>
     );
   } finally {
     if (previousProject !== undefined) process.env.GOOGLE_CLOUD_PROJECT = previousProject;
+    if (previousUseVertex === undefined) delete process.env.GOOGLE_GENAI_USE_VERTEXAI;
+    else process.env.GOOGLE_GENAI_USE_VERTEXAI = previousUseVertex;
   }
 });

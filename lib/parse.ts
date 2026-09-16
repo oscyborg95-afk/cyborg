@@ -122,11 +122,15 @@ async function parseWithGemini(
   // One request for a single key. Gemini occasionally returns 503 (UNAVAILABLE /
   // "high demand") — a transient spike, not a real failure — so retry a few
   // times with backoff, so the operator never sees a blip from clicking Parse.
-  const callOnce = async (apiKey: string): Promise<Response> => {
+  const callOnce = async (
+    apiKey: string
+  ): Promise<{ response: Response; provider: string }> => {
     let res: Response | null = null;
+    let provider = "";
     const backoffMs = [600, 1200, 2500];
     for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
       const request = googleGenerateContentRequest(apiKey, GEMINI_MODEL);
+      provider = request.provider;
       res = await fetch(request.url, {
         method: "POST",
         headers: request.headers,
@@ -136,7 +140,7 @@ async function parseWithGemini(
       await sleep(backoffMs[attempt]);
     }
     if (!res) throw new Error("Gemini request failed to start.");
-    return res;
+    return { response: res, provider };
   };
 
   // Try each configured key in turn: a rate-limited (429) key rotates to the
@@ -145,10 +149,9 @@ async function parseWithGemini(
   let res: Response | null = null;
   let provider = "";
   for (let i = 0; i < apiKeys.length; i++) {
-    provider = apiKeys[i].startsWith("AQ.")
-      ? "google-cloud-agent-platform"
-      : "gemini-developer-api";
-    res = await callOnce(apiKeys[i]);
+    const result = await callOnce(apiKeys[i]);
+    res = result.response;
+    provider = result.provider;
     if (res.status === 429 && i < apiKeys.length - 1) continue;
     break;
   }
