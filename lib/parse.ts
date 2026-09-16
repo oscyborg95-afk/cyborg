@@ -10,7 +10,7 @@ import type { ParsedAddress } from "./types";
 //   2. ANTHROPIC_API_KEY — Claude fallback for anyone who already has one
 // Both are forced into the same JSON schema, so the rest of the app doesn't care.
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 
 const ParsedAddressSchema = z.object({
   name: z.string(),
