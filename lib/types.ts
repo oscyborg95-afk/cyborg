@@ -16,6 +16,9 @@ export interface OrderItem {
 
 export interface Order {
   id: string;
+  // Financial owner of the sale inside this tenant. All existing orders are
+  // backfilled to the default account during the additive schema migration.
+  sales_account_id: string;
   // Short, human-friendly reference (e.g. "DC-1001") assigned on creation and
   // sent to the courier instead of the raw UUID. null on legacy orders.
   order_no?: string | null;
@@ -244,7 +247,40 @@ export type NewOrder = Omit<
   | "order_no"
   | "idempotency_key"
   | "archived_at"
->;
+  | "sales_account_id"
+> & { sales_account_id?: string | null };
+
+export interface SalesAccount {
+  id: string;
+  name: string;
+  code: string;
+  color: string;
+  is_default: boolean;
+  active: boolean;
+  created_at: string;
+}
+
+export interface SellerSettlementLine {
+  remittance_line_id: string;
+  waybill_id: string;
+  order_no: string;
+  customer_name: string;
+  amount: number;
+}
+
+export interface SellerSettlement {
+  id: string;
+  sales_account_id: string;
+  sales_account_name: string;
+  line_count: number;
+  amount_due: number;
+  amount_paid: number;
+  cash_applied: boolean;
+  payment_reference: string;
+  paid_at: string;
+  notes: string;
+  created_at: string;
+}
 
 // One day's Meta/Facebook ad spend, entered manually on the Quest page.
 // day is YYYY-MM-DD (Asia/Colombo civil date).

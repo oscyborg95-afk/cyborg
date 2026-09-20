@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
     discount = 0,
     payment_method = "cod",
     replaces_order_id = null,
+    sales_account_id = null,
   } = body;
 
   if (!chat_id || !customer_name || !phone_number || !parsed_address || !district) {
@@ -71,6 +72,7 @@ export async function POST(req: NextRequest) {
     // throws, it stays as a reviewable pending order rather than vanishing.
     const pendingOrder = await createOrder({
       customer_name,
+      sales_account_id,
       phone_number,
       phone_2,
       raw_address,

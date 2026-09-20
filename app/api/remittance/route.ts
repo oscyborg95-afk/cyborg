@@ -4,6 +4,7 @@ import {
   createCourierRemittance,
   findRemittanceMatches,
   listCourierRemittances,
+  listSalesAccounts,
 } from "@/lib/db";
 import {
   parseCourierInvoiceRows,
@@ -45,12 +46,36 @@ async function preview(form: FormData) {
       order_id: match.order.id,
       order_status: match.order.order_status,
       remitted_at: match.order.remitted_at,
+      sales_account_id: match.order.sales_account_id,
     }] : [])
   );
   return {
     ...parsed,
     ...owned,
+    accounts: await listSalesAccounts(),
   };
+}
+
+function sellerBreakdown(
+  lines: Array<{ sales_account_id: string; collected_cod: number; delivery_charge: number; commission: number; vat: number; payable: number }>,
+  accounts: Array<{ id: string; name: string; color: string; is_default: boolean }>
+) {
+  return accounts.flatMap((account) => {
+    const mine = lines.filter((line) => line.sales_account_id === account.id);
+    if (!mine.length) return [];
+    const sum = (key: "collected_cod" | "delivery_charge" | "commission" | "vat" | "payable") =>
+      Math.round(mine.reduce((total, line) => total + Number(line[key] || 0), 0) * 100) / 100;
+    return [{
+      sales_account_id: account.id,
+      name: account.name,
+      color: account.color,
+      is_default: account.is_default,
+      order_count: mine.length,
+      collected_cod: sum("collected_cod"),
+      deductions: Math.round((sum("delivery_charge") + sum("commission") + sum("vat")) * 100) / 100,
+      payable: sum("payable"),
+    }];
+  });
 }
 
 export async function GET() {
@@ -77,6 +102,7 @@ export async function POST(req: NextRequest) {
         matched_count: result.matched_count,
         already_remitted_count: result.already_remitted_count,
         ignored: result.ignored,
+        seller_breakdown: sellerBreakdown(result.lines, result.accounts),
       });
     }
 

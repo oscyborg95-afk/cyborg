@@ -22,6 +22,7 @@ import type {
   Order,
   OrderItem,
   Product,
+  SalesAccount,
   ShippingManifest,
   WaChat,
   WaMessage,
@@ -64,6 +65,7 @@ const STATE_BADGES: Record<ChatStateValue, { label: string; className: string }>
 };
 
 interface Draft {
+  sales_account_id: string;
   customer_name: string;
   phone_number: string;
   phone_2: string;
@@ -277,6 +279,7 @@ export default function Workspace() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [manifests, setManifests] = useState<ShippingManifest[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [salesAccounts, setSalesAccounts] = useState<SalesAccount[]>([]);
   const [workerOffline, setWorkerOffline] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [parsing, setParsing] = useState(false);
@@ -443,6 +446,12 @@ export default function Workspace() {
     if (res.ok) setProducts(data.products);
   }, []);
 
+  const loadSalesAccounts = useCallback(async () => {
+    const res = await fetch("/api/sales-accounts");
+    const data = await res.json();
+    if (res.ok) setSalesAccounts(data.accounts ?? []);
+  }, []);
+
   // Settings carry the operator's custom message templates; metrics feed the
   // coach's dialogue (goal progress, streak risk). Both are decoration — the
   // workspace keeps working if either fetch fails.
@@ -489,6 +498,7 @@ export default function Workspace() {
     loadStates();
     loadOrders();
     loadProducts();
+    loadSalesAccounts();
     loadWaStatus();
     loadSettings();
     loadMetrics();
@@ -578,7 +588,7 @@ export default function Workspace() {
       window.clearInterval(statusPoll);
       socket?.disconnect();
     };
-  }, [loadChats, loadStates, loadOrders, loadProducts, loadWaStatus, loadSettings, loadMetrics, showPane]);
+  }, [loadChats, loadStates, loadOrders, loadProducts, loadSalesAccounts, loadWaStatus, loadSettings, loadMetrics, showPane]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -873,6 +883,7 @@ export default function Workspace() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setDraft({
+        sales_account_id: salesAccounts.find((account) => account.is_default)?.id ?? "00000000-0000-4000-8000-000000000001",
         customer_name: data.name,
         phone_number: data.phone || (activePhone ?? ""),
         phone_2: data.phone_2 || "",
@@ -1538,6 +1549,18 @@ export default function Workspace() {
 
             {draft && (
               <div className="animate-pop space-y-2.5">
+                <label className="block font-display text-xs font-bold text-ink-soft">
+                  Selling for
+                  <select
+                    className={inputCls}
+                    value={draft.sales_account_id}
+                    onChange={(e) => setDraftField("sales_account_id", e.target.value)}
+                  >
+                    {salesAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>{account.name}</option>
+                    ))}
+                  </select>
+                </label>
                 {(
                   [
                     ["customer_name", "Name"],

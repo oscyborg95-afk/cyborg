@@ -30,6 +30,7 @@ import type {
   OrderItem,
   OrderStatus,
   Product,
+  SalesAccount,
   ShippingManifest,
   TrackingHealth,
   TrackingEvent,
@@ -46,6 +47,7 @@ import { RemittancePanel } from "../components/remittance-panel";
 // still handles orders that arrive outside WhatsApp and status bookkeeping.
 
 interface ReviewForm {
+  sales_account_id: string;
   customer_name: string;
   phone_number: string;
   phone_2: string;
@@ -114,12 +116,14 @@ function fmtDateTime(iso: string): string {
 }
 
 // Everything the accountant (i.e. you, at month end) wants, one row per order.
-function ordersToCsv(orders: Order[], manifests: ShippingManifest[]): string {
+function ordersToCsv(orders: Order[], manifests: ShippingManifest[], accounts: SalesAccount[]): string {
   const manifestByOrder = new Map(manifests.map((m) => [m.order_id, m]));
+  const accountById = new Map(accounts.map((account) => [account.id, account.name]));
   const esc = (v: unknown) => `"${String(v ?? "").replaceAll('"', '""')}"`;
   const header = [
     "created_at",
     "order_no",
+    "sales_account",
     "customer_name",
     "phone",
     "phone_2",
@@ -143,6 +147,7 @@ function ordersToCsv(orders: Order[], manifests: ShippingManifest[]): string {
     return [
       o.created_at,
       o.order_no ?? "",
+      accountById.get(o.sales_account_id) ?? "My business",
       o.customer_name,
       o.phone_number,
       o.phone_2,
@@ -241,6 +246,8 @@ export default function OrdersPage() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
+  const [salesAccounts, setSalesAccounts] = useState<SalesAccount[]>([]);
+  const [salesAccountFilter, setSalesAccountFilter] = useState("all");
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [msgTemplates, setMsgTemplates] = useState<MessageTemplates>({});
@@ -257,14 +264,16 @@ export default function OrdersPage() {
   const [deliveryAttempts, setDeliveryAttempts] = useState<DeliveryAttempt[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [deliveryLoadError, setDeliveryLoadError] = useState<string | null>(null);
+  const [sellerSavingId, setSellerSavingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [ordersRes, productsRes, settingsRes, healthRes] = await Promise.all([
+      const [ordersRes, productsRes, settingsRes, healthRes, accountsRes] = await Promise.all([
         fetch("/api/orders"),
         fetch("/api/products"),
         fetch("/api/settings"),
         fetch("/api/tracking/health"),
+        fetch("/api/sales-accounts"),
       ]);
       const data = await ordersRes.json();
       if (ordersRes.ok) {
@@ -280,6 +289,8 @@ export default function OrdersPage() {
       }
       const productsData = await productsRes.json();
       if (productsRes.ok) setProducts(productsData.products);
+      const accountsData = await accountsRes.json();
+      if (accountsRes.ok) setSalesAccounts(accountsData.accounts ?? []);
       const settingsData = await settingsRes.json();
       if (settingsRes.ok) {
         setMsgTemplates(settingsData.settings?.templates ?? {});
@@ -335,6 +346,7 @@ export default function OrdersPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setForm({
+        sales_account_id: salesAccounts.find((account) => account.is_default)?.id ?? "00000000-0000-4000-8000-000000000001",
         customer_name: data.name,
         phone_number: data.phone,
         phone_2: data.phone_2 || "",
@@ -382,6 +394,25 @@ export default function OrdersPage() {
       setError(err instanceof Error ? err.message : "Save failed");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleSalesAccountChange(orderId: string, salesAccountId: string) {
+    setSellerSavingId(orderId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/orders/${orderId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sales_account_id: salesAccountId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setOrders((current) => current.map((order) => order.id === orderId ? data.order : order));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Seller update failed");
+    } finally {
+      setSellerSavingId(null);
     }
   }
 
@@ -545,6 +576,10 @@ export default function OrdersPage() {
   // Orders that share a customer + a 72h window with another live order — the
   // set the list badges as "possible duplicate".
   const dupIds = useMemo(() => duplicateOrderIds(orders), [orders]);
+  const salesAccountById = useMemo(
+    () => new Map(salesAccounts.map((account) => [account.id, account])),
+    [salesAccounts]
+  );
 
   // --- Cash reconciliation ---------------------------------------------------
 
@@ -561,6 +596,7 @@ export default function OrdersPage() {
       if (statusFilter === "delivered" && order.order_status !== "delivered") return false;
       if (statusFilter === "returned" && order.order_status !== "returned") return false;
       if (statusFilter === "unremitted" && !(order.order_status === "delivered" && !order.remitted_at)) return false;
+      if (salesAccountFilter !== "all" && order.sales_account_id !== salesAccountFilter) return false;
 
       // 2. Date Filter
       if (!isDateInRange(order.created_at, datePreset, customStart, customEnd)) return false;
@@ -583,7 +619,7 @@ export default function OrdersPage() {
         .toLowerCase()
         .includes(q);
     });
-  }, [orders, manifests, statusFilter, datePreset, customStart, customEnd, search]);
+  }, [orders, manifests, statusFilter, salesAccountFilter, datePreset, customStart, customEnd, search]);
 
   const filteredTotalCod = useMemo(() => {
     return filteredOrders.reduce((sum, o) => sum + Number(o.total_cod || 0), 0);
@@ -614,10 +650,11 @@ export default function OrdersPage() {
     return orders.filter((o) => o.order_status === "returned").length;
   }, [orders]);
 
-  const isFiltered = statusFilter !== "all" || datePreset !== "all" || Boolean(search.trim()) || Boolean(customStart) || Boolean(customEnd);
+  const isFiltered = statusFilter !== "all" || salesAccountFilter !== "all" || datePreset !== "all" || Boolean(search.trim()) || Boolean(customStart) || Boolean(customEnd);
 
   const resetFilters = () => {
     setStatusFilter("all");
+    setSalesAccountFilter("all");
     setDatePreset("all");
     setCustomStart("");
     setCustomEnd("");
@@ -625,7 +662,7 @@ export default function OrdersPage() {
   };
 
   function handleExportCsv() {
-    const csv = ordersToCsv(orders, manifests);
+    const csv = ordersToCsv(orders, manifests, salesAccounts);
     // BOM so Excel opens the Sinhala names correctly.
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
@@ -778,6 +815,18 @@ export default function OrdersPage() {
         <Card className="animate-pop p-4 sm:p-5">
           <h2 className="mb-3 font-display text-lg font-extrabold text-ink">2 · Verify &amp; save</h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="font-display text-xs font-bold text-ink-soft sm:col-span-2">
+              Selling for
+              <select
+                className={inputCls}
+                value={form.sales_account_id}
+                onChange={(e) => setField("sales_account_id", e.target.value)}
+              >
+                {salesAccounts.map((account) => (
+                  <option key={account.id} value={account.id}>{account.name}</option>
+                ))}
+              </select>
+            </label>
             <label className="font-display text-xs font-bold text-ink-soft">
               Name
               <input
@@ -1123,6 +1172,30 @@ export default function OrdersPage() {
           )}
         </div>
 
+        {/* Financial owner filter */}
+        <div className="space-y-2">
+          <span className="block font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
+            👤 Selling for:
+          </span>
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1" role="group" aria-label="Filter orders by sales account">
+            <button
+              onClick={() => setSalesAccountFilter("all")}
+              className={`min-h-11 shrink-0 rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold ${salesAccountFilter === "all" ? "border-frog bg-pond text-frog-dark" : "border-cardline bg-surface text-ink-soft"}`}
+            >
+              All sellers
+            </button>
+            {salesAccounts.map((account) => (
+              <button
+                key={account.id}
+                onClick={() => setSalesAccountFilter(account.id)}
+                className={`min-h-11 shrink-0 rounded-xl border-2 px-3 py-2 font-display text-xs font-extrabold ${salesAccountFilter === account.id ? "border-grape bg-grape-tint text-grape-dark" : "border-cardline bg-surface text-ink-soft"}`}
+              >
+                {account.name} ({orders.filter((order) => order.sales_account_id === account.id).length})
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Orders Table or Empty State */}
         {orders.length === 0 ? (
           <div className="flex flex-col items-center gap-2 p-8 text-center">
@@ -1161,6 +1234,22 @@ export default function OrdersPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h3 className="truncate font-display text-lg font-extrabold text-ink">{order.customer_name}</h3>
+                      {salesAccountById.get(order.sales_account_id) && (
+                        <span className="mt-1 inline-flex rounded-full bg-grape-tint px-2 py-0.5 font-display text-[10px] font-extrabold text-grape-dark">
+                          {salesAccountById.get(order.sales_account_id)?.name}
+                        </span>
+                      )}
+                      {!order.remitted_at && salesAccounts.length > 1 && (
+                        <select
+                          aria-label={`Seller for ${order.customer_name}`}
+                          className="mt-1 block max-w-full rounded-lg border border-cardline bg-white px-2 py-1 font-display text-xs font-bold text-ink"
+                          value={order.sales_account_id}
+                          disabled={sellerSavingId === order.id}
+                          onChange={(event) => void handleSalesAccountChange(order.id, event.target.value)}
+                        >
+                          {salesAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                        </select>
+                      )}
                       <p className="mt-0.5 truncate text-sm font-bold text-ink-soft">
                         {order.order_no ?? order.phone_number} · {order.district || order.city || "Location not set"}
                       </p>
@@ -1335,6 +1424,22 @@ export default function OrdersPage() {
                             <div className="mt-0.5 font-mono text-[11px] font-bold text-ink-soft">
                               {order.order_no}
                             </div>
+                          )}
+                          {salesAccountById.get(order.sales_account_id) && (
+                            <div className="mt-1 inline-block rounded-full bg-grape-tint px-2 py-0.5 font-display text-[10px] font-extrabold text-grape-dark">
+                              {salesAccountById.get(order.sales_account_id)?.name}
+                            </div>
+                          )}
+                          {!order.remitted_at && salesAccounts.length > 1 && (
+                            <select
+                              aria-label={`Seller for ${order.customer_name}`}
+                              className="mt-1 block rounded-lg border border-cardline bg-white px-2 py-1 font-display text-[10px] font-bold text-ink"
+                              value={order.sales_account_id}
+                              disabled={sellerSavingId === order.id}
+                              onChange={(event) => void handleSalesAccountChange(order.id, event.target.value)}
+                            >
+                              {salesAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                            </select>
                           )}
                           {dupIds.has(order.id) && (
                             <div

@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { archiveOrder, getOrder, updateOrderStatus } from "@/lib/db";
+import { archiveOrder, getOrder, updateOrderSalesAccount, updateOrderStatus } from "@/lib/db";
 import type { OrderStatus } from "@/lib/types";
 
 const STATUSES: OrderStatus[] = ["pending", "booked", "delivered", "returned"];
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { status } = await req.json();
+  const { status, sales_account_id: salesAccountId } = await req.json();
+  if (salesAccountId) {
+    try {
+      const order = await updateOrderSalesAccount(id, String(salesAccountId));
+      return NextResponse.json({ ok: true, order });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Update failed";
+      return NextResponse.json({ error: message }, { status: message.includes("cannot be changed") ? 409 : 400 });
+    }
+  }
   if (!STATUSES.includes(status)) {
     return NextResponse.json(
       { error: `status must be one of ${STATUSES.join(", ")}` },

@@ -19,6 +19,9 @@ import type {
   Order,
   OrderStatus,
   Product,
+  SalesAccount,
+  SellerSettlement,
+  SellerSettlementLine,
   ShippingManifest,
   TrackingEvent,
   TrackingHealth,
@@ -69,6 +72,11 @@ const g = globalThis as unknown as {
   __cyborgRemittances?: Map<string, CourierRemittance>;
   __cyborgRemittanceFiles?: Map<string, { data: Buffer; filename: string; mime: string }>;
   __remittancesReady?: Set<string>;
+  __salesAccountsReady?: Set<string>;
+  __cyborgSalesAccounts?: Map<string, SalesAccount>;
+  __cyborgSellerSettlements?: Map<string, SellerSettlement>;
+  __cyborgSellerSettlementLines?: Map<string, SellerSettlementLine[]>;
+  __cyborgRemittanceLines?: Array<SellerSettlementLine & { sales_account_id: string; settled: boolean }>;
 };
 
 const tenantPools = (g.__cyborgTenantPools ??= new Map<string, Pool>());
@@ -156,6 +164,28 @@ const memWebhookEvents = (g.__cyborgWebhookEvents ??= new Map<string, CourierWeb
 const memNotificationJobs = (g.__cyborgNotificationJobs ??= new Map<string, TrackingNotificationJob>());
 const memDeliveryEvents = (g.__cyborgDeliveryEvents ??= new Map<string, DeliveryEvent>());
 const memDeliveryAttempts = (g.__cyborgDeliveryAttempts ??= new Map<string, DeliveryAttempt>());
+const DEFAULT_SALES_ACCOUNT_ID = "00000000-0000-4000-8000-000000000001";
+const SISTER_SALES_ACCOUNT_ID = "00000000-0000-4000-8000-000000000002";
+const memSalesAccounts = (g.__cyborgSalesAccounts ??= new Map<string, SalesAccount>());
+const memSellerSettlements = (g.__cyborgSellerSettlements ??= new Map<string, SellerSettlement>());
+const memSellerSettlementLines = (g.__cyborgSellerSettlementLines ??= new Map<string, SellerSettlementLine[]>());
+const memRemittanceLines = (g.__cyborgRemittanceLines ??= []);
+
+function seedMemSalesAccounts(): void {
+  const now = new Date().toISOString();
+  if (!memSalesAccounts.has(DEFAULT_SALES_ACCOUNT_ID)) {
+    memSalesAccounts.set(DEFAULT_SALES_ACCOUNT_ID, {
+      id: DEFAULT_SALES_ACCOUNT_ID, name: "My business", code: "OWN", color: "#2f855a",
+      is_default: true, active: true, created_at: now,
+    });
+  }
+  if (!memSalesAccounts.has(SISTER_SALES_ACCOUNT_ID)) {
+    memSalesAccounts.set(SISTER_SALES_ACCOUNT_ID, {
+      id: SISTER_SALES_ACCOUNT_ID, name: "Sister", code: "SISTER", color: "#7c3aed",
+      is_default: false, active: true, created_at: now,
+    });
+  }
+}
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   bank_cash: 0,
@@ -182,6 +212,24 @@ async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (g.__orderSafetyReady ??= new Set());
   if (ready.has(tenantId)) return;
+  await db.query(`create table if not exists sales_accounts (
+    id uuid primary key default gen_random_uuid(), name varchar(120) not null,
+    code varchar(20) not null unique, color varchar(20) not null default '#6b7280',
+    is_default boolean not null default false, active boolean not null default true,
+    created_at timestamptz not null default now()
+  )`);
+  await db.query("create unique index if not exists uq_sales_accounts_default on sales_accounts(is_default) where is_default");
+  await db.query(
+    `insert into sales_accounts (id,name,code,color,is_default) values
+      ($1,'My business','OWN','#2f855a',true), ($2,'Sister','SISTER','#7c3aed',false)
+     on conflict (id) do nothing`,
+    [DEFAULT_SALES_ACCOUNT_ID, SISTER_SALES_ACCOUNT_ID]
+  );
+  await db.query("alter table orders add column if not exists sales_account_id uuid references sales_accounts(id)");
+  await db.query("update orders set sales_account_id = $1 where sales_account_id is null", [DEFAULT_SALES_ACCOUNT_ID]);
+  await db.query("alter table orders alter column sales_account_id set default '00000000-0000-4000-8000-000000000001'");
+  await db.query("alter table orders alter column sales_account_id set not null");
+  await db.query("create index if not exists idx_orders_sales_account on orders(sales_account_id, created_at desc)");
   await db.query("alter table orders add column if not exists idempotency_key varchar");
   await db.query("alter table orders add column if not exists archived_at timestamptz");
   // Payment method replaced the old "zero the parcel with a full discount"
@@ -257,6 +305,66 @@ async function nextOrderNo(db: Queryable): Promise<string> {
   return `${prefix}-${rows[0].n}`;
 }
 
+export async function listSalesAccounts(activeOnly = true): Promise<SalesAccount[]> {
+  if (pool) {
+    await ensureOrderSafetySchema(pool);
+    const { rows } = await pool.query(
+      `select * from sales_accounts where ($1::boolean = false or active = true)
+       order by is_default desc, created_at asc`,
+      [activeOnly]
+    );
+    return rows as SalesAccount[];
+  }
+  seedMemSalesAccounts();
+  return [...memSalesAccounts.values()].filter((account) => !activeOnly || account.active);
+}
+
+export async function renameSalesAccount(id: string, name: string): Promise<SalesAccount | null> {
+  const clean = name.trim().slice(0, 120);
+  if (!clean) throw new Error("Account name is required");
+  if (pool) {
+    await ensureOrderSafetySchema(pool);
+    const { rows } = await pool.query(
+      "update sales_accounts set name = $1 where id = $2 returning *",
+      [clean, id]
+    );
+    return (rows[0] as SalesAccount | undefined) ?? null;
+  }
+  seedMemSalesAccounts();
+  const account = memSalesAccounts.get(id);
+  if (!account) return null;
+  const updated = { ...account, name: clean };
+  memSalesAccounts.set(id, updated);
+  return updated;
+}
+
+export async function updateOrderSalesAccount(id: string, salesAccountId: string): Promise<Order> {
+  if (pool) {
+    await ensureOrderSafetySchema(pool);
+    return withTransaction(async (db) => {
+      const account = await db!.query("select id from sales_accounts where id = $1 and active = true", [salesAccountId]);
+      if (!account.rows[0]) throw new Error("Sales account not found");
+      const current = await db!.query("select * from orders where id = $1 for update", [id]);
+      const order = current.rows[0] as Order | undefined;
+      if (!order) throw new Error("Order not found");
+      if (order.remitted_at) throw new Error("A remitted order's sales account cannot be changed");
+      const { rows } = await db!.query(
+        "update orders set sales_account_id = $1 where id = $2 returning *",
+        [salesAccountId, id]
+      );
+      return rows[0] as Order;
+    });
+  }
+  seedMemSalesAccounts();
+  const order = memOrders.get(id);
+  if (!order) throw new Error("Order not found");
+  if (!memSalesAccounts.has(salesAccountId)) throw new Error("Sales account not found");
+  if (order.remitted_at) throw new Error("A remitted order's sales account cannot be changed");
+  const updated = { ...order, sales_account_id: salesAccountId };
+  memOrders.set(id, updated);
+  return updated;
+}
+
 export async function createOrder(
   input: NewOrder,
   db: Queryable | null = pool,
@@ -267,14 +375,15 @@ export async function createOrder(
     const order_no = await nextOrderNo(db);
     const { rows } = await db.query(
       `insert into orders
-         (order_no, customer_name, phone_number, phone_2, raw_address, parsed_address, city, city_id, district,
+         (order_no, sales_account_id, customer_name, phone_number, phone_2, raw_address, parsed_address, city, city_id, district,
           product_id, item_name, items, product_price, shipping_fee, discount, total_cod,
           payment_method, replaces_order_id, idempotency_key, order_status)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'pending')
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'pending')
        on conflict (idempotency_key) where idempotency_key is not null do nothing
        returning *`,
       [
         order_no,
+        input.sales_account_id || DEFAULT_SALES_ACCOUNT_ID,
         input.customer_name,
         input.phone_number,
         input.phone_2,
@@ -309,6 +418,7 @@ export async function createOrder(
   const prefix = (g.__cyborgSettings ?? DEFAULT_SETTINGS).order_prefix || "DC";
   const order: Order = {
     ...input,
+    sales_account_id: input.sales_account_id || DEFAULT_SALES_ACCOUNT_ID,
     id: randomUUID(),
     order_no: `${prefix}-${seq}`,
     order_status: "pending",
@@ -2091,6 +2201,7 @@ async function ensureRemittanceSchema(db: Queryable): Promise<void> {
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (g.__remittancesReady ??= new Set());
   if (ready.has(tenantId)) return;
+  await ensureOrderSafetySchema(db);
   await db.query(`create table if not exists courier_remittances (
     id uuid primary key default gen_random_uuid(), invoice_no varchar not null unique,
     paid_at timestamptz not null, source_filename varchar not null,
@@ -2108,11 +2219,29 @@ async function ensureRemittanceSchema(db: Queryable): Promise<void> {
     id uuid primary key default gen_random_uuid(),
     remittance_id uuid not null references courier_remittances(id) on delete cascade,
     matched_order_id uuid references orders(id) on delete set null,
+    sales_account_id uuid references sales_accounts(id),
     order_date varchar not null default '', waybill_id varchar not null,
     order_no varchar not null default '', cod numeric not null,
     collected_cod numeric not null, vat numeric not null, commission numeric not null,
     delivery_charge numeric not null, payable numeric not null,
+    settlement_amount numeric,
     status varchar not null default ''
+  )`);
+  await db.query("alter table courier_remittance_lines add column if not exists sales_account_id uuid references sales_accounts(id)");
+  await db.query("alter table courier_remittance_lines add column if not exists settlement_amount numeric");
+  await db.query(`create table if not exists seller_settlements (
+    id uuid primary key default gen_random_uuid(),
+    sales_account_id uuid not null references sales_accounts(id),
+    amount_due numeric not null, amount_paid numeric not null,
+    cash_applied boolean not null default true,
+    payment_reference varchar not null default '', paid_at timestamptz not null,
+    notes text not null default '', created_at timestamptz not null default now()
+  )`);
+  await db.query(`create table if not exists seller_settlement_lines (
+    id uuid primary key default gen_random_uuid(),
+    settlement_id uuid not null references seller_settlements(id) on delete cascade,
+    remittance_line_id uuid not null references courier_remittance_lines(id),
+    amount numeric not null, unique(remittance_line_id)
   )`);
   await db.query("alter table orders add column if not exists remitted_at timestamptz");
   await db.query(
@@ -2154,7 +2283,7 @@ export async function findRemittanceMatches(
 
 export interface NewCourierRemittance {
   invoice: ParsedCourierInvoice;
-  lines: Array<CourierInvoiceLine & { matched_order_id: string | null }>;
+  lines: Array<CourierInvoiceLine & { matched_order_id: string | null; sales_account_id: string }>;
   paid_at: string;
   source_filename: string;
   source_mime: string;
@@ -2194,15 +2323,21 @@ export async function createCourierRemittance(input: NewCourierRemittance): Prom
         ]
       );
       const id = inserted.rows[0].id as string;
-      for (const line of input.lines) {
+      let allocatedReceipt = 0;
+      for (let index = 0; index < input.lines.length; index++) {
+        const line = input.lines[index];
+        const settlementAmount = index === input.lines.length - 1
+          ? Math.round((input.amount_received - allocatedReceipt) * 100) / 100
+          : Math.round((input.invoice.payable > 0 ? line.payable / input.invoice.payable * input.amount_received : 0) * 100) / 100;
+        allocatedReceipt = Math.round((allocatedReceipt + settlementAmount) * 100) / 100;
         await db!.query(
           `insert into courier_remittance_lines
-            (remittance_id, matched_order_id, order_date, waybill_id, order_no, cod,
-             collected_cod, vat, commission, delivery_charge, payable, status)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-          [id, line.matched_order_id, line.order_date, line.waybill_id, line.order_no,
+            (remittance_id, matched_order_id, sales_account_id, order_date, waybill_id, order_no, cod,
+             collected_cod, vat, commission, delivery_charge, payable, settlement_amount, status)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [id, line.matched_order_id, line.sales_account_id, line.order_date, line.waybill_id, line.order_no,
            line.cod, line.collected_cod, line.vat, line.commission,
-           line.delivery_charge, line.payable, line.status]
+           line.delivery_charge, line.payable, settlementAmount, line.status]
         );
       }
       let matchedCount = 0;
@@ -2244,6 +2379,25 @@ export async function createCourierRemittance(input: NewCourierRemittance): Prom
       matchedCount++;
     }
   }
+  let allocatedReceipt = 0;
+  for (let index = 0; index < input.lines.length; index++) {
+    const line = input.lines[index];
+    if (!line.matched_order_id) continue;
+    const order = memOrders.get(line.matched_order_id);
+    const settlementAmount = index === input.lines.length - 1
+      ? Math.round((input.amount_received - allocatedReceipt) * 100) / 100
+      : Math.round((input.invoice.payable > 0 ? line.payable / input.invoice.payable * input.amount_received : 0) * 100) / 100;
+    allocatedReceipt = Math.round((allocatedReceipt + settlementAmount) * 100) / 100;
+    memRemittanceLines.push({
+      remittance_line_id: randomUUID(),
+      sales_account_id: line.sales_account_id || order?.sales_account_id || DEFAULT_SALES_ACCOUNT_ID,
+      waybill_id: line.waybill_id,
+      order_no: line.order_no,
+      customer_name: order?.customer_name ?? "",
+      amount: settlementAmount,
+      settled: false,
+    });
+  }
   if (input.cash_applied) {
     const settings = g.__cyborgSettings ?? DEFAULT_SETTINGS;
     g.__cyborgSettings = { ...settings, bank_cash: settings.bank_cash + input.amount_received };
@@ -2276,6 +2430,142 @@ export async function listCourierRemittances(): Promise<CourierRemittance[]> {
     return rows as CourierRemittance[];
   }
   return [...memRemittances.values()].sort((a, b) => b.paid_at.localeCompare(a.paid_at));
+}
+
+export interface SellerPayoutAccount {
+  sales_account: SalesAccount;
+  line_count: number;
+  amount_due: number;
+  lines: SellerSettlementLine[];
+}
+
+export async function listSellerPayouts(): Promise<{
+  outstanding: SellerPayoutAccount[];
+  settlements: SellerSettlement[];
+}> {
+  if (pool) {
+    await ensureRemittanceSchema(pool);
+    const { rows: accounts } = await pool.query(
+      "select * from sales_accounts where active = true and is_default = false order by created_at"
+    );
+    const outstanding: SellerPayoutAccount[] = [];
+    for (const account of accounts as SalesAccount[]) {
+      const { rows } = await pool.query(
+        `select l.id as remittance_line_id, l.waybill_id, l.order_no,
+                coalesce(o.customer_name, '') as customer_name, coalesce(l.settlement_amount, l.payable) as amount
+         from courier_remittance_lines l
+         left join orders o on o.id = l.matched_order_id
+         where coalesce(l.sales_account_id, o.sales_account_id) = $1
+           and l.matched_order_id is not null
+           and not exists (select 1 from seller_settlement_lines sl where sl.remittance_line_id = l.id)
+         order by l.order_date, l.waybill_id`,
+        [account.id]
+      );
+      const lines = rows as SellerSettlementLine[];
+      outstanding.push({
+        sales_account: account,
+        line_count: lines.length,
+        amount_due: Math.round(lines.reduce((sum, line) => sum + Number(line.amount), 0) * 100) / 100,
+        lines,
+      });
+    }
+    const { rows: settlements } = await pool.query(
+      `select s.*, a.name as sales_account_name, count(sl.id)::int as line_count
+       from seller_settlements s join sales_accounts a on a.id = s.sales_account_id
+       left join seller_settlement_lines sl on sl.settlement_id = s.id
+       group by s.id, a.name order by s.paid_at desc limit 52`
+    );
+    return { outstanding, settlements: settlements as SellerSettlement[] };
+  }
+  seedMemSalesAccounts();
+  const outstanding = [...memSalesAccounts.values()].filter((a) => !a.is_default && a.active).map((account) => {
+    const lines = memRemittanceLines.filter((line) => line.sales_account_id === account.id && !line.settled);
+    return {
+      sales_account: account,
+      line_count: lines.length,
+      amount_due: Math.round(lines.reduce((sum, line) => sum + line.amount, 0) * 100) / 100,
+      lines: lines.map((line) => ({
+        remittance_line_id: line.remittance_line_id, waybill_id: line.waybill_id,
+        order_no: line.order_no, customer_name: line.customer_name, amount: line.amount,
+      })),
+    };
+  });
+  return { outstanding, settlements: [...memSellerSettlements.values()].sort((a, b) => b.paid_at.localeCompare(a.paid_at)) };
+}
+
+export async function createSellerSettlement(input: {
+  sales_account_id: string;
+  paid_at: string;
+  payment_reference: string;
+  notes: string;
+  cash_applied: boolean;
+}): Promise<SellerSettlement> {
+  if (pool) {
+    await ensureRemittanceSchema(pool);
+    return withTransaction(async (db) => {
+      const accountResult = await db!.query(
+        "select * from sales_accounts where id = $1 and active = true and is_default = false",
+        [input.sales_account_id]
+      );
+      const account = accountResult.rows[0] as SalesAccount | undefined;
+      if (!account) throw new Error("Seller account not found");
+      const lineResult = await db!.query(
+        `select l.id, coalesce(l.settlement_amount, l.payable) as payable
+         from courier_remittance_lines l left join orders o on o.id = l.matched_order_id
+         where coalesce(l.sales_account_id, o.sales_account_id) = $1
+           and l.matched_order_id is not null
+           and not exists (select 1 from seller_settlement_lines sl where sl.remittance_line_id = l.id)
+         for update of l`,
+        [input.sales_account_id]
+      );
+      if (!lineResult.rows.length) throw new Error("There are no unpaid remittance lines for this seller");
+      const due = Math.round(lineResult.rows.reduce((sum, line) => sum + Number(line.payable), 0) * 100) / 100;
+      const inserted = await db!.query(
+        `insert into seller_settlements
+          (sales_account_id,amount_due,amount_paid,cash_applied,payment_reference,paid_at,notes)
+         values ($1,$2,$2,$3,$4,$5,$6) returning *`,
+        [input.sales_account_id, due, input.cash_applied, input.payment_reference.slice(0, 255), input.paid_at, input.notes.slice(0, 2000)]
+      );
+      const settlement = inserted.rows[0];
+      for (const line of lineResult.rows) {
+        await db!.query(
+          "insert into seller_settlement_lines (settlement_id,remittance_line_id,amount) values ($1,$2,$3)",
+          [settlement.id, line.id, line.payable]
+        );
+      }
+      if (input.cash_applied) {
+        await db!.query("update business_settings set bank_cash = bank_cash - $1 where id = 1", [due]);
+      }
+      return {
+        ...settlement,
+        sales_account_name: account.name,
+        line_count: lineResult.rows.length,
+      } as SellerSettlement;
+    });
+  }
+  seedMemSalesAccounts();
+  const account = memSalesAccounts.get(input.sales_account_id);
+  if (!account || account.is_default) throw new Error("Seller account not found");
+  const lines = memRemittanceLines.filter((line) => line.sales_account_id === account.id && !line.settled);
+  if (!lines.length) throw new Error("There are no unpaid remittance lines for this seller");
+  const due = Math.round(lines.reduce((sum, line) => sum + line.amount, 0) * 100) / 100;
+  const now = new Date().toISOString();
+  const settlement: SellerSettlement = {
+    id: randomUUID(), sales_account_id: account.id, sales_account_name: account.name,
+    line_count: lines.length, amount_due: due, amount_paid: due, cash_applied: input.cash_applied,
+    payment_reference: input.payment_reference, paid_at: input.paid_at, notes: input.notes, created_at: now,
+  };
+  lines.forEach((line) => { line.settled = true; });
+  memSellerSettlements.set(settlement.id, settlement);
+  memSellerSettlementLines.set(settlement.id, lines.map((line) => ({
+    remittance_line_id: line.remittance_line_id, waybill_id: line.waybill_id,
+    order_no: line.order_no, customer_name: line.customer_name, amount: line.amount,
+  })));
+  if (input.cash_applied) {
+    const settings = g.__cyborgSettings ?? DEFAULT_SETTINGS;
+    g.__cyborgSettings = { ...settings, bank_cash: settings.bank_cash - due };
+  }
+  return settlement;
 }
 
 export async function getCourierRemittanceFile(id: string): Promise<{ data: Buffer; filename: string; mime: string } | null> {

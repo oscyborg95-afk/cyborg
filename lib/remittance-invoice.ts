@@ -33,6 +33,7 @@ export interface OwnedWaybillMatch {
   order_id: string;
   order_status: string;
   remitted_at?: string | null;
+  sales_account_id: string;
 }
 
 export function filterInvoiceToOwnedWaybills(
@@ -49,7 +50,7 @@ export function filterInvoiceToOwnedWaybills(
       (match.order_status === "booked" || match.order_status === "delivered") &&
       !match.remitted_at
     ) {
-      return [{ ...line, matched_order_id: match.order_id }];
+      return [{ ...line, matched_order_id: match.order_id, sales_account_id: match.sales_account_id }];
     }
     if (match?.remitted_at) alreadyRemittedCount++;
     ignored.push({

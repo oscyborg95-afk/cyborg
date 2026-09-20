@@ -21,6 +21,27 @@ interface InvoicePreview {
   matched_count: number;
   already_remitted_count: number;
   ignored: Array<{ waybill_id: string; order_no: string; reason: string }>;
+  seller_breakdown: Array<{
+    sales_account_id: string; name: string; color: string; is_default: boolean;
+    order_count: number; collected_cod: number; deductions: number; payable: number;
+  }>;
+}
+
+interface SellerPayout {
+  sales_account: { id: string; name: string; color: string };
+  line_count: number;
+  amount_due: number;
+  lines: Array<{ remittance_line_id: string; waybill_id: string; order_no: string; customer_name: string; amount: number }>;
+}
+
+interface SellerPayment {
+  id: string;
+  sales_account_name: string;
+  line_count: number;
+  amount_paid: number;
+  paid_at: string;
+  payment_reference: string;
+  cash_applied: boolean;
 }
 
 interface PayoutSummary {
@@ -64,6 +85,18 @@ export function RemittancePanel({
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sellerPayouts, setSellerPayouts] = useState<SellerPayout[]>([]);
+  const [sellerPayments, setSellerPayments] = useState<SellerPayment[]>([]);
+  const [settlingId, setSettlingId] = useState<string | null>(null);
+
+  async function loadSellerPayouts() {
+    const res = await fetch("/api/seller-settlements");
+    const data = await res.json();
+    if (res.ok) {
+      setSellerPayouts(data.outstanding ?? []);
+      setSellerPayments(data.settlements ?? []);
+    }
+  }
 
   async function loadHistory() {
     const res = await fetch("/api/remittance");
@@ -72,6 +105,7 @@ export function RemittancePanel({
       setHistory(data.remittances ?? []);
       setSummary(data.summary ?? null);
       setError(null);
+      await loadSellerPayouts();
     } else {
       setError(data.error || "Could not load payout history");
     }
@@ -96,6 +130,36 @@ export function RemittancePanel({
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadSellerPayouts(), 0);
+    return () => window.clearTimeout(timer);
+  }, []); // load once; later refreshes happen after remittance/seller writes
+
+  async function paySeller(payout: SellerPayout) {
+    if (!window.confirm(`Mark ${money(payout.amount_due)} paid to ${payout.sales_account.name}? This will settle ${payout.line_count} waybill${payout.line_count === 1 ? "" : "s"} and subtract it from bank cash.`)) return;
+    setSettlingId(payout.sales_account.id);
+    setError(null);
+    try {
+      const res = await fetch("/api/seller-settlements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sales_account_id: payout.sales_account.id,
+          paid_at: new Date().toISOString(),
+          cash_applied: true,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      await onRecorded(`💜 ${money(data.settlement.amount_paid)} marked paid to ${data.settlement.sales_account_name}.`);
+      await loadSellerPayouts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not record seller payment");
+    } finally {
+      setSettlingId(null);
+    }
+  }
 
   const expectedNet = useMemo(
     () => Math.max(0, (preview?.invoice.payable ?? 0) - Number(additionalTax || 0) - Number(otherDeductions || 0)),
@@ -200,6 +264,7 @@ export function RemittancePanel({
           <p className="font-display text-xs font-bold text-ink-soft">
             Upload the weekly courier invoice, verify the expected amount, then record the actual cash received.
           </p>
+
         </div>
         <label className="flex min-h-11 w-full cursor-pointer items-center justify-center rounded-xl border-2 border-gold bg-white/70 px-4 py-2 text-center font-display text-sm font-extrabold text-ink transition hover:bg-white sm:w-auto sm:text-xs">
           {busy ? "Reading…" : "📎 Choose InvoiceDetails.xlsx"}
@@ -243,6 +308,22 @@ export function RemittancePanel({
             Invoice <span className="text-ink">{preview.invoice.invoice_no}</span> · {preview.matched_count} of {preview.source_line_count} rows belong to your shipped orders · {preview.ignored.length} ignored
             {preview.already_remitted_count ? ` · ${preview.already_remitted_count} already recorded` : ""}.
           </p>
+
+          {preview.seller_breakdown?.length > 0 && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {preview.seller_breakdown.map((seller) => (
+                <div key={seller.sales_account_id} className="rounded-xl border-2 border-cardline bg-white/70 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-display text-sm font-extrabold text-ink">{seller.name}</span>
+                    <span className="font-display text-lg font-extrabold text-frog-dark">{money(seller.payable)}</span>
+                  </div>
+                  <p className="mt-1 text-[11px] font-bold text-ink-soft">
+                    {seller.order_count} waybill{seller.order_count === 1 ? "" : "s"} · {money(seller.collected_cod)} collected · {money(seller.deductions)} courier deductions
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
 
           {preview.matched_count === 0 && (
             <p className="rounded-xl bg-flame-tint p-3 font-display text-xs font-extrabold text-flame-dark">
@@ -309,6 +390,57 @@ export function RemittancePanel({
           </Button>
         </div>
       )}
+
+      <section className="mt-4 border-t-2 border-grape/30 pt-4" aria-labelledby="seller-payouts-title">
+        <h3 id="seller-payouts-title" className="font-display text-sm font-extrabold text-ink">Seller payouts</h3>
+        <p className="mb-3 text-[11px] font-bold text-ink-soft">Only courier-remitted waybills appear here. Paying locks each line against double payment.</p>
+        <div className="space-y-2">
+          {sellerPayouts.filter((payout) => payout.line_count > 0).length === 0 ? (
+            <div className="rounded-xl border-2 border-dashed border-cardline bg-white/40 p-4 text-center text-xs font-bold text-ink-soft">No seller money is awaiting payout.</div>
+          ) : sellerPayouts.filter((payout) => payout.line_count > 0).map((payout) => (
+            <div key={payout.sales_account.id} className="rounded-xl border-2 border-grape/30 bg-grape-tint/30 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="font-display text-sm font-extrabold text-ink">{payout.sales_account.name}</p>
+                  <p className="text-[11px] font-bold text-ink-soft">{payout.line_count} unpaid waybill{payout.line_count === 1 ? "" : "s"}</p>
+                </div>
+                <div className="text-right">
+                  <p className="font-display text-xl font-extrabold text-grape-dark">{money(payout.amount_due)}</p>
+                  <Button tone="grape" className="mt-1 min-h-11 text-xs" disabled={settlingId === payout.sales_account.id} onClick={() => void paySeller(payout)}>
+                    {settlingId === payout.sales_account.id ? "Recording…" : "Mark paid"}
+                  </Button>
+                </div>
+              </div>
+              <details className="mt-2 rounded-lg bg-white/60 px-3 py-2">
+                <summary className="cursor-pointer font-display text-xs font-extrabold text-ink-soft">View waybills</summary>
+                <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">
+                  {payout.lines.map((line) => (
+                    <p key={line.remittance_line_id} className="flex justify-between gap-3 font-mono text-[10px] text-ink-soft">
+                      <span>{line.waybill_id} · {line.order_no || line.customer_name}</span><strong>{money(line.amount)}</strong>
+                    </p>
+                  ))}
+                </div>
+              </details>
+            </div>
+          ))}
+        </div>
+        {sellerPayments.length > 0 && (
+          <details className="mt-3 rounded-xl border border-cardline bg-white/50 px-3 py-2">
+            <summary className="cursor-pointer font-display text-xs font-extrabold text-ink-soft">Recent seller payments ({sellerPayments.length})</summary>
+            <div className="mt-2 divide-y divide-cardline">
+              {sellerPayments.slice(0, 10).map((payment) => (
+                <div key={payment.id} className="flex items-center justify-between gap-3 py-2 text-xs">
+                  <div>
+                    <p className="font-display font-extrabold text-ink">{payment.sales_account_name} · {payment.line_count} waybill{payment.line_count === 1 ? "" : "s"}</p>
+                    <p className="font-bold text-ink-soft">{new Date(payment.paid_at).toLocaleDateString("en-LK", { timeZone: "Asia/Colombo" })}{payment.payment_reference ? ` · ${payment.payment_reference}` : ""}</p>
+                  </div>
+                  <strong className="font-display text-sm text-grape-dark">{money(payment.amount_paid)}</strong>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </section>
 
       <section className="mt-4 border-t-2 border-gold/30 pt-4" aria-labelledby="settlement-history-title">
         <div className="mb-2 flex items-end justify-between gap-3">

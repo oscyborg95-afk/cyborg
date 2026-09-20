@@ -6,8 +6,27 @@ create extension if not exists "pgcrypto";
 -- business_settings.order_prefix; this sequence supplies the running number.
 create sequence if not exists order_number_seq start 1001;
 
+-- Several sellers/brands can share one tenant's WhatsApp and courier account
+-- while keeping order ownership and weekly payouts separate.
+create table if not exists sales_accounts (
+  id uuid primary key default gen_random_uuid(),
+  name varchar(120) not null,
+  code varchar(20) not null unique,
+  color varchar(20) not null default '#6b7280',
+  is_default boolean not null default false,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists uq_sales_accounts_default on sales_accounts(is_default) where is_default;
+insert into sales_accounts (id, name, code, color, is_default)
+values
+  ('00000000-0000-4000-8000-000000000001', 'My business', 'OWN', '#2f855a', true),
+  ('00000000-0000-4000-8000-000000000002', 'Sister', 'SISTER', '#7c3aed', false)
+on conflict (id) do nothing;
+
 create table if not exists orders (
   id             uuid primary key default gen_random_uuid(),
+  sales_account_id uuid not null default '00000000-0000-4000-8000-000000000001' references sales_accounts(id),
   order_no       varchar, -- short reference sent to the courier, e.g. "DC-1001"
   customer_name  varchar not null,
   phone_number   varchar not null,
@@ -368,6 +387,7 @@ create table if not exists courier_remittance_lines (
   id                 uuid primary key default gen_random_uuid(),
   remittance_id      uuid not null references courier_remittances(id) on delete cascade,
   matched_order_id   uuid references orders(id) on delete set null,
+  sales_account_id   uuid references sales_accounts(id), -- immutable owner snapshot at import time
   order_date         varchar not null default '',
   waybill_id         varchar not null,
   order_no           varchar not null default '',
@@ -377,7 +397,27 @@ create table if not exists courier_remittance_lines (
   commission         numeric not null,
   delivery_charge    numeric not null,
   payable            numeric not null,
+  settlement_amount  numeric, -- proportional share of the actual bank receipt
   status             varchar not null default ''
+);
+
+create table if not exists seller_settlements (
+  id uuid primary key default gen_random_uuid(),
+  sales_account_id uuid not null references sales_accounts(id),
+  amount_due numeric not null,
+  amount_paid numeric not null,
+  cash_applied boolean not null default true,
+  payment_reference varchar not null default '',
+  paid_at timestamptz not null,
+  notes text not null default '',
+  created_at timestamptz not null default now()
+);
+create table if not exists seller_settlement_lines (
+  id uuid primary key default gen_random_uuid(),
+  settlement_id uuid not null references seller_settlements(id) on delete cascade,
+  remittance_line_id uuid not null references courier_remittance_lines(id),
+  amount numeric not null,
+  unique(remittance_line_id)
 );
 
 -- For existing databases created before these columns were added:
@@ -395,6 +435,12 @@ alter table orders add column if not exists remitted_at timestamptz; -- COD payo
 alter table orders add column if not exists order_no varchar; -- short courier reference (DC-1001)
 alter table orders add column if not exists idempotency_key varchar;
 alter table orders add column if not exists archived_at timestamptz;
+alter table orders add column if not exists sales_account_id uuid references sales_accounts(id);
+update orders set sales_account_id = '00000000-0000-4000-8000-000000000001' where sales_account_id is null;
+alter table orders alter column sales_account_id set default '00000000-0000-4000-8000-000000000001';
+alter table orders alter column sales_account_id set not null;
+alter table courier_remittance_lines add column if not exists sales_account_id uuid references sales_accounts(id);
+alter table courier_remittance_lines add column if not exists settlement_amount numeric;
 alter table orders add column if not exists remittance_id uuid references courier_remittances(id) on delete set null;
 create unique index if not exists uq_orders_idempotency_key
   on orders(idempotency_key) where idempotency_key is not null;

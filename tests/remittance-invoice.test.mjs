@@ -31,7 +31,7 @@ test("mixed courier invoice totals include only owned waybills", () => {
     ["2026-07-08", "OTHER-1", "MIXED-1", "other", 0, 1, 2750, 2750, 0, 0, 475, 2247.5, 1, "Delivered"],
   ]);
   const filtered = filterInvoiceToOwnedWaybills(source, [
-    { waybill_id: "MINE-1", order_id: "order-1", order_status: "booked", remitted_at: null },
+    { waybill_id: "MINE-1", order_id: "order-1", order_status: "booked", remitted_at: null, sales_account_id: "seller-1" },
   ]);
   assert.equal(filtered.source_line_count, 2);
   assert.equal(filtered.matched_count, 1);
@@ -41,6 +41,48 @@ test("mixed courier invoice totals include only owned waybills", () => {
   assert.equal(filtered.invoice.commission, 13.4);
   assert.equal(filtered.invoice.payable, 851.6);
   assert.equal(filtered.lines[0].matched_order_id, "order-1");
+  assert.equal(filtered.lines[0].sales_account_id, "seller-1");
+});
+
+test("seller remittance lines can be paid exactly once", async () => {
+  delete process.env.DATABASE_URL;
+  const db = await import("../lib/db.ts");
+  const sisterId = "00000000-0000-4000-8000-000000000002";
+  const order = await db.createOrder({
+    sales_account_id: sisterId,
+    customer_name: "Sister customer", phone_number: "0771234567", phone_2: "",
+    raw_address: "Test", parsed_address: "Test", city: "Colombo", city_id: null,
+    district: "Colombo", product_id: null, item_name: "Item", items: null,
+    product_price: 2000, shipping_fee: 0, discount: 0, total_cod: 2000,
+    payment_method: "cod", replaces_order_id: null,
+  });
+  const invoice = parseCourierInvoiceRows([
+    ["ORDER DATE", "WAYBILL ID", "INVOICE NO", "ORDER NO", "VAT %", "COMMISSION", "COD", "COLLECTED COD", "TOTAL VAT", "TOTAL COMMISSION", "DELIVERY CHARGE", "PAYABLE", "WEIGHT (KG)", "STATUS"],
+    ["2026-09-20", "SISTER-WB-1", "SELLER-TEST-1", order.order_no, 0, 1, 2000, 2000, 0, 20, 350, 1630, 1, "Delivered"],
+  ]);
+  await db.createCourierRemittance({
+    invoice,
+    lines: invoice.lines.map((line) => ({ ...line, matched_order_id: order.id, sales_account_id: sisterId })),
+    paid_at: "2026-09-21T00:00:00.000Z", source_filename: "seller.xlsx",
+    source_mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    source_file: Buffer.from("seller workbook"), additional_tax: 0, other_deductions: 0,
+    amount_received: 1630, cash_applied: false, notes: "",
+  });
+  const before = await db.listSellerPayouts();
+  const sister = before.outstanding.find((entry) => entry.sales_account.id === sisterId);
+  assert.equal(sister?.line_count, 1);
+  assert.equal(sister?.amount_due, 1630);
+  const settlement = await db.createSellerSettlement({
+    sales_account_id: sisterId, paid_at: "2026-09-21T01:00:00.000Z",
+    payment_reference: "BANK-1", notes: "", cash_applied: false,
+  });
+  assert.equal(settlement.amount_paid, 1630);
+  const after = await db.listSellerPayouts();
+  assert.equal(after.outstanding.find((entry) => entry.sales_account.id === sisterId)?.line_count, 0);
+  await assert.rejects(
+    db.createSellerSettlement({ sales_account_id: sisterId, paid_at: "2026-09-21T02:00:00.000Z", payment_reference: "", notes: "", cash_applied: false }),
+    /no unpaid remittance lines/
+  );
 });
 
 test("recorded settlement keeps actual receipt separate from invoice payable", async () => {
@@ -68,6 +110,6 @@ test("recorded settlement keeps actual receipt separate from invoice payable", a
   assert.equal(batch.amount_received, 6800);
   assert.equal(batch.variance, 6048.4);
   assert.equal(batch.cash_applied, false);
-  assert.equal((await db.listCourierRemittances())[0].invoice_no, "TEST-INVOICE-1");
+  assert.ok((await db.listCourierRemittances()).some((entry) => entry.invoice_no === "TEST-INVOICE-1"));
   assert.equal((await db.getCourierRemittanceFile(batch.id))?.data.toString(), "test workbook");
 });

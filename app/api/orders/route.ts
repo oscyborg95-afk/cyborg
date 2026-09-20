@@ -61,6 +61,7 @@ export async function POST(req: NextRequest) {
   try {
     const order = await createOrder({
       customer_name: body.customer_name!,
+      sales_account_id: body.sales_account_id || null,
       phone_number: body.phone_number!,
       phone_2: body.phone_2 ?? "",
       raw_address: body.raw_address ?? "",
