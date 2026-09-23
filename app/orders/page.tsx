@@ -115,65 +115,6 @@ function fmtDateTime(iso: string): string {
   });
 }
 
-// Everything the accountant (i.e. you, at month end) wants, one row per order.
-function ordersToCsv(orders: Order[], manifests: ShippingManifest[], accounts: SalesAccount[]): string {
-  const manifestByOrder = new Map(manifests.map((m) => [m.order_id, m]));
-  const accountById = new Map(accounts.map((account) => [account.id, account.name]));
-  const esc = (v: unknown) => `"${String(v ?? "").replaceAll('"', '""')}"`;
-  const header = [
-    "created_at",
-    "order_no",
-    "sales_account",
-    "customer_name",
-    "phone",
-    "phone_2",
-    "address",
-    "city",
-    "district",
-    "items",
-    "product_total",
-    "shipping_fee",
-    "discount",
-    "total_cod",
-    "payment_method",
-    "order_value",
-    "status",
-    "tracking_id",
-    "courier",
-    "remitted_at",
-  ];
-  const rows = orders.map((o) => {
-    const m = manifestByOrder.get(o.id);
-    return [
-      o.created_at,
-      o.order_no ?? "",
-      accountById.get(o.sales_account_id) ?? "My business",
-      o.customer_name,
-      o.phone_number,
-      o.phone_2,
-      o.parsed_address,
-      o.city,
-      o.district,
-      o.items && o.items.length > 0
-        ? o.items.map((i) => `${i.qty}x ${i.name} @${i.price}`).join("; ")
-        : o.item_name,
-      o.product_price,
-      o.shipping_fee,
-      o.discount,
-      o.total_cod,
-      paymentMethodOf(o),
-      orderValue(o),
-      o.order_status,
-      m?.tracking_id ?? "",
-      m?.courier_name ?? "",
-      o.remitted_at ?? "",
-    ]
-      .map(esc)
-      .join(",");
-  });
-  return [header.join(","), ...rows].join("\n");
-}
-
 type DatePreset = "all" | "today" | "yesterday" | "7days" | "month" | "custom";
 type StatusFilter = "all" | "pending" | "booked" | "delivered" | "returned" | "unremitted";
 
@@ -661,17 +602,6 @@ export default function OrdersPage() {
     setSearch("");
   };
 
-  function handleExportCsv() {
-    const csv = ordersToCsv(orders, manifests, salesAccounts);
-    // BOM so Excel opens the Sinhala names correctly.
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `daily-cart-orders-${new Date().toLocaleDateString("en-CA")}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }
-
   const setField = (
     field: Exclude<keyof ReviewForm, "items" | "city_id" | "payment_method">,
     value: string
@@ -716,7 +646,7 @@ export default function OrdersPage() {
             <Button tone="grape" onClick={syncTracking} disabled={syncing} className="w-full">
               {syncing ? "📡 Checking courier…" : "📡 Sync tracking"}
             </Button>
-            <Button tone="ghost" onClick={handleExportCsv} disabled={orders.length === 0} className="w-full">📄 Export CSV</Button>
+            <Link href="/reports" className="btn3d flex min-h-11 items-center justify-center border-cardline bg-surface px-3 font-display text-sm font-extrabold text-ink">📊 Reports &amp; exports</Link>
             <Link href="/invoices" className="block"><Button tone="sky" className="w-full">🖨️ Print invoices</Button></Link>
           </div>
         </details>
@@ -736,9 +666,7 @@ export default function OrdersPage() {
           <Button tone="grape" onClick={syncTracking} disabled={syncing}>
             {syncing ? "📡 Checking courier…" : "📡 Sync tracking"}
           </Button>
-          <Button tone="ghost" onClick={handleExportCsv} disabled={orders.length === 0}>
-            📄 Export CSV
-          </Button>
+          <Link href="/reports" className="btn3d inline-flex items-center border-cardline bg-surface px-4 py-2 font-display text-sm font-extrabold text-ink">📊 Reports &amp; exports</Link>
           <Link href="/invoices">
             <Button tone="sky">🖨️ Print invoices</Button>
           </Link>

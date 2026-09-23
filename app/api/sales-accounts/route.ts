@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listSalesAccounts, renameSalesAccount } from "@/lib/db";
 
-export async function GET() {
-  return NextResponse.json({ accounts: await listSalesAccounts() });
+export async function GET(req: NextRequest) {
+  const includeInactive = req.nextUrl.searchParams.get("includeInactive") === "true";
+  return NextResponse.json({ accounts: await listSalesAccounts(!includeInactive) });
 }
 
 export async function PATCH(req: NextRequest) {

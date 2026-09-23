@@ -1152,6 +1152,22 @@ export async function listDeliveryAttempts(): Promise<DeliveryAttempt[]> {
     .sort((a, b) => b.last_event_at.localeCompare(a.last_event_at));
 }
 
+// Reports need the complete attempt history, not the operational screen's
+// newest-1000 cap. Notification statuses are omitted because they aren't part
+// of the downloadable courier report.
+export async function listAllDeliveryAttempts(): Promise<DeliveryAttempt[]> {
+  if (pool) {
+    await ensureTrackingOpsSchema(pool);
+    const { rows } = await pool.query(
+      "select * from delivery_attempts order by last_event_at desc"
+    );
+    return rows as DeliveryAttempt[];
+  }
+  return [...memDeliveryAttempts.values()].sort((a, b) =>
+    b.last_event_at.localeCompare(a.last_event_at)
+  );
+}
+
 // We message a customer about a reschedule and then lose the thread: their
 // reply lands in WhatsApp while the delivery task still says "waiting on a
 // call". Attaching the reply to the open attempt closes that loop — the rescue
