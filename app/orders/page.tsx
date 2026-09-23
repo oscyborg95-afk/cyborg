@@ -1896,20 +1896,39 @@ function DeliveryRescuePanel({
   );
   const [dateDrafts, setDateDrafts] = useState<Record<string, string>>({});
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const [showCalls, setShowCalls] = useState(false);
+  const [visibleCalls, setVisibleCalls] = useState(5);
 
   const orderById = useMemo(() => new Map(orders.map((order) => [order.id, order])), [orders]);
   const sorted = useMemo(
     () => [...attempts].sort((a, b) => b.last_event_at.localeCompare(a.last_event_at)),
     [attempts]
   );
+  const latestAttemptByOrder = new Map<string, number>();
+  for (const attempt of sorted) {
+    latestAttemptByOrder.set(
+      attempt.order_id,
+      Math.max(latestAttemptByOrder.get(attempt.order_id) ?? 0, attempt.attempt_no)
+    );
+  }
   const active = sorted.filter(
-    (attempt) =>
-      attempt.call_status !== "resolved" &&
-      attempt.status !== "delivered" &&
-      attempt.status !== "returned_to_ho" &&
-      !(attempt.status === "out_for_delivery" && attempt.attempt_no === 1)
+    (attempt) => {
+      const order = orderById.get(attempt.order_id);
+      if (!order) return false;
+      return (
+        order.order_status !== "delivered" &&
+        order.order_status !== "returned" &&
+        attempt.attempt_no === latestAttemptByOrder.get(attempt.order_id) &&
+        attempt.call_status !== "resolved" &&
+        attempt.call_status !== "called_confirmed" &&
+        attempt.status !== "delivered" &&
+        attempt.status !== "returned_to_ho" &&
+        !(attempt.status === "out_for_delivery" && attempt.attempt_no === 1)
+      );
+    }
   );
-  const history = sorted.filter((attempt) => !active.includes(attempt)).slice(0, 20);
+  const activeIds = new Set(active.map((attempt) => attempt.id));
+  const history = sorted.filter((attempt) => !activeIds.has(attempt.id)).slice(0, 20);
 
   async function patchAttempt(
     attempt: DeliveryAttempt,
@@ -2021,15 +2040,27 @@ function DeliveryRescuePanel({
               </div>
             </div>
           </div>
-          <span
-            className={`rounded-xl border-2 px-3 py-1 font-display text-xs font-extrabold ${
-              active.length
-                ? "border-flame/40 bg-flame-tint text-flame-dark"
-                : "border-frog/40 bg-pond text-frog-dark"
-            }`}
-          >
-            {active.length ? `${active.length} call${active.length === 1 ? "" : "s"} open` : "All caught up"}
-          </span>
+          <div className="flex items-center gap-2">
+            <span
+              className={`rounded-xl border-2 px-3 py-1 font-display text-xs font-extrabold ${
+                active.length
+                  ? "border-flame/40 bg-flame-tint text-flame-dark"
+                  : "border-frog/40 bg-pond text-frog-dark"
+              }`}
+            >
+              {active.length ? `${active.length} call${active.length === 1 ? "" : "s"} open` : "All caught up"}
+            </span>
+            {active.length > 0 && (
+              <Button
+                tone="ghost"
+                onClick={() => setShowCalls((current) => !current)}
+                aria-expanded={showCalls}
+                className="min-h-11 !px-3 !text-xs sm:min-h-0 sm:!py-1.5"
+              >
+                {showCalls ? "Hide calls" : "Show calls"}
+              </Button>
+            )}
+          </div>
         </header>
 
         {active.length === 0 ? (
@@ -2044,9 +2075,9 @@ function DeliveryRescuePanel({
               </p>
             </div>
           </div>
-        ) : (
-          <div className="space-y-3 p-3 sm:p-4">
-            {active.map((attempt) => {
+        ) : showCalls ? (
+          <div id="delivery-rescue-calls" className="space-y-3 p-3 sm:p-4">
+            {active.slice(0, visibleCalls).map((attempt) => {
               const order = orderById.get(attempt.order_id);
               if (!order) return null;
               const date = dateDrafts[attempt.id] ?? attempt.next_delivery_date ?? "";
@@ -2252,8 +2283,17 @@ function DeliveryRescuePanel({
                 </article>
               );
             })}
+            {active.length > visibleCalls && (
+              <Button
+                tone="ghost"
+                onClick={() => setVisibleCalls((count) => count + 5)}
+                className="w-full !text-xs"
+              >
+                Show {Math.min(5, active.length - visibleCalls)} more · {active.length - visibleCalls} remaining
+              </Button>
+            )}
           </div>
-        )}
+        ) : null}
 
         {history.length > 0 && (
           <details className="group border-t-2 border-cardline">
