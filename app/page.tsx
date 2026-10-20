@@ -597,8 +597,11 @@ export default function Workspace() {
   // Background courier sync every 10 minutes: statuses roll forward (and the
   // customers get their auto-alerts) without anyone opening the Orders page.
   // The minute tick keeps the stale-chat queue honest while the tab sits open.
+  // Hidden tabs skip it: the worker and crons already sync in the background,
+  // and every extra run re-reads all in-flight orders (database egress).
   useEffect(() => {
     const sync = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       fetch("/api/track/sync", { method: "POST" })
         .then((res) => {
           if (res.ok) {

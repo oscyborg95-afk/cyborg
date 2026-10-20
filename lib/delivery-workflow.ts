@@ -9,7 +9,7 @@ import { ownerCallDueAt, type NormalizedDeliveryEvent } from "./delivery-events.
 import { orderValue, owesRefund } from "./payments.ts";
 import { phoneToChatId } from "./phone.ts";
 import { makeTemplates } from "./templates.ts";
-import type { Order } from "./types.ts";
+import type { BusinessSettings, Order, ShippingManifest } from "./types.ts";
 
 function displayDate(value: string | null): string {
   if (!value) return "date not confirmed";
@@ -104,12 +104,18 @@ function customerRescheduleBody(
 export async function processDeliveryEvent(
   event: NormalizedDeliveryEvent,
   source: "webhook" | "poll" = "poll",
-  sendNotifications = true
+  sendNotifications = true,
+  // The poller replays a parcel's whole courier history on every sync; passing
+  // the order it already loaded and one settings read for the run avoids
+  // re-fetching both for every historical event (most of the DB egress).
+  preloaded?: {
+    tracked: { order: Order; manifest: ShippingManifest };
+    settings: BusinessSettings;
+  }
 ) {
-  const [tracked, settings] = await Promise.all([
-    getTrackedOrderByWaybill(event.trackingId),
-    getSettings(),
-  ]);
+  const [tracked, settings] = preloaded
+    ? [preloaded.tracked, preloaded.settings]
+    : await Promise.all([getTrackedOrderByWaybill(event.trackingId), getSettings()]);
   if (!tracked) throw new Error(`Unknown waybill ${event.trackingId}`);
   const templates = makeTemplates(settings.templates, settings.business_name);
   const notifications: DeliveryNotificationInput[] = [];

@@ -4,24 +4,65 @@ import { useEffect, useState } from "react";
 import type { Metrics } from "@/lib/metrics";
 import { Flame } from "./components/ui";
 
-export function LevelBadge() {
-  const [metrics, setMetrics] = useState<Metrics | null>(null);
+// /api/metrics reads every order, manifest and settlement event, so each call
+// is database egress proportional to the shop's whole history. The layout
+// mounts this badge twice (desktop + tablet headers), so both copies share one
+// poller, it only polls while the tab is visible, and it relies on the
+// `metrics:refresh` event for instant updates after a dispatch.
+const POLL_MS = 5 * 60_000;
+const listeners = new Set<(m: Metrics) => void>();
+let latest: Metrics | null = null;
+let fetchedAt = 0;
+let inFlight: Promise<void> | null = null;
+let timer: ReturnType<typeof setInterval> | null = null;
 
-  useEffect(() => {
-    const load = () =>
-      fetch("/api/metrics")
-        .then((r) => r.json())
-        .then((d) => d.metrics && setMetrics(d.metrics))
-        .catch(() => {});
-    load();
-    const interval = setInterval(load, 30_000);
+function loadMetrics(): Promise<void> {
+  inFlight ??= fetch("/api/metrics")
+    .then((r) => r.json())
+    .then((d) => {
+      if (!d.metrics) return;
+      latest = d.metrics as Metrics;
+      fetchedAt = Date.now();
+      listeners.forEach((fn) => fn(latest!));
+    })
+    .catch(() => {})
+    .finally(() => {
+      inFlight = null;
+    });
+  return inFlight;
+}
+
+const loadIfVisible = () => {
+  if (document.visibilityState === "visible") void loadMetrics();
+};
+const catchUpOnReturn = () => {
+  if (document.visibilityState === "visible" && Date.now() - fetchedAt > POLL_MS) void loadMetrics();
+};
+const refreshNow = () => void loadMetrics();
+
+function subscribe(fn: (m: Metrics) => void): () => void {
+  listeners.add(fn);
+  if (listeners.size === 1) {
+    if (Date.now() - fetchedAt > POLL_MS) void loadMetrics();
+    timer = setInterval(loadIfVisible, POLL_MS);
+    document.addEventListener("visibilitychange", catchUpOnReturn);
     // Workspace fires this right after a dispatch so the chips update instantly.
-    window.addEventListener("metrics:refresh", load);
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener("metrics:refresh", load);
-    };
-  }, []);
+    window.addEventListener("metrics:refresh", refreshNow);
+  }
+  return () => {
+    listeners.delete(fn);
+    if (listeners.size > 0) return;
+    if (timer) clearInterval(timer);
+    timer = null;
+    document.removeEventListener("visibilitychange", catchUpOnReturn);
+    window.removeEventListener("metrics:refresh", refreshNow);
+  };
+}
+
+export function LevelBadge() {
+  const [metrics, setMetrics] = useState<Metrics | null>(latest);
+
+  useEffect(() => subscribe(setMetrics), []);
 
   if (!metrics) return null;
 

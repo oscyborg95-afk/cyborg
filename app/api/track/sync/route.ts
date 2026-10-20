@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  getSettings,
   listInFlightTrackedOrders,
   withExclusiveTrackingSync,
 } from "@/lib/db";
@@ -35,7 +36,7 @@ const SYNC_BUDGET_MS = (() => {
 })();
 
 export async function runTrackingSync() {
-  const inFlight = await listInFlightTrackedOrders();
+  const [inFlight, settings] = await Promise.all([listInFlightTrackedOrders(), getSettings()]);
   const deadline = Date.now() + SYNC_BUDGET_MS;
 
   let delivered = 0;
@@ -48,7 +49,8 @@ export async function runTrackingSync() {
   let cursor = 0;
   async function worker() {
     while (cursor < inFlight.length && Date.now() < deadline) {
-      const { manifest } = inFlight[cursor++];
+      const tracked = inFlight[cursor++];
+      const { manifest } = tracked;
       checked++;
       try {
         const history = await getCourierTrackingHistory(manifest.tracking_id);
@@ -61,7 +63,10 @@ export async function runTrackingSync() {
           }
         }
         for (const [index, event] of events.entries()) {
-          const result = await processDeliveryEvent(event, "poll", index === notificationIndex);
+          const result = await processDeliveryEvent(event, "poll", index === notificationIndex, {
+            tracked,
+            settings,
+          });
           if (!result.duplicate) eventsAccepted++;
         }
         const latest = events.at(-1);
