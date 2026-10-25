@@ -30,6 +30,7 @@ import type {
 import type { CourierInvoiceLine, ParsedCourierInvoice } from "./remittance-invoice";
 import { getTenantSession, requireTenantSession } from "./tenant-context.ts";
 import { authorizedTenantSchema } from "./tenants.ts";
+import { markSchemaCurrent, schemaIsCurrent } from "./schema-once.ts";
 
 // Data layer. Connects directly to Postgres (Supabase) when DATABASE_URL is set,
 // otherwise falls back to an in-memory store so the dashboard works before the
@@ -212,6 +213,10 @@ async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (g.__orderSafetyReady ??= new Set());
   if (ready.has(tenantId)) return;
+  if (await schemaIsCurrent(db, "order-safety", ensureOrderSafetySchema)) {
+    ready.add(tenantId);
+    return;
+  }
   await db.query(`create table if not exists sales_accounts (
     id uuid primary key default gen_random_uuid(), name varchar(120) not null,
     code varchar(20) not null unique, color varchar(20) not null default '#6b7280',
@@ -249,6 +254,7 @@ async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
   await db.query(
     "create unique index if not exists uq_shipping_manifests_order on shipping_manifests(order_id)"
   );
+  await markSchemaCurrent(db, "order-safety", ensureOrderSafetySchema);
   ready.add(tenantId);
 }
 
@@ -257,6 +263,10 @@ async function ensureOrderNoSchema(db: Queryable): Promise<void> {
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (g.__orderNoReady ??= new Set());
   if (ready.has(tenantId)) return;
+  if (await schemaIsCurrent(db, "order-no", ensureOrderNoSchema)) {
+    ready.add(tenantId);
+    return;
+  }
   await db.query("create sequence if not exists order_number_seq start 1001");
   await db.query("alter table orders add column if not exists order_no varchar");
   await db.query(
@@ -293,6 +303,7 @@ async function ensureOrderNoSchema(db: Queryable): Promise<void> {
   await db.query(
     "alter table business_settings add column if not exists gemini_api_key varchar not null default ''"
   );
+  await markSchemaCurrent(db, "order-no", ensureOrderNoSchema);
   ready.add(tenantId);
 }
 
@@ -497,6 +508,40 @@ export async function listAllOrders(): Promise<Order[]> {
     return rows as Order[];
   }
   return [...memOrders.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+// listAllOrders without the free-text address and idempotency columns, which
+// are about half of every row and never feed a metric. /api/metrics reads the
+// whole table, so the trimmed width is directly less database egress.
+export async function listAllOrdersForMetrics(): Promise<Order[]> {
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    const { rows } = await pool.query(
+      `select id, sales_account_id, order_no, customer_name, phone_number, phone_2, city, city_id,
+              district, product_id, item_name, items, product_price, shipping_fee, discount,
+              total_cod, payment_method, replaces_order_id, order_status, remitted_at,
+              remittance_id, archived_at, created_at, '' as raw_address, '' as parsed_address
+         from orders order by created_at desc`
+    );
+    return rows as Order[];
+  }
+  return listAllOrders();
+}
+
+// Cheap change marker for the data behind /api/metrics: row counts plus the
+// newest xmin, which moves on every insert and update. One tiny row instead of
+// re-reading every order, manifest and settlement event to find nothing changed.
+export async function getMetricsDataVersion(): Promise<string | null> {
+  if (!pool) return null;
+  const { rows } = await pool.query(
+    `select concat_ws('|',
+       (select count(*) || ':' || coalesce(max(xmin::text::bigint), 0) from orders),
+       (select count(*) || ':' || coalesce(max(xmin::text::bigint), 0) from shipping_manifests),
+       (select count(*) || ':' || coalesce(max(xmin::text::bigint), 0) from tracking_events
+         where outcome in ('delivered', 'returned'))
+     ) as version`
+  );
+  return (rows[0]?.version as string) ?? null;
 }
 
 export async function listCustomerOrders(phoneKeyValue: string): Promise<Order[]> {
@@ -750,10 +795,30 @@ export async function listInFlightTrackedOrders(): Promise<
 // Unbounded and ordered: the old `limit 500` had no ORDER BY, so past 500
 // manifests Postgres returned an arbitrary slice — today's dispatches could be
 // missing from it, breaking the daily goal, the streak and the activity chart.
-export async function listManifests(): Promise<ShippingManifest[]> {
+// Pass orderIds to scope the read to the orders a screen actually shows; the
+// whole-table read is database egress proportional to the shop's history.
+export async function listManifests(orderIds?: string[]): Promise<ShippingManifest[]> {
+  if (orderIds?.length === 0) return [];
+  if (pool) {
+    const { rows } = orderIds
+      ? await pool.query(
+          "select * from shipping_manifests where order_id = any($1::uuid[]) order by created_at desc",
+          [orderIds]
+        )
+      : await pool.query("select * from shipping_manifests order by created_at desc");
+    return rows as ShippingManifest[];
+  }
+  const ids = orderIds && new Set(orderIds);
+  return [...memManifests.values()].filter((m) => !ids || ids.has(m.order_id));
+}
+
+// /api/metrics only needs when each order was dispatched.
+export async function listManifestDispatches(): Promise<ShippingManifest[]> {
   if (pool) {
     const { rows } = await pool.query(
-      "select * from shipping_manifests order by created_at desc"
+      `select id, order_id, created_at, '' as courier_name, '' as tracking_id,
+              null as pdf_label_url, null as last_checkpoint
+         from shipping_manifests order by created_at desc`
     );
     return rows as ShippingManifest[];
   }
@@ -778,6 +843,10 @@ async function ensureTrackingOpsSchema(db: Queryable): Promise<void> {
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (g.__trackingOpsReady ??= new Set());
   if (ready.has(tenantId)) return;
+  if (await schemaIsCurrent(db, "tracking-ops", ensureTrackingOpsSchema)) {
+    ready.add(tenantId);
+    return;
+  }
   await db.query(
     `create table if not exists tracking_events (
        id uuid primary key default gen_random_uuid(),
@@ -870,6 +939,7 @@ async function ensureTrackingOpsSchema(db: Queryable): Promise<void> {
   await db.query(
     "create unique index if not exists uq_tracking_notification_dedupe on tracking_notification_jobs(dedupe_key) where dedupe_key is not null"
   );
+  await markSchemaCurrent(db, "tracking-ops", ensureTrackingOpsSchema);
   ready.add(tenantId);
 }
 
@@ -1121,7 +1191,8 @@ export async function ingestDeliveryEvent(input: {
   return { duplicate: false, event_id: event.id, order_id: tracked.order.id, attempt_id: attempt.id };
 }
 
-export async function listDeliveryAttempts(): Promise<DeliveryAttempt[]> {
+export async function listDeliveryAttempts(orderIds?: string[]): Promise<DeliveryAttempt[]> {
+  if (orderIds?.length === 0) return [];
   if (pool) {
     await ensureTrackingOpsSchema(pool);
     const { rows } = await pool.query(
@@ -1132,11 +1203,16 @@ export async function listDeliveryAttempts(): Promise<DeliveryAttempt[]> {
         (select j.status from tracking_notification_jobs j
           where j.delivery_attempt_id=a.id and j.recipient='owner'
           order by j.created_at desc limit 1) as owner_notification_status
-       from delivery_attempts a order by a.last_event_at desc limit 1000`
+       from delivery_attempts a
+       where $1::uuid[] is null or a.order_id = any($1::uuid[])
+       order by a.last_event_at desc limit 1000`,
+      [orderIds ?? null]
     );
     return rows as DeliveryAttempt[];
   }
+  const ids = orderIds && new Set(orderIds);
   return [...memDeliveryAttempts.values()]
+    .filter((attempt) => !ids || ids.has(attempt.order_id))
     .map((attempt) => {
       const jobs = [...memNotificationJobs.values()]
         .filter((job) => job.delivery_attempt_id === attempt.id)
@@ -2120,6 +2196,10 @@ async function ensureAlertsSchema(db: Queryable): Promise<void> {
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (g.__alertsReady ??= new Set());
   if (ready.has(tenantId)) return;
+  if (await schemaIsCurrent(db, "alerts", ensureAlertsSchema)) {
+    ready.add(tenantId);
+    return;
+  }
   await db.query(
     `create table if not exists customer_alerts (
        id         uuid primary key default gen_random_uuid(),
@@ -2137,18 +2217,26 @@ async function ensureAlertsSchema(db: Queryable): Promise<void> {
   await db.query(
     "create index if not exists idx_customer_alerts_order on customer_alerts(order_id, created_at)"
   );
+  await markSchemaCurrent(db, "alerts", ensureAlertsSchema);
   ready.add(tenantId);
 }
 
-export async function listCustomerAlerts(): Promise<CustomerAlert[]> {
+export async function listCustomerAlerts(orderIds?: string[]): Promise<CustomerAlert[]> {
+  if (orderIds?.length === 0) return [];
   if (pool) {
     await ensureAlertsSchema(pool);
     const { rows } = await pool.query(
-      "select * from customer_alerts order by created_at desc limit 2000"
+      `select * from customer_alerts
+        where $1::uuid[] is null or order_id = any($1::uuid[])
+        order by created_at desc limit 2000`,
+      [orderIds ?? null]
     );
     return rows as CustomerAlert[];
   }
-  return [...memAlerts.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const ids = orderIds && new Set(orderIds);
+  return [...memAlerts.values()]
+    .filter((alert) => !ids || ids.has(alert.order_id))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
 // Has this exact alert already been delivered for this order? The gate that
@@ -2217,6 +2305,10 @@ async function ensureRemittanceSchema(db: Queryable): Promise<void> {
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (g.__remittancesReady ??= new Set());
   if (ready.has(tenantId)) return;
+  if (await schemaIsCurrent(db, "remittances", ensureRemittanceSchema)) {
+    ready.add(tenantId);
+    return;
+  }
   await ensureOrderSafetySchema(db);
   await db.query(`create table if not exists courier_remittances (
     id uuid primary key default gen_random_uuid(), invoice_no varchar not null unique,
@@ -2266,6 +2358,7 @@ async function ensureRemittanceSchema(db: Queryable): Promise<void> {
   await db.query(
     "create index if not exists idx_remittance_lines_batch on courier_remittance_lines(remittance_id)"
   );
+  await markSchemaCurrent(db, "remittances", ensureRemittanceSchema);
   ready.add(tenantId);
 }
 

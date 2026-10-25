@@ -7,6 +7,7 @@
 
 import { randomUUID } from "crypto";
 import { queryDatabase, usingSupabase } from "./db";
+import { markSchemaCurrent, schemaIsCurrent } from "./schema-once";
 import { requireTenantSession } from "./tenant-context.ts";
 import type {
   ChatStateValue,
@@ -129,11 +130,17 @@ export const DEFAULT_FOLLOW_UP_SETTINGS: FollowUpSettings = {
   updated_at: new Date(0).toISOString(),
 };
 
+const schemaDb = { query: queryDatabase };
+
 async function ensureFollowUpSchema(): Promise<void> {
   if (!usingSupabase) return;
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (g.__followUpSchemaReady ??= new Set());
   if (ready.has(tenantId)) return;
+  if (await schemaIsCurrent(schemaDb, "follow-ups", ensureFollowUpSchema)) {
+    ready.add(tenantId);
+    return;
+  }
   await queryDatabase(`
     create table if not exists follow_up_settings (
       id int primary key default 1,
@@ -182,6 +189,7 @@ async function ensureFollowUpSchema(): Promise<void> {
     );
     create index if not exists idx_follow_up_sends_at on follow_up_sends(sent_at desc);
   `);
+  await markSchemaCurrent(schemaDb, "follow-ups", ensureFollowUpSchema);
   ready.add(tenantId);
 }
 

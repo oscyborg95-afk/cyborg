@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { queryDatabase, usingSupabase, withTransaction } from "./db";
+import { markSchemaCurrent, schemaIsCurrent } from "./schema-once";
 import { requireTenantSession } from "./tenant-context.ts";
 import type {
   AgentConfig,
@@ -55,11 +56,17 @@ export interface PurgedCustomerData {
   leadMemories: number;
 }
 
+const schemaDb = { query: queryDatabase };
+
 async function ensureCrmSchema(): Promise<void> {
   if (!usingSupabase) return;
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (g.__crmSchemaReady ??= new Set());
   if (ready.has(tenantId)) return;
+  if (await schemaIsCurrent(schemaDb, "crm", ensureCrmSchema)) {
+    ready.add(tenantId);
+    return;
+  }
   await queryDatabase(`
     create table if not exists customer_profiles (
       phone_key varchar(9) primary key,
@@ -159,6 +166,7 @@ async function ensureCrmSchema(): Promise<void> {
       updated_at timestamptz not null default now()
     );
   `);
+  await markSchemaCurrent(schemaDb, "crm", ensureCrmSchema);
   ready.add(tenantId);
 }
 

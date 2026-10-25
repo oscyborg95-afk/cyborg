@@ -953,11 +953,13 @@ export default function Workspace() {
       dispatchKeyRef.current = null;
       await Promise.all([loadOrders(), loadStates(), loadMessages(activeChatId), loadProducts()]);
       // Update the nav chips + tell the operator where today's quest stands.
-      window.dispatchEvent(new Event("metrics:refresh"));
+      // One fetch serves both: the badge takes these metrics from the event
+      // instead of requesting its own copy.
       try {
         const m: Metrics = (await (await fetch("/api/metrics")).json()).metrics;
         if (m) {
           setMetrics(m);
+          window.dispatchEvent(new CustomEvent("metrics:refresh", { detail: m }));
           const goalDone = m.shippedToday >= m.dailyGoal;
           setNotice(
             `Booked ✓ ${data.manifest.tracking_id}` +

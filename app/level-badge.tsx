@@ -8,7 +8,8 @@ import { Flame } from "./components/ui";
 // is database egress proportional to the shop's whole history. The layout
 // mounts this badge twice (desktop + tablet headers), so both copies share one
 // poller, it only polls while the tab is visible, and it relies on the
-// `metrics:refresh` event for instant updates after a dispatch.
+// `metrics:refresh` event for instant updates after a dispatch (the event
+// carries the workspace's freshly fetched metrics, so no second request).
 const POLL_MS = 5 * 60_000;
 const listeners = new Set<(m: Metrics) => void>();
 let latest: Metrics | null = null;
@@ -20,10 +21,7 @@ function loadMetrics(): Promise<void> {
   inFlight ??= fetch("/api/metrics")
     .then((r) => r.json())
     .then((d) => {
-      if (!d.metrics) return;
-      latest = d.metrics as Metrics;
-      fetchedAt = Date.now();
-      listeners.forEach((fn) => fn(latest!));
+      if (d.metrics) publish(d.metrics as Metrics);
     })
     .catch(() => {})
     .finally(() => {
@@ -38,7 +36,16 @@ const loadIfVisible = () => {
 const catchUpOnReturn = () => {
   if (document.visibilityState === "visible" && Date.now() - fetchedAt > POLL_MS) void loadMetrics();
 };
-const refreshNow = () => void loadMetrics();
+function publish(metrics: Metrics) {
+  latest = metrics;
+  fetchedAt = Date.now();
+  listeners.forEach((fn) => fn(metrics));
+}
+const refreshNow = (event: Event) => {
+  const shared = (event as CustomEvent<Metrics | undefined>).detail;
+  if (shared) publish(shared);
+  else void loadMetrics();
+};
 
 function subscribe(fn: (m: Metrics) => void): () => void {
   listeners.add(fn);

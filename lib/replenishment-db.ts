@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Holidays from "date-holidays";
 import { listAllOrders, listProducts, getSettings, queryDatabase, receiveProductStock, usingSupabase, withTransaction } from "./db.ts";
+import { markSchemaCurrent, schemaIsCurrent } from "./schema-once.ts";
 import { requireTenantSession } from "./tenant-context.ts";
 import { phoneToChatId } from "./phone.ts";
 import { sendWhatsAppMessage } from "./wa.ts";
@@ -101,11 +102,17 @@ const mem: MemoryStore = (globalStore.__replenishmentStore ??= {
   locks: new Map(),
 });
 
+const schemaDb = { query: queryDatabase };
+
 export async function ensureReplenishmentSchema(): Promise<void> {
   if (!usingSupabase) return;
   const tenantId = (await requireTenantSession()).tenantId;
   const ready = (globalStore.__replenishmentReady ??= new Set());
   if (ready.has(tenantId)) return;
+  if (await schemaIsCurrent(schemaDb, "replenishment", ensureReplenishmentSchema)) {
+    ready.add(tenantId);
+    return;
+  }
   await queryDatabase(`
     create sequence if not exists purchase_order_number_seq start 1001;
     create table if not exists suppliers (
@@ -153,6 +160,7 @@ export async function ensureReplenishmentSchema(): Promise<void> {
       created_at timestamptz not null default now(), unique(purchase_order_line_id, idempotency_key)
     );
   `);
+  await markSchemaCurrent(schemaDb, "replenishment", ensureReplenishmentSchema);
   ready.add(tenantId);
 }
 

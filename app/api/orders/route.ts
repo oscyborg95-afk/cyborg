@@ -18,12 +18,15 @@ export async function GET() {
     // The timeline is fetched for the orders this screen actually shows: a
     // whole-table read used to be capped at the 2000 OLDEST events, which hid
     // every recent checkpoint once the table grew past that.
+    // Everything else is scoped to those same orders: whole-table reads of
+    // manifests, alerts and delivery attempts were most of this route's egress.
     const orders = await listOrders();
+    const orderIds = orders.map((o) => o.id);
     const [manifests, events, alerts, deliveryAttempts] = await Promise.all([
-      listManifests(),
-      listTrackingEventsForOrders(orders.map((o) => o.id)),
-      listCustomerAlerts(),
-      listDeliveryAttempts(),
+      listManifests(orderIds),
+      listTrackingEventsForOrders(orderIds),
+      listCustomerAlerts(orderIds),
+      listDeliveryAttempts(orderIds),
     ]);
     return NextResponse.json({ orders, manifests, events, alerts, deliveryAttempts, usingSupabase });
   } catch (err) {
