@@ -8,6 +8,10 @@ import { listActiveTenants } from "@/lib/tenants";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+// Wall-clock budget for the whole run, shared by every tenant. Each tenant used
+// to get its own 45s sync, so with two tenants a run outlived maxDuration and
+// the worker's 55s fallback request always timed out before a response.
+const RUN_BUDGET_MS = 45_000;
 
 // Two jobs behind one entry point:
 //
@@ -47,10 +51,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const mode = req.nextUrl.searchParams.get("mode") === "drain" ? "drain" : "sync";
+  const runStarted = Date.now();
   try {
     const tenants = await listActiveTenants();
     const results = [];
-    for (const tenant of tenants) {
+    for (const [index, tenant] of tenants.entries()) {
       // One tenant's courier outage must not stop every later tenant's
       // notifications from going out.
       try {
@@ -84,13 +89,19 @@ export async function GET(req: NextRequest) {
               // Only reconcile with time actually left to do it in; a sync that
               // is going to time out anyway must not also cost us the next
               // tick's drain.
-              const syncable = mode === "sync" && Date.now() - started < 20_000;
+              // The rest of the run budget is split evenly over the tenants still to go.
+              const syncBudget =
+                (RUN_BUDGET_MS - (Date.now() - runStarted)) / (tenants.length - index);
+              const syncable =
+                mode === "sync" && Date.now() - started < 20_000 && syncBudget >= 5_000;
               return {
                 tenantId: tenant.id,
                 colomboDate: colomboDate(),
                 digest,
                 notifications,
-                sync: syncable ? await withExclusiveTrackingSync(runTrackingSync) : null,
+                sync: syncable
+                  ? await withExclusiveTrackingSync(() => runTrackingSync(syncBudget))
+                  : null,
                 syncSkipped: mode === "sync" && !syncable,
               };
             }

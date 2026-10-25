@@ -35,9 +35,9 @@ const SYNC_BUDGET_MS = (() => {
   return Number.isFinite(configured) && configured > 0 ? configured : 45_000;
 })();
 
-export async function runTrackingSync() {
+export async function runTrackingSync(budgetMs = SYNC_BUDGET_MS) {
   const [inFlight, settings] = await Promise.all([listInFlightTrackedOrders(), getSettings()]);
-  const deadline = Date.now() + SYNC_BUDGET_MS;
+  const deadline = Date.now() + budgetMs;
 
   let delivered = 0;
   let returned = 0;
@@ -101,7 +101,7 @@ export async function runTrackingSync() {
 
 export async function POST() {
   try {
-    const result = await withExclusiveTrackingSync(runTrackingSync);
+    const result = await withExclusiveTrackingSync(() => runTrackingSync());
     if (result === null) {
       return NextResponse.json({
         skipped: true,

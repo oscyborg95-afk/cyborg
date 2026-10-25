@@ -12,6 +12,7 @@ export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   // External courier callbacks cannot carry the operator's browser cookie.
   // This route performs its own constant-time COURIER_WEBHOOK_SECRET check.
+  // The cron/worker routes check CRON_SECRET themselves.
   if (
     pathname === "/login" ||
     pathname === "/api/login" ||
@@ -19,6 +20,7 @@ export async function proxy(req: NextRequest) {
     pathname === "/api/courier/webhook" ||
     pathname === "/api/agent/inbound" ||
     pathname === "/api/tracking/cron" ||
+    pathname === "/api/followups/tick" ||
     pathname === "/api/replenishment/cron"
   ) {
     return NextResponse.next();
