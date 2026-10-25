@@ -738,20 +738,23 @@ async function usePostgresAuthState() {
       [id, JSON.stringify(value, BufferJSON.replacer)]
     );
   };
+  const readLegacy = async (id) => {
+    if (process.env.MIGRATE_FILE_AUTH !== "true") return null;
+    try {
+      const value = JSON.parse(
+        fs.readFileSync(path.join(legacyAuthDir, legacyFile(id)), "utf8"),
+        BufferJSON.reviver
+      );
+      await write(id, value);
+      return value;
+    } catch {
+      return null;
+    }
+  };
   const read = async (id) => {
     const { rows } = await pool.query("select data from wa_auth where id = $1", [id]);
     if (rows[0]) return JSON.parse(rows[0].data, BufferJSON.reviver);
-    if (process.env.MIGRATE_FILE_AUTH === "true") {
-      try {
-        const value = JSON.parse(
-          fs.readFileSync(path.join(legacyAuthDir, legacyFile(id)), "utf8"),
-          BufferJSON.reviver
-        );
-        await write(id, value);
-        return value;
-      } catch {}
-    }
-    return null;
+    return readLegacy(id);
   };
   const del = async (id) => pool.query("delete from wa_auth where id = $1", [id]);
 
@@ -759,11 +762,21 @@ async function usePostgresAuthState() {
   return {
     state: {
       creds,
+      // Keys are read and written in one round trip per call, not one per key.
+      // Pairing generates 812 pre-keys inside Baileys' 30s upload timeout; at
+      // one query each across the VM→Supabase hop the upload timed out, the
+      // server never got the pre-keys, and no message reached the linked device.
       keys: {
         get: async (type, ids) => {
           const data = {};
+          if (ids.length === 0) return data;
+          const { rows } = await pool.query("select id, data from wa_auth where id = any($1::text[])", [
+            ids.map((id) => `${type}-${id}`),
+          ]);
+          const found = new Map(rows.map((row) => [row.id, row.data]));
           for (const id of ids) {
-            let value = await read(`${type}-${id}`);
+            const raw = found.get(`${type}-${id}`);
+            let value = raw ? JSON.parse(raw, BufferJSON.reviver) : await readLegacy(`${type}-${id}`);
             if (type === "app-state-sync-key" && value) {
               value = proto.Message.AppStateSyncKeyData.fromObject(value);
             }
@@ -772,12 +785,30 @@ async function usePostgresAuthState() {
           return data;
         },
         set: async (data) => {
+          const upsertIds = [];
+          const upsertValues = [];
+          const deleteIds = [];
           for (const type of Object.keys(data)) {
             for (const id of Object.keys(data[type])) {
               const value = data[type][id];
-              if (value) await write(`${type}-${id}`, value);
-              else await del(`${type}-${id}`);
+              if (value) {
+                upsertIds.push(`${type}-${id}`);
+                upsertValues.push(JSON.stringify(value, BufferJSON.replacer));
+              } else {
+                deleteIds.push(`${type}-${id}`);
+              }
             }
+          }
+          if (upsertIds.length) {
+            await pool.query(
+              `insert into wa_auth (id, data)
+               select * from unnest($1::text[], $2::text[])
+               on conflict (id) do update set data = excluded.data`,
+              [upsertIds, upsertValues]
+            );
+          }
+          if (deleteIds.length) {
+            await pool.query("delete from wa_auth where id = any($1::text[])", [deleteIds]);
           }
         },
       },
