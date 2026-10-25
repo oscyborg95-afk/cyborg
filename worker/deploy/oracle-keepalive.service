@@ -1,0 +1,25 @@
+# Keeps the Oracle Always Free VM above the idle-reclamation line: Oracle stops
+# Always Free instances whose 95th-percentile CPU, network (and, on A1, memory)
+# all stay under 20% for 7 days, and the WhatsApp worker alone idles near 0%.
+#
+# CPUQuota is a share of ONE vCPU; the E2.1.Micro has 2, so 70% here is ~30% of
+# the instance. SCHED_IDLE + Nice 19 mean the loop only ever gets CPU nothing
+# else wants, so the worker always runs first.
+#
+# Install: sudo cp oracle-keepalive.service /etc/systemd/system/ &&
+#          sudo systemctl daemon-reload && sudo systemctl enable --now oracle-keepalive
+[Unit]
+Description=Low-priority CPU keep-alive (Oracle Always Free idle reclamation)
+After=network.target
+
+[Service]
+ExecStart=/bin/sh -c 'while :; do :; done'
+Nice=19
+CPUSchedulingPolicy=idle
+CPUQuota=70%
+MemoryMax=16M
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

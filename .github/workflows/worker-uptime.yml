@@ -1,0 +1,29 @@
+# Pings the WhatsApp worker on the Oracle VM. A failed scheduled run makes
+# GitHub email whoever last edited this schedule, so an Oracle idle-reclaim or
+# crash is noticed in minutes instead of when someone sees "worker offline".
+name: Worker uptime
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check worker /health
+        env:
+          URL: https://161-118-246-82.nip.io/health
+        run: |
+          # Three tries 20s apart so one dropped request doesn't page anyone.
+          for attempt in 1 2 3; do
+            if curl -fsS --max-time 15 "$URL" | grep -q '"ok":true'; then
+              echo "Worker is up"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::WhatsApp worker at $URL is down. If Oracle stopped the VM, start wa-worker from Compute > Instances."
+          exit 1
