@@ -39,6 +39,10 @@ export async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  // Everything except Next's static assets and the favicon.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // Everything except Next's static assets and the public install files. The
+  // browser fetches the manifest without cookies, and the Android app checks
+  // /.well-known/assetlinks.json, so a /login redirect there breaks install.
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|manifest.webmanifest|sw.js|offline.html|icon-|apple-touch-icon|\\.well-known/).*)",
+  ],
 };

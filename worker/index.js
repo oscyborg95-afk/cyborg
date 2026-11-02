@@ -484,7 +484,6 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
   Browsers,
-  downloadMediaMessage,
   isJidGroup,
   isJidBroadcast,
   isJidNewsletter,
@@ -550,27 +549,12 @@ async function ensureTables() {
       ts   bigint not null
     );
   `);
-  // Media feeds AI parsing and inline chat rendering — prune after 30 days
-  // (the UI falls back to a "[photo]"-style placeholder once bytes are gone).
-  await pool
-    .query("delete from wa_media where ts < $1", [Date.now() - 30 * 24 * 60 * 60 * 1000])
-    .catch(() => {});
+  // Media bytes are no longer stored (they filled the free-tier DB and made it
+  // read-only). Clear any leftovers; the UI shows a "[photo]" placeholder.
+  await pool.query("delete from wa_media").catch(() => {});
 }
 
-// --- Media (voice notes + photos, for AI address parsing) --------------------
-
-async function saveMedia(id, mime, buffer) {
-  const data = buffer.toString("base64");
-  if (pool) {
-    await pool.query(
-      `insert into wa_media (id, mime, data, ts) values ($1,$2,$3,$4)
-       on conflict (id) do nothing`,
-      [id, mime, data, Date.now()]
-    );
-    return;
-  }
-  memMedia.set(id, { mime, data });
-}
+// --- Media (read-only: nothing writes wa_media any more) ---------------------
 
 async function getMedia(id) {
   if (pool) {
@@ -1026,11 +1010,6 @@ async function connectToWhatsApp() {
         if (isNew) {
           emitMessage(msg);
           if (type === "notify") scheduleSalesAgent(msg);
-          // Voice notes and photos often ARE the address — capture the bytes
-          // so the AI parser can read them. Fire-and-forget; never blocks chat.
-          captureMedia(m, msg).catch((err) =>
-            console.error("[cyborg-wa-worker] media download failed:", err.message)
-          );
         }
       } catch (err) {
         console.error("[cyborg-wa-worker] failed to store message:", err.message);
@@ -1079,29 +1058,8 @@ app.post("/logout", async (_req, res) => {
   }
 });
 
-// Sri Lankan customers frequently send the delivery address as a voice note or
-// a photo of a handwritten note. Store inbound audio/images (base64) so the
-// dashboard's "Parse from chat" can feed them to the multimodal parser.
+// Cap on photos the dashboard sends out. Media is never stored.
 const MAX_MEDIA_BYTES = 6 * 1024 * 1024;
-
-async function captureMedia(rawMessage, msg) {
-  const content = unwrap(rawMessage.message);
-  const media = content?.audioMessage || content?.imageMessage || content?.stickerMessage;
-  if (!media) return;
-  if (Number(media.fileLength || 0) > MAX_MEDIA_BYTES) return; // skip huge files
-
-  const buffer = await downloadMediaMessage(rawMessage, "buffer", {}, {
-    logger,
-    reuploadRequest: sock.updateMediaMessage,
-  });
-  if (!buffer || buffer.length > MAX_MEDIA_BYTES) return;
-  // "audio/ogg; codecs=opus" → "audio/ogg" (what the AI APIs expect).
-  const mime = (media.mimetype ||
-    (content.audioMessage ? "audio/ogg" : content.stickerMessage ? "image/webp" : "image/jpeg"))
-    .split(";")[0]
-    .trim();
-  await saveMedia(msg.id, mime, buffer);
-}
 
 // --- Routes (registered up-front; they answer 503 until the session is live) --
 
@@ -1260,12 +1218,6 @@ app.post("/send", async (req, res) => {
           if (isNew) emitMessage(msg);
         })
         .catch((err) => console.error("[cyborg-wa-worker] failed to store sent message:", err.message));
-      // Keep the sent photo's bytes so the dashboard can render it inline.
-      if (mediaBuffer) {
-        saveMedia(msg.id, (media.mime || "image/jpeg").split(";")[0].trim(), mediaBuffer).catch(
-          () => {}
-        );
-      }
     }
   } catch (err) {
     releaseSendKey(idempotencyKey, false);
