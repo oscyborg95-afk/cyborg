@@ -558,6 +558,9 @@ create unique index if not exists uq_tracking_notification_dedupe
 -- stops a revised courier date turning into one WhatsApp per revision.
 create index if not exists idx_tracking_notification_order
   on tracking_notification_jobs(order_id, notification_type, created_at desc);
+-- Latest job per delivery attempt and recipient, read on every orders load.
+create index if not exists idx_tracking_notification_attempt
+  on tracking_notification_jobs(delivery_attempt_id, recipient, created_at desc);
 
 -- Automatic follow-ups for cold leads. One settings row holds the operator's
 -- own message text (per trigger state, several variants per step) plus the

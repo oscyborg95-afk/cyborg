@@ -936,6 +936,11 @@ async function ensureTrackingOpsSchema(db: Queryable): Promise<void> {
   await db.query(
     "create index if not exists idx_tracking_notification_order on tracking_notification_jobs(order_id, notification_type, created_at desc)"
   );
+  // listDeliveryAttempts reads each attempt's latest job per recipient; without
+  // this every attempt row seq-scanned the whole jobs table (~300ms per /api/orders).
+  await db.query(
+    "create index if not exists idx_tracking_notification_attempt on tracking_notification_jobs(delivery_attempt_id, recipient, created_at desc)"
+  );
   await db.query(
     "create unique index if not exists uq_tracking_notification_dedupe on tracking_notification_jobs(dedupe_key) where dedupe_key is not null"
   );

@@ -542,6 +542,7 @@ async function ensureTables() {
     alter table wa_messages add column if not exists status int not null default 0;
     alter table wa_messages add column if not exists media text not null default '';
     create index if not exists idx_wa_messages_jid_ts on wa_messages(jid, ts);
+    create index if not exists idx_wa_chats_last_ts on wa_chats(last_ts desc);
     create table if not exists wa_media (
       id   text primary key,
       mime text not null,
