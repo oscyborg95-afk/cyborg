@@ -41,6 +41,7 @@ import { Button, Card } from "../components/ui";
 import { CityPicker } from "../components/city-picker";
 import { ItemsEditor } from "../components/items-editor";
 import { RemittancePanel } from "../components/remittance-panel";
+import { CancelOrderDialog } from "../components/cancel-order-dialog";
 
 // Manual fallback flow: paste → parse → verify → save → book → copy.
 // The realtime workspace at / replaces this for day-to-day work, but this page
@@ -67,6 +68,7 @@ const STATUS_STYLE: Record<OrderStatus, string> = {
   booked: "bg-sky-tint text-sky-dark",
   delivered: "bg-pond text-frog-dark",
   returned: "bg-flame-tint text-flame-dark",
+  cancelled: "bg-[#ece8e1] text-ink-soft line-through",
 };
 
 // Customer tracking alerts — friendly label per kind, and which order status
@@ -116,7 +118,7 @@ function fmtDateTime(iso: string): string {
 }
 
 type DatePreset = "all" | "today" | "yesterday" | "7days" | "month" | "custom";
-type StatusFilter = "all" | "pending" | "booked" | "delivered" | "returned" | "unremitted";
+type StatusFilter = "all" | "pending" | "booked" | "delivered" | "returned" | "cancelled" | "unremitted";
 
 function isSameDay(d1: Date, d2: Date): boolean {
   return (
@@ -201,6 +203,7 @@ export default function OrdersPage() {
   const [redeliverSentId, setRedeliverSentId] = useState<string | null>(null);
   const [rebookingId, setRebookingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
   const [trackingHealth, setTrackingHealth] = useState<TrackingHealth | null>(null);
   const [deliveryAttempts, setDeliveryAttempts] = useState<DeliveryAttempt[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(true);
@@ -445,6 +448,15 @@ export default function OrdersPage() {
     await refresh();
   }
 
+  // Back out of a cancellation: a booked parcel (it has a waybill) returns to
+  // booked, anything else to pending. Stock moves back out with it.
+  async function handleUndoCancel(order: Order) {
+    const hasWaybill = manifests.some((m) => m.order_id === order.id);
+    const next: OrderStatus = hasWaybill ? "booked" : "pending";
+    if (!confirm(`Restore ${order.order_no ?? order.customer_name} to ${next}?`)) return;
+    await handleStatusChange(order.id, next);
+  }
+
   async function handleCopy(order: Order) {
     const manifest = manifests.find((m) => m.order_id === order.id);
     await navigator.clipboard.writeText(confirmationBlock(order, manifest, msgTemplates, businessName));
@@ -536,6 +548,7 @@ export default function OrdersPage() {
       if (statusFilter === "booked" && order.order_status !== "booked") return false;
       if (statusFilter === "delivered" && order.order_status !== "delivered") return false;
       if (statusFilter === "returned" && order.order_status !== "returned") return false;
+      if (statusFilter === "cancelled" && order.order_status !== "cancelled") return false;
       if (statusFilter === "unremitted" && !(order.order_status === "delivered" && !order.remitted_at)) return false;
       if (salesAccountFilter !== "all" && order.sales_account_id !== salesAccountFilter) return false;
 
@@ -589,6 +602,10 @@ export default function OrdersPage() {
 
   const returnedCount = useMemo(() => {
     return orders.filter((o) => o.order_status === "returned").length;
+  }, [orders]);
+
+  const cancelledCount = useMemo(() => {
+    return orders.filter((o) => o.order_status === "cancelled").length;
   }, [orders]);
 
   const isFiltered = statusFilter !== "all" || salesAccountFilter !== "all" || datePreset !== "all" || Boolean(search.trim()) || Boolean(customStart) || Boolean(customEnd);
@@ -1071,6 +1088,7 @@ export default function OrdersPage() {
                 ["booked", `Booked (${bookedCount})`],
                 ["delivered", `Delivered (${deliveredCount})`],
                 ["returned", `Returned (${returnedCount})`],
+                ["cancelled", `Cancelled (${cancelledCount})`],
                 ["unremitted", `Unremitted (${unremitted.length})`],
               ] as const
             ).map(([key, label]) => (
@@ -1234,12 +1252,19 @@ export default function OrdersPage() {
                         <option value="booked">Booked</option>
                         <option value="delivered">Delivered</option>
                         <option value="returned">Returned</option>
+                        {order.order_status === "cancelled" && <option value="cancelled" disabled>Cancelled</option>}
                       </select>
                     </label>
                   </div>
 
                   {dupIds.has(order.id) && (
                     <p className="mt-3 rounded-xl bg-flame-tint px-3 py-2 text-sm font-bold text-flame-dark">⚠️ Possible duplicate order</p>
+                  )}
+                  {order.order_status === "cancelled" && (
+                    <p className="mt-3 rounded-xl bg-[#ece8e1] px-3 py-2 text-sm font-bold text-ink-soft">
+                      🚫 Cancelled{order.cancelled_at ? ` ${fmtDateTime(order.cancelled_at)}` : ""}
+                      {order.cancel_reason ? ` — ${order.cancel_reason}` : ""}
+                    </p>
                   )}
                   {order.order_status === "delivered" && (
                     <p className="mt-2 text-sm font-bold text-ink-soft">{order.remitted_at ? "💵 Courier payout recorded" : "⏳ Awaiting courier payout"}</p>
@@ -1296,6 +1321,16 @@ export default function OrdersPage() {
                         <a href={manifest.pdf_label_url} target="_blank" rel="noreferrer" className="flex min-h-11 items-center justify-center rounded-xl border-2 border-cardline bg-surface px-3 font-display text-sm font-extrabold text-sky-dark">
                           Download courier label
                         </a>
+                      )}
+                      {(order.order_status === "pending" || order.order_status === "booked") && (
+                        <Button tone="ghost" onClick={() => setCancelTarget(order)} className="min-h-11 w-full !text-flame-dark">
+                          🚫 Cancel order
+                        </Button>
+                      )}
+                      {order.order_status === "cancelled" && (
+                        <Button tone="ghost" onClick={() => void handleUndoCancel(order)} className="min-h-11 w-full">
+                          ↩ Undo cancel
+                        </Button>
                       )}
                       <Button tone="ghost" onClick={() => handleCopy(order)} className="min-h-11 w-full">
                         {copiedId === order.id ? "Copied ✓" : "Copy confirmation"}
@@ -1405,7 +1440,18 @@ export default function OrdersPage() {
                             <option value="booked">booked</option>
                             <option value="delivered">delivered</option>
                             <option value="returned">returned</option>
+                            {order.order_status === "cancelled" && (
+                              <option value="cancelled" disabled>cancelled</option>
+                            )}
                           </select>
+                          {order.order_status === "cancelled" && (
+                            <div
+                              className="mt-0.5 max-w-[10rem] font-display text-[10px] font-extrabold text-ink-soft"
+                              title={order.cancelled_at ? `Cancelled ${fmtDateTime(order.cancelled_at)}` : undefined}
+                            >
+                              🚫 {order.cancel_reason || "cancelled"}
+                            </div>
+                          )}
                           {order.order_status === "delivered" && (
                             <div className="mt-0.5 font-display text-[10px] font-extrabold text-ink-soft">
                               {order.remitted_at ? "💵 paid out" : "⏳ awaiting payout"}
@@ -1492,6 +1538,23 @@ export default function OrdersPage() {
                             >
                               {copiedId === order.id ? "Copied ✓" : "Copy confirm"}
                             </Button>
+                            {(order.order_status === "pending" || order.order_status === "booked") && (
+                              <button
+                                onClick={() => setCancelTarget(order)}
+                                title="Customer called it off before the parcel left — puts stock back"
+                                className="rounded-xl px-3 py-1.5 font-display text-xs font-bold text-flame-dark transition hover:bg-flame-tint"
+                              >
+                                🚫 Cancel
+                              </button>
+                            )}
+                            {order.order_status === "cancelled" && (
+                              <button
+                                onClick={() => void handleUndoCancel(order)}
+                                className="rounded-xl px-3 py-1.5 font-display text-xs font-bold text-ink-soft transition hover:bg-pond"
+                              >
+                                ↩ Undo cancel
+                              </button>
+                            )}
                             <button
                               onClick={() => handleDelete(order)}
                               disabled={
@@ -1535,6 +1598,19 @@ export default function OrdersPage() {
           </>
         )}
       </Card>
+      {cancelTarget && (
+        <CancelOrderDialog
+          order={cancelTarget}
+          trackingId={manifests.find((m) => m.order_id === cancelTarget.id)?.tracking_id}
+          courierName={manifests.find((m) => m.order_id === cancelTarget.id)?.courier_name}
+          defaultReason={dupIds.has(cancelTarget.id) ? "Duplicate order" : undefined}
+          onClose={() => setCancelTarget(null)}
+          onCancelled={() => {
+            setCancelTarget(null);
+            void refresh();
+          }}
+        />
+      )}
     </main>
   );
 }
@@ -1846,6 +1922,7 @@ function DeliveryRescuePanel({
       return (
         order.order_status !== "delivered" &&
         order.order_status !== "returned" &&
+        order.order_status !== "cancelled" &&
         attempt.attempt_no === latestAttemptByOrder.get(attempt.order_id) &&
         attempt.call_status !== "resolved" &&
         attempt.call_status !== "called_confirmed" &&

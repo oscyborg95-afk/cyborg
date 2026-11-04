@@ -254,6 +254,12 @@ async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
   await db.query(
     "create unique index if not exists uq_shipping_manifests_order on shipping_manifests(order_id)"
   );
+  // Cancelling after booking: when and why, so the audit trail survives.
+  await db.query("alter table orders add column if not exists cancelled_at timestamptz");
+  await db.query("alter table orders add column if not exists cancel_reason varchar not null default ''");
+  // The invoice printer reads one day/range at a time; without this every
+  // batch scans the whole table to find it.
+  await db.query("create index if not exists idx_orders_created on orders(created_at desc)");
   await markSchemaCurrent(db, "order-safety", ensureOrderSafetySchema);
   ready.add(tenantId);
 }
@@ -599,6 +605,7 @@ const STOCK_OUT: Record<OrderStatus, number> = {
   booked: 1,
   delivered: 1,
   returned: 0,
+  cancelled: 0, // never left the shop
 };
 
 export async function updateOrderStatus(
@@ -618,10 +625,21 @@ export async function updateOrderStatus(
   if (!order) throw new Error("Order not found");
   const oldStatus = order.order_status;
 
+  // Moving off "cancelled" (undo) clears the cancellation stamp with it.
+  const clearCancel = oldStatus === "cancelled" && status !== "cancelled";
   if (db) {
-    await db.query("update orders set order_status = $1 where id = $2", [status, id]);
+    await db.query(
+      clearCancel
+        ? "update orders set order_status = $1, cancelled_at = null, cancel_reason = '' where id = $2"
+        : "update orders set order_status = $1 where id = $2",
+      [status, id]
+    );
   } else {
-    memOrders.set(id, { ...order, order_status: status });
+    memOrders.set(id, {
+      ...order,
+      order_status: status,
+      ...(clearCancel ? { cancelled_at: null, cancel_reason: "" } : {}),
+    });
   }
 
   // Keep the products' physical stock in sync with where the parcel is.
@@ -641,6 +659,163 @@ export async function updateOrderStatus(
       }
     }
   }
+}
+
+export class OrderCancelConflictError extends Error {}
+
+// The customer called it off after booking (or a duplicate slipped through).
+// Only orders that have not left the shop can be cancelled here: a parcel the
+// courier already picked up comes back through the normal return flow. Stock
+// goes back on the shelf via updateOrderStatus.
+export async function cancelOrder(id: string, reason: string): Promise<Order> {
+  const cleanReason = reason.trim().slice(0, 200);
+  const run = async (db: Queryable | null): Promise<Order> => {
+    const order = db
+      ? (((await db.query("select * from orders where id = $1 for update", [id])).rows[0] as Order) ?? null)
+      : await getOrder(id, null);
+    if (!order) throw new Error("Order not found");
+    if (order.order_status !== "pending" && order.order_status !== "booked") {
+      throw new OrderCancelConflictError(`A ${order.order_status} order cannot be cancelled`);
+    }
+    if (order.remitted_at) throw new OrderCancelConflictError("A remitted order cannot be cancelled");
+    await updateOrderStatus(id, "cancelled", db);
+    const cancelledAt = new Date().toISOString();
+    if (db) {
+      const { rows } = await db.query(
+        "update orders set cancelled_at = $1, cancel_reason = $2 where id = $3 returning *",
+        [cancelledAt, cleanReason, id]
+      );
+      return rows[0] as Order;
+    }
+    const updated: Order = {
+      ...memOrders.get(id)!,
+      cancelled_at: cancelledAt,
+      cancel_reason: cleanReason,
+    };
+    memOrders.set(id, updated);
+    return updated;
+  };
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    return withTransaction(run);
+  }
+  return withMemOrderLock(id, () => run(null));
+}
+
+// Columns the invoice printer actually renders — no raw address, no
+// idempotency key, no timeline/alerts/attempt feeds.
+const INVOICE_ORDER_COLUMNS = `o.id, o.sales_account_id, o.order_no, o.customer_name, o.phone_number, o.phone_2,
+  o.parsed_address, o.city, o.district, o.product_id, o.item_name, o.items, o.product_price,
+  o.shipping_fee, o.discount, o.total_cod, o.payment_method, o.order_status,
+  o.cancelled_at, o.cancel_reason, o.created_at`;
+
+// Just enough of a neighbouring order to judge "is this a duplicate?".
+export type DuplicateContextOrder = Pick<
+  Order,
+  "id" | "order_no" | "customer_name" | "phone_number" | "phone_2" | "item_name" | "items" | "total_cod" | "order_status" | "created_at"
+>;
+
+const invoicePhoneKey = (phone: string | null | undefined) => (phone ?? "").replace(/\D/g, "").slice(-9);
+
+// Orders for one invoice batch plus their manifests, and — for duplicate
+// highlighting — the few other live orders from the same phone numbers within
+// `windowHours` of the batch. Only dispatched orders (with a manifest) are
+// returned, bounded by the date range, so the read is one batch rather than the
+// shop's history. With no range, the latest `limit` dispatched orders.
+export async function listInvoiceBatch(input: {
+  from: string | null;
+  to: string | null;
+  windowHours: number;
+  limit?: number;
+}): Promise<{ orders: Order[]; manifests: ShippingManifest[]; related: DuplicateContextOrder[] }> {
+  const limit = input.limit ?? 300;
+  let orders: Order[];
+  let manifests: ShippingManifest[];
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    const ranged = Boolean(input.from && input.to);
+    const { rows } = await pool.query(
+      `select ${INVOICE_ORDER_COLUMNS},
+              m.id as m_id, m.courier_name as m_courier_name, m.tracking_id as m_tracking_id,
+              m.created_at as m_created_at
+         from orders o
+         join shipping_manifests m on m.order_id = o.id
+        where o.archived_at is null
+          ${ranged ? "and o.created_at >= $1 and o.created_at < $2" : ""}
+        order by o.created_at desc
+        limit ${ranged ? "$3" : "$1"}`,
+      ranged ? [input.from, input.to, limit] : [limit]
+    );
+    orders = [];
+    manifests = [];
+    for (const row of rows) {
+      const { m_id, m_courier_name, m_tracking_id, m_created_at, ...order } = row;
+      orders.push({ ...(order as unknown as Order), raw_address: "" });
+      manifests.push({
+        id: m_id as string,
+        order_id: order.id as string,
+        courier_name: m_courier_name as string,
+        tracking_id: m_tracking_id as string,
+        pdf_label_url: null,
+        last_checkpoint: null,
+        created_at: m_created_at as string,
+      });
+    }
+  } else {
+    const fromT = input.from ? new Date(input.from).getTime() : -Infinity;
+    const toT = input.to ? new Date(input.to).getTime() : Infinity;
+    const shipped = new Set([...memManifests.values()].map((m) => m.order_id));
+    orders = [...memOrders.values()]
+      .filter((o) => !o.archived_at)
+      .filter((o) => shipped.has(o.id))
+      .filter((o) => {
+        const t = new Date(o.created_at).getTime();
+        return t >= fromT && t < toT;
+      })
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit);
+    const ids = new Set(orders.map((o) => o.id));
+    manifests = [...memManifests.values()].filter((m) => ids.has(m.order_id));
+  }
+
+  const keys = [...new Set(orders.map((o) => invoicePhoneKey(o.phone_number)).filter((k) => k.length >= 9))];
+  if (keys.length === 0) return { orders, manifests, related: [] };
+  const times = orders.map((o) => new Date(o.created_at).getTime());
+  const windowMs = input.windowHours * 3_600_000;
+  const lo = new Date(Math.min(...times) - windowMs).toISOString();
+  const hi = new Date(Math.max(...times) + windowMs).toISOString();
+  const ids = orders.map((o) => o.id);
+  let related: DuplicateContextOrder[];
+  if (pool) {
+    const { rows } = await pool.query(
+      `select id, order_no, customer_name, phone_number, phone_2, item_name, items, total_cod,
+              order_status, created_at
+         from orders
+        where archived_at is null
+          and created_at >= $1 and created_at <= $2
+          and not (id = any($3::uuid[]))
+          and order_status not in ('returned', 'cancelled')
+          and (right(regexp_replace(coalesce(phone_number, ''), '\\D', '', 'g'), 9) = any($4::text[])
+            or right(regexp_replace(coalesce(phone_2, ''), '\\D', '', 'g'), 9) = any($4::text[]))
+        limit 200`,
+      [lo, hi, ids, keys]
+    );
+    related = rows as DuplicateContextOrder[];
+  } else {
+    const idSet = new Set(ids);
+    const keySet = new Set(keys);
+    related = [...memOrders.values()].filter(
+      (o) =>
+        !o.archived_at &&
+        !idSet.has(o.id) &&
+        o.order_status !== "returned" &&
+        o.order_status !== "cancelled" &&
+        o.created_at >= lo &&
+        o.created_at <= hi &&
+        (keySet.has(invoicePhoneKey(o.phone_number)) || keySet.has(invoicePhoneKey(o.phone_2)))
+    );
+  }
+  return { orders, manifests, related };
 }
 
 export class OrderBookingConflictError extends Error {}

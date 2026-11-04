@@ -1,4 +1,6 @@
-export type OrderStatus = "pending" | "booked" | "delivered" | "returned";
+// "cancelled": the customer called it off after booking but before the parcel
+// left the shop. Stock is back on the shelf and it never counts as shipped.
+export type OrderStatus = "pending" | "booked" | "delivered" | "returned" | "cancelled";
 
 // How the customer settles an order. "cod" is the default; the other two are
 // prepaid — the courier collects nothing. See lib/payments.ts for the money
@@ -55,6 +57,9 @@ export interface Order {
   // Archived orders disappear from operational lists but remain available to
   // financial reporting and audit history. No stock or cash is changed.
   archived_at?: string | null;
+  // Set when the order is cancelled; the reason is what the operator typed.
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
   created_at: string;
 }
 

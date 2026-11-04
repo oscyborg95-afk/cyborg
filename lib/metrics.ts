@@ -245,8 +245,8 @@ const colomboWeekday = new Intl.DateTimeFormat("en-US", {
 });
 
 export function computeMetrics(
-  orders: Order[],
-  manifests: ShippingManifest[],
+  allOrders: Order[],
+  allManifests: ShippingManifest[],
   settings: BusinessSettings,
   products: Product[] = [],
   // Settlement events only ('delivered' / 'returned'), oldest first — every
@@ -255,6 +255,15 @@ export function computeMetrics(
   events: TrackingEvent[] = [],
   adSpend: AdSpend[] = []
 ): Metrics {
+  // A cancelled order never left the shop: it is not a shipment, a dispatch
+  // for the streak, or revenue — drop it and its waybill before anything counts.
+  const cancelledIds = new Set(
+    allOrders.filter((o) => o.order_status === "cancelled").map((o) => o.id)
+  );
+  const orders = cancelledIds.size ? allOrders.filter((o) => !cancelledIds.has(o.id)) : allOrders;
+  const manifests = cancelledIds.size
+    ? allManifests.filter((m) => !cancelledIds.has(m.order_id))
+    : allManifests;
   const orderById = new Map(orders.map((o) => [o.id, o]));
   const delivered = orders.filter((o) => o.order_status === "delivered").length;
   const totalPackages = orders.filter((o) => o.order_status !== "pending").length;

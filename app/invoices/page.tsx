@@ -4,15 +4,37 @@
 // (2 × 4 per page), each with the business block, customer block, item, COD
 // breakdown and a scannable Code-128 barcode of the courier tracking ID.
 // Browser print → save the whole batch as one PDF or send straight to paper.
+//
+// Data comes from /api/invoices, which reads only the chosen day/range (plus the
+// few neighbouring orders needed to spot duplicates), so changing the date is a
+// small query instead of the whole Orders feed.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { BusinessSettings, Order, ShippingManifest } from "@/lib/types";
+import { findDuplicates, type DuplicateCandidate, type DuplicateMatch } from "@/lib/risk";
 import { Barcode } from "../components/barcode";
+import { CancelOrderDialog } from "../components/cancel-order-dialog";
 import { Froggy } from "../components/froggy";
 import { Button, Card } from "../components/ui";
 
 const rs = (n: number) => `Rs. ${Math.round(n).toLocaleString("en-LK")}`;
-const localDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA"); // YYYY-MM-DD
+
+// Local midnight of a YYYY-MM-DD day as an ISO instant, so the server cuts the
+// batch on the operator's calendar day, not UTC's.
+const localMidnight = (day: string, addDays = 0) => {
+  const d = new Date(`${day}T00:00:00`);
+  d.setDate(d.getDate() + addDays);
+  return d.toISOString();
+};
+
+type RelatedOrder = DuplicateCandidate & Pick<Order, "order_no" | "customer_name" | "total_cod">;
+
+function describeMatch(m: DuplicateMatch<RelatedOrder>, inBatch: boolean): string {
+  const ref = m.order.order_no || m.order.customer_name;
+  const when = m.hoursApart < 1 ? "<1h apart" : `${Math.round(m.hoursApart)}h apart`;
+  const where = inBatch ? "also in this batch" : m.order.order_status === "pending" ? "still pending" : `already ${m.order.order_status}`;
+  return `${ref} · ${m.sameItem ? "same item" : "different item"} · ${when} · ${where}`;
+}
 
 type DateFilterMode = "single" | "range" | "all";
 
@@ -26,6 +48,10 @@ export default function InvoicesPage() {
   const today = useMemo(() => new Date().toLocaleDateString("en-CA"), []);
   const [orders, setOrders] = useState<Order[]>([]);
   const [manifests, setManifests] = useState<ShippingManifest[]>([]);
+  const [related, setRelated] = useState<RelatedOrder[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [onlyDuplicates, setOnlyDuplicates] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [filterMode, setFilterMode] = useState<DateFilterMode>("single");
   const [date, setDate] = useState(today);
@@ -37,25 +63,57 @@ export default function InvoicesPage() {
   const previewRef = useRef<HTMLDivElement>(null);
   const previewCloseRef = useRef<HTMLButtonElement>(null);
 
-  const load = useCallback(async () => {
-    const [ordersRes, settingsRes] = await Promise.all([
-      fetch("/api/orders"),
-      fetch("/api/settings"),
-    ]);
-    const ordersData = await ordersRes.json();
-    const settingsData = await settingsRes.json();
-    if (ordersRes.ok) {
-      setOrders(ordersData.orders);
-      setManifests(ordersData.manifests);
-    }
-    if (settingsRes.ok) setSettings(settingsData.settings);
-    setLoaded(true);
+  const rangeIsValid = Boolean(rangeFrom && rangeTo && rangeFrom <= rangeTo);
+
+  // Business details print on every invoice — read once, not per date change.
+  useEffect(() => {
+    let live = true;
+    fetch("/api/settings")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => live && data && setSettings(data.settings))
+      .catch(() => null);
+    return () => {
+      live = false;
+    };
   }, []);
 
+  // The batch window the server should read; null = the latest dispatches.
+  const batchQuery = useMemo(() => {
+    if (filterMode === "all") return "";
+    if (filterMode === "single") {
+      if (!date) return null;
+      return `from=${encodeURIComponent(localMidnight(date))}&to=${encodeURIComponent(localMidnight(date, 1))}`;
+    }
+    if (!rangeIsValid) return null;
+    return `from=${encodeURIComponent(localMidnight(rangeFrom))}&to=${encodeURIComponent(localMidnight(rangeTo, 1))}`;
+  }, [filterMode, date, rangeFrom, rangeTo, rangeIsValid]);
+
   useEffect(() => {
-    const timer = window.setTimeout(load, 0);
-    return () => window.clearTimeout(timer);
-  }, [load]);
+    if (batchQuery === null) return;
+    const ctrl = new AbortController();
+    // Debounced so scrubbing through dates in the picker is one read, not ten.
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/invoices${batchQuery ? `?${batchQuery}` : ""}`, { signal: ctrl.signal });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Invoices could not be loaded");
+        setOrders(data.orders);
+        setManifests(data.manifests);
+        setRelated(data.related);
+        setExcluded(new Set());
+        setLoadError(null);
+      } catch (err) {
+        if (ctrl.signal.aborted) return;
+        setLoadError(err instanceof Error ? err.message : "Invoices could not be loaded");
+      } finally {
+        if (!ctrl.signal.aborted) setLoaded(true);
+      }
+    }, 250);
+    return () => {
+      ctrl.abort();
+      window.clearTimeout(timer);
+    };
+  }, [batchQuery]);
 
   useEffect(() => {
     if (!previewOpen) return;
@@ -97,26 +155,53 @@ export default function InvoicesPage() {
     return map;
   }, [manifests]);
 
-  const rangeIsValid = Boolean(rangeFrom && rangeTo && rangeFrom <= rangeTo);
-
-  // Printable = has a tracking ID (was actually handed to the courier).
+  // Printable = has a tracking ID (was actually handed to the courier) and was
+  // not cancelled afterwards. The server already cut the batch to the dates.
   const eligible = useMemo(
     () =>
-      orders
-        .filter((o) => manifestByOrder.has(o.id))
-        .filter((o) => {
-          if (filterMode === "all") return true;
+      batchQuery === null
+        ? []
+        : orders
+            .filter((o) => manifestByOrder.has(o.id) && o.order_status !== "cancelled")
+            .sort((a, b) => a.created_at.localeCompare(b.created_at)),
+    [orders, manifestByOrder, batchQuery]
+  );
+  const cancelledInBatch = batchQuery === null ? 0 : orders.filter((o) => o.order_status === "cancelled").length;
 
-          const orderDay = localDay(o.created_at);
-          if (filterMode === "single") return orderDay === date;
-          return rangeIsValid && orderDay >= rangeFrom && orderDay <= rangeTo;
-        })
-        .sort((a, b) => a.created_at.localeCompare(b.created_at)),
-    [orders, manifestByOrder, filterMode, date, rangeFrom, rangeTo, rangeIsValid]
+  // Possible duplicates: same customer phone, another live order within 72h —
+  // checked against this batch and the neighbouring orders the server sent.
+  const duplicates = useMemo(() => {
+    const candidates: RelatedOrder[] = [...eligible, ...related];
+    const map = new Map<string, DuplicateMatch<RelatedOrder>[]>();
+    for (const o of eligible) {
+      const matches = findDuplicates(candidates, o);
+      if (matches.length) map.set(o.id, matches);
+    }
+    return map;
+  }, [eligible, related]);
+  const eligibleIds = useMemo(() => new Set(eligible.map((o) => o.id)), [eligible]);
+
+  // Within each duplicate cluster in this batch, every order after the first.
+  const laterDuplicates = useMemo(
+    () =>
+      eligible.filter((o) =>
+        (duplicates.get(o.id) ?? []).some(
+          (m) => eligibleIds.has(m.order.id) && m.order.created_at < o.created_at
+        )
+      ),
+    [eligible, duplicates, eligibleIds]
   );
 
-  const selected = eligible.filter((o) => !excluded.has(o.id));
-  const sheets = chunk(selected, 8);
+  const listed = onlyDuplicates ? eligible.filter((o) => duplicates.has(o.id)) : eligible;
+  const selected = useMemo(() => eligible.filter((o) => !excluded.has(o.id)), [eligible, excluded]);
+  const sheets = useMemo(() => chunk(selected, 8), [selected]);
+
+  const excludeLaterDuplicates = () =>
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      for (const o of laterDuplicates) next.add(o.id);
+      return next;
+    });
 
   const toggle = (id: string) =>
     setExcluded((prev) => {
@@ -281,6 +366,7 @@ export default function InvoicesPage() {
           <span className="rounded-xl bg-pond/70 px-3 py-2 font-display text-sm font-bold text-ink sm:bg-transparent sm:px-0 sm:py-0">
             {selected.length} of {eligible.length} shipments selected · {sheets.length}{" "}
             {sheets.length === 1 ? "sheet" : "sheets"}
+            {filterMode === "all" && orders.length >= 300 && " · latest 300 only"}
           </span>
           <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex">
             <Button tone="sky" className="sm:hidden" disabled={selected.length === 0} onClick={() => setPreviewOpen(true)}>
@@ -315,31 +401,91 @@ export default function InvoicesPage() {
           </Card>
         )}
 
+        {loadError && (
+          <Card className="!border-flame bg-flame-tint p-4">
+            <p role="alert" className="font-display text-sm font-bold text-flame-dark">⚠️ {loadError}</p>
+          </Card>
+        )}
+
+        {duplicates.size > 0 && (
+          <Card className="!border-flame bg-flame-tint p-4">
+            <p className="font-display text-base font-extrabold text-flame-dark">
+              ⚠️ {duplicates.size} possible duplicate{duplicates.size === 1 ? "" : "s"} in this batch
+            </p>
+            <p className="mt-1 text-sm font-semibold text-ink">
+              Same customer phone with another live order within 72 hours. Check them before printing —
+              cancel the extra one, or just leave it out of this batch.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button tone={onlyDuplicates ? "flame" : "ghost"} onClick={() => setOnlyDuplicates((v) => !v)} className="!px-3 !py-2 !text-sm">
+                {onlyDuplicates ? "Show all shipments" : "🔍 Show only duplicates"}
+              </Button>
+              {laterDuplicates.length > 0 && (
+                <Button tone="ghost" onClick={excludeLaterDuplicates} className="!px-3 !py-2 !text-sm">
+                  Leave out {laterDuplicates.length} repeat{laterDuplicates.length === 1 ? "" : "s"} (keep the first)
+                </Button>
+              )}
+            </div>
+          </Card>
+        )}
+
         {eligible.length > 0 && (
           <Card className="p-4">
             <p className="mb-2 font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
               Include / exclude
+              {cancelledInBatch > 0 && (
+                <span className="ml-2 normal-case tracking-normal">
+                  · {cancelledInBatch} cancelled shipment{cancelledInBatch === 1 ? "" : "s"} hidden
+                </span>
+              )}
             </p>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {eligible.map((o) => (
-                <label
-                  key={o.id}
-                  className="flex min-h-14 items-start gap-3 rounded-xl border-2 border-transparent bg-cream/50 px-3 py-2 font-display text-sm font-bold text-ink transition hover:border-frog/40 hover:bg-pond/50"
-                >
-                  <input
-                    type="checkbox"
-                    checked={!excluded.has(o.id)}
-                    onChange={() => toggle(o.id)}
-                    className="mt-0.5 h-5 w-5 shrink-0 accent-[var(--color-frog)]"
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-base text-ink">{o.customer_name}</span>
-                    <span className="block break-words text-sm text-ink-soft">
-                      {o.district} · {rs(o.total_cod)} · {manifestByOrder.get(o.id)?.tracking_id}
-                    </span>
-                  </span>
-                </label>
-              ))}
+              {listed.map((o) => {
+                const dups = duplicates.get(o.id);
+                const manifest = manifestByOrder.get(o.id);
+                return (
+                  <div
+                    key={o.id}
+                    className={`flex min-h-14 items-start gap-3 rounded-xl border-2 px-3 py-2 font-display text-sm font-bold text-ink transition ${
+                      dups
+                        ? "border-flame bg-flame-tint/60"
+                        : "border-transparent bg-cream/50 hover:border-frog/40 hover:bg-pond/50"
+                    }`}
+                  >
+                    <input
+                      id={`inv-${o.id}`}
+                      type="checkbox"
+                      checked={!excluded.has(o.id)}
+                      onChange={() => toggle(o.id)}
+                      className="mt-0.5 h-5 w-5 shrink-0 accent-[var(--color-frog)]"
+                    />
+                    <label htmlFor={`inv-${o.id}`} className="min-w-0 flex-1 cursor-pointer">
+                      <span className="block text-base text-ink">
+                        {o.customer_name}
+                        {o.order_no && <span className="ml-1 font-mono text-xs text-ink-soft">{o.order_no}</span>}
+                      </span>
+                      <span className="block break-words text-sm text-ink-soft">
+                        {o.district} · {rs(o.total_cod)} · {manifest?.tracking_id}
+                      </span>
+                      {dups && (
+                        <span className="mt-1 block text-xs font-extrabold text-flame-dark">
+                          ⚠️ Possible duplicate of {describeMatch(dups[0], eligibleIds.has(dups[0].order.id))}
+                          {dups.length > 1 ? ` (+${dups.length - 1} more)` : ""}
+                        </span>
+                      )}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setCancelTarget(o)}
+                      aria-label={`Cancel order for ${o.customer_name}`}
+                      title="Customer called it off before pickup — cancel and put the stock back"
+                      className="min-h-11 shrink-0 rounded-xl px-2 font-display text-xs font-extrabold text-flame-dark transition hover:bg-flame-tint"
+                    >
+                      🚫 Cancel
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </Card>
         )}
@@ -381,6 +527,7 @@ export default function InvoicesPage() {
                   order={order}
                   manifest={manifestByOrder.get(order.id)!}
                   settings={settings}
+                  duplicate={duplicates.has(order.id)}
                 />
               ))}
               {/* pad the last sheet so the grid keeps its shape */}
@@ -391,6 +538,20 @@ export default function InvoicesPage() {
             ))}
         </div>
       </div>
+      {cancelTarget && (
+        <CancelOrderDialog
+          order={cancelTarget}
+          trackingId={manifestByOrder.get(cancelTarget.id)?.tracking_id}
+          courierName={manifestByOrder.get(cancelTarget.id)?.courier_name}
+          defaultReason={duplicates.has(cancelTarget.id) ? "Duplicate order" : undefined}
+          onClose={() => setCancelTarget(null)}
+          onCancelled={(updated) => {
+            // Patch the one row locally — no need to re-read the batch.
+            setOrders((prev) => prev.map((o) => (o.id === updated.id ? { ...o, ...updated } : o)));
+            setCancelTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -399,16 +560,20 @@ function InvoiceCell({
   order,
   manifest,
   settings,
+  duplicate = false,
 }: {
   order: Order;
   manifest: ShippingManifest;
   settings: BusinessSettings;
+  duplicate?: boolean;
 }) {
   const phones = [settings.business_phone_1, settings.business_phone_2]
     .filter(Boolean)
     .join(" / ");
   return (
-    <div className="invoice-cell">
+    <div className={`invoice-cell${duplicate ? " invoice-cell-dup" : ""}`}>
+      {/* On-screen only: the printed label must never carry the warning. */}
+      {duplicate && <div className="inv-dup-badge print-hide">⚠️ Possible duplicate</div>}
       {/* Sender */}
       <div className="inv-head">
         <div>

@@ -37,7 +37,7 @@ export function customerRisk(orders: Order[], phone: string): CustomerRisk {
       if (o.order_status === "delivered") delivered++;
       else if (o.order_status === "returned") returned++;
       else if (o.order_status === "booked") inFlight++;
-      else pending++;
+      else if (o.order_status === "pending") pending++;
     }
   }
 
@@ -85,22 +85,30 @@ export function customerRisk(orders: Order[], phone: string): CustomerRisk {
 // not a legitimate repeat purchase days later.
 export const DUP_WINDOW_HOURS = 72;
 
-export interface DuplicateMatch {
-  order: Order;
+// The fields duplicate detection reads — lets callers pass slim rows (the
+// invoice printer's neighbouring orders) as well as full orders.
+export type DuplicateCandidate = Pick<
+  Order,
+  "id" | "phone_number" | "phone_2" | "item_name" | "items" | "order_status" | "created_at"
+>;
+
+export interface DuplicateMatch<T extends DuplicateCandidate = Order> {
+  order: T;
   sameItem: boolean; // same item signature → much stronger duplicate signal
   hoursApart: number;
   alreadyShipped: boolean; // the other order is booked/delivered — the real "shipped twice" case
 }
 
 // Only orders still in play can be duplicated; a returned parcel legitimately
-// gets re-ordered, so it never counts as a duplicate of a later order.
+// gets re-ordered, so it never counts as a duplicate of a later order, and a
+// cancelled one is already dealt with.
 function isActive(status: OrderStatus): boolean {
-  return status !== "returned";
+  return status !== "returned" && status !== "cancelled";
 }
 
 // Normalized item signature so "2x Cream" matches regardless of source shape
 // (multi-line `items` vs the legacy single `item_name`).
-function itemSignature(o: Order): string {
+function itemSignature(o: DuplicateCandidate): string {
   if (o.items && o.items.length > 0) {
     return o.items
       .map((i) => `${i.name.toLowerCase().trim()}·${i.qty}`)
@@ -112,11 +120,14 @@ function itemSignature(o: Order): string {
 
 // Other orders for the same customer that look like accidental duplicates of
 // `target`, closest in time first. Matches on either phone number.
-export function findDuplicates(orders: Order[], target: Order): DuplicateMatch[] {
+export function findDuplicates<T extends DuplicateCandidate>(
+  orders: T[],
+  target: DuplicateCandidate
+): DuplicateMatch<T>[] {
   const key = phoneKey(target.phone_number);
   if (key.length < 9 || !isActive(target.order_status)) return [];
   const targetTime = new Date(target.created_at).getTime();
-  const matches: DuplicateMatch[] = [];
+  const matches: DuplicateMatch<T>[] = [];
   for (const o of orders) {
     if (o.id === target.id || !isActive(o.order_status)) continue;
     if (phoneKey(o.phone_number) !== key && phoneKey(o.phone_2) !== key) continue;
@@ -151,8 +162,8 @@ export function recentOrdersForPhone(orders: Order[], phone: string): Order[] {
 // Ids of every order that sits in a duplicate cluster — a single grouped pass
 // for the list badge, so it stays cheap with many orders. Groups by primary
 // phone (the book-time findDuplicates does the stricter both-numbers check).
-export function duplicateOrderIds(orders: Order[]): Set<string> {
-  const byPhone = new Map<string, Order[]>();
+export function duplicateOrderIds(orders: DuplicateCandidate[]): Set<string> {
+  const byPhone = new Map<string, DuplicateCandidate[]>();
   for (const o of orders) {
     if (!isActive(o.order_status)) continue;
     const key = phoneKey(o.phone_number);

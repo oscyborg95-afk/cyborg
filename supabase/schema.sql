@@ -47,7 +47,7 @@ create table if not exists orders (
   payment_method varchar not null default 'cod',
   -- The order whose packing mistake this replacement parcel is fixing.
   replaces_order_id uuid references orders(id) on delete set null,
-  order_status   varchar not null default 'pending', -- pending → booked → delivered → returned
+  order_status   varchar not null default 'pending', -- pending → booked → delivered | returned; booked/pending → cancelled
   idempotency_key varchar,
   archived_at    timestamptz,
   created_at     timestamptz not null default now()
@@ -435,6 +435,8 @@ alter table orders add column if not exists remitted_at timestamptz; -- COD payo
 alter table orders add column if not exists order_no varchar; -- short courier reference (DC-1001)
 alter table orders add column if not exists idempotency_key varchar;
 alter table orders add column if not exists archived_at timestamptz;
+alter table orders add column if not exists cancelled_at timestamptz; -- cancelled after booking, before pickup
+alter table orders add column if not exists cancel_reason varchar not null default '';
 alter table orders add column if not exists sales_account_id uuid references sales_accounts(id);
 update orders set sales_account_id = '00000000-0000-4000-8000-000000000001' where sales_account_id is null;
 alter table orders alter column sales_account_id set default '00000000-0000-4000-8000-000000000001';
@@ -455,6 +457,7 @@ alter table business_settings add column if not exists courier_return_cost numer
 alter table business_settings add column if not exists courier_cost_overrides jsonb not null default '{}'::jsonb;
 
 create index if not exists idx_orders_status on orders(order_status);
+create index if not exists idx_orders_created on orders(created_at desc);
 create index if not exists idx_manifests_order on shipping_manifests(order_id);
 create unique index if not exists uq_manifests_tracking on shipping_manifests(tracking_id);
 

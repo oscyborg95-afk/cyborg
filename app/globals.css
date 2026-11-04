@@ -364,6 +364,32 @@ body {
   border-style: dotted;
   opacity: 0.35;
 }
+/* Possible duplicate — flagged in the on-screen preview only; @media screen
+   keeps the outline off paper and .print-hide drops the badge. */
+.invoice-cell {
+  position: relative;
+}
+@media screen {
+  .invoice-cell-dup {
+    outline: 1mm solid #e0533d;
+    outline-offset: -1mm;
+    background: #fff4f1;
+  }
+}
+.inv-dup-badge {
+  position: absolute;
+  top: 1.5mm;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.6mm 2.5mm;
+  border-radius: 999px;
+  background: #e0533d;
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 7pt;
+  font-weight: 800;
+  white-space: nowrap;
+}
 
 .inv-head {
   display: flex;
