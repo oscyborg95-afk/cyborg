@@ -36,7 +36,13 @@ function describeMatch(m: DuplicateMatch<RelatedOrder>, inBatch: boolean): strin
   return `${ref} · ${m.sameItem ? "same item" : "different item"} · ${when} · ${where}`;
 }
 
-type DateFilterMode = "single" | "range" | "all";
+// "unprinted": every booked order whose invoice hasn't been printed yet,
+// whatever day it was dispatched — the default, so leftovers from yesterday's
+// half-printed batch are simply waiting here.
+type DateFilterMode = "unprinted" | "single" | "range" | "all";
+
+const printedLabel = (iso: string) =>
+  new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -52,8 +58,13 @@ export default function InvoicesPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [onlyDuplicates, setOnlyDuplicates] = useState(false);
   const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
+  // After the print dialog closes: which orders just went to the printer,
+  // waiting for the operator to confirm they actually came out.
+  const [printCheck, setPrintCheck] = useState<string[] | null>(null);
+  const [marking, setMarking] = useState(false);
+  const [markError, setMarkError] = useState<string | null>(null);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
-  const [filterMode, setFilterMode] = useState<DateFilterMode>("single");
+  const [filterMode, setFilterMode] = useState<DateFilterMode>("unprinted");
   const [date, setDate] = useState(today);
   const [rangeFrom, setRangeFrom] = useState(today);
   const [rangeTo, setRangeTo] = useState(today);
@@ -79,6 +90,7 @@ export default function InvoicesPage() {
 
   // The batch window the server should read; null = the latest dispatches.
   const batchQuery = useMemo(() => {
+    if (filterMode === "unprinted") return "unprinted=1";
     if (filterMode === "all") return "";
     if (filterMode === "single") {
       if (!date) return null;
@@ -100,7 +112,11 @@ export default function InvoicesPage() {
         setOrders(data.orders);
         setManifests(data.manifests);
         setRelated(data.related);
-        setExcluded(new Set());
+        // Already-printed invoices start unticked, so a date batch defaults to
+        // only what still needs printing; tick one to reprint it.
+        setExcluded(
+          new Set((data.orders as Order[]).filter((o) => o.invoice_printed_at).map((o) => o.id))
+        );
         setLoadError(null);
       } catch (err) {
         if (ctrl.signal.aborted) return;
@@ -163,9 +179,11 @@ export default function InvoicesPage() {
         ? []
         : orders
             .filter((o) => manifestByOrder.has(o.id) && o.order_status !== "cancelled")
+            .filter((o) => filterMode !== "unprinted" || !o.invoice_printed_at)
             .sort((a, b) => a.created_at.localeCompare(b.created_at)),
-    [orders, manifestByOrder, batchQuery]
+    [orders, manifestByOrder, batchQuery, filterMode]
   );
+  const printedInBatch = eligible.filter((o) => o.invoice_printed_at).length;
   const cancelledInBatch = batchQuery === null ? 0 : orders.filter((o) => o.order_status === "cancelled").length;
 
   // Possible duplicates: same customer phone, another live order within 72h —
@@ -211,6 +229,65 @@ export default function InvoicesPage() {
       return next;
     });
 
+  // Record (or undo) "printed" for these orders, then patch them locally — the
+  // batch is not re-read. Printed ones drop out of "Not printed yet" and are
+  // unticked in a date batch.
+  const markPrinted = async (ids: string[], printed: boolean) => {
+    if (ids.length === 0) return;
+    setMarking(true);
+    setMarkError(null);
+    try {
+      const res = await fetch("/api/invoices/printed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, printed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not save the print status");
+      const stamps = new Map<string, string | null>(
+        (data.updated as Array<{ id: string; invoice_printed_at: string | null }>).map((u) => [u.id, u.invoice_printed_at])
+      );
+      setOrders((prev) =>
+        prev.map((o) => (stamps.has(o.id) ? { ...o, invoice_printed_at: stamps.get(o.id) ?? null } : o))
+      );
+      setExcluded((prev) => {
+        const next = new Set(prev);
+        for (const id of stamps.keys()) {
+          if (printed) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+      setPrintCheck(null);
+    } catch (err) {
+      setMarkError(err instanceof Error ? err.message : "Could not save the print status");
+    } finally {
+      setMarking(false);
+    }
+  };
+
+  // Snapshot the batch when printing starts (button or Ctrl+P) and ask once the
+  // dialog closes — the browser can't tell us whether paper actually came out.
+  const selectedIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    selectedIdsRef.current = selected.map((o) => o.id);
+  }, [selected]);
+  useEffect(() => {
+    let snapshot: string[] = [];
+    const onBefore = () => {
+      snapshot = selectedIdsRef.current;
+    };
+    const onAfter = () => {
+      if (snapshot.length) setPrintCheck(snapshot);
+    };
+    window.addEventListener("beforeprint", onBefore);
+    window.addEventListener("afterprint", onAfter);
+    return () => {
+      window.removeEventListener("beforeprint", onBefore);
+      window.removeEventListener("afterprint", onAfter);
+    };
+  }, []);
+
   const missingProfile =
     settings && !settings.business_name && !settings.business_address ? true : false;
 
@@ -219,7 +296,9 @@ export default function InvoicesPage() {
   const printFileName = useMemo(() => {
     const brand = settings?.business_name?.trim() || "Invoices";
     const span =
-      filterMode === "all"
+      filterMode === "unprinted"
+        ? today
+        : filterMode === "all"
         ? "all dates"
         : filterMode === "single"
           ? date
@@ -230,7 +309,7 @@ export default function InvoicesPage() {
     // Windows and macOS both reject these in filenames; the browser would
     // silently mangle them into something worse than a dash.
     return `${brand} ${span} (${count})`.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim();
-  }, [settings, filterMode, date, rangeFrom, rangeTo, selected.length]);
+  }, [settings, filterMode, today, date, rangeFrom, rangeTo, selected.length]);
 
   // Swapped in around the print itself — on beforeprint rather than only in the
   // button handler, so Ctrl+P gets the same filename — and put back afterwards.
@@ -287,10 +366,11 @@ export default function InvoicesPage() {
         <Card className="flex min-w-0 flex-col items-stretch gap-4 p-4 sm:flex-row sm:flex-wrap sm:items-end">
           <fieldset className="min-w-0 space-y-3">
             <legend className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
-              Invoice dates
+              Which invoices
             </legend>
-            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
               {([
+                ["unprinted", "Not printed yet"],
                 ["single", "Single day"],
                 ["range", "Date range"],
                 ["all", "All days"],
@@ -367,6 +447,7 @@ export default function InvoicesPage() {
             {selected.length} of {eligible.length} shipments selected · {sheets.length}{" "}
             {sheets.length === 1 ? "sheet" : "sheets"}
             {filterMode === "all" && orders.length >= 300 && " · latest 300 only"}
+            {printedInBatch > 0 && ` · ${printedInBatch} already printed`}
           </span>
           <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex">
             <Button tone="sky" className="sm:hidden" disabled={selected.length === 0} onClick={() => setPreviewOpen(true)}>
@@ -374,6 +455,15 @@ export default function InvoicesPage() {
             </Button>
             <Button tone="frog" disabled={selected.length === 0} onClick={() => window.print()}>
               🖨️ <span className="sm:hidden">Print</span><span className="hidden sm:inline">Print / Save PDF</span>
+            </Button>
+            <Button
+              tone="ghost"
+              className="col-span-2 !text-sm sm:col-span-1"
+              disabled={selected.length === 0 || marking}
+              onClick={() => void markPrinted(selected.map((o) => o.id), true)}
+              title="Already printed these some other way? Record them without printing again."
+            >
+              ✓ Mark selected as printed
             </Button>
           </div>
           {selected.length > 0 && (
@@ -387,7 +477,9 @@ export default function InvoicesPage() {
           <Card className="flex flex-col items-center gap-3 p-10 text-center">
             <Froggy mood="sleepy" size={90} />
             <p className="font-display text-lg font-extrabold text-ink">
-              {filterMode === "all"
+              {filterMode === "unprinted"
+                ? "Everything is printed 🎉"
+                : filterMode === "all"
                 ? "No shipped orders yet"
                 : filterMode === "range"
                   ? rangeIsValid
@@ -396,14 +488,16 @@ export default function InvoicesPage() {
                   : "No shipped orders on this day"}
             </p>
             <p className="font-display text-sm font-bold text-ink-soft">
-              Invoices appear here once orders are dispatched with a tracking ID.
+              {filterMode === "unprinted"
+                ? "New dispatches show up here until you confirm their invoices printed."
+                : "Invoices appear here once orders are dispatched with a tracking ID."}
             </p>
           </Card>
         )}
 
-        {loadError && (
+        {(loadError || markError) && (
           <Card className="!border-flame bg-flame-tint p-4">
-            <p role="alert" className="font-display text-sm font-bold text-flame-dark">⚠️ {loadError}</p>
+            <p role="alert" className="font-display text-sm font-bold text-flame-dark">⚠️ {loadError || markError}</p>
           </Card>
         )}
 
@@ -467,6 +561,11 @@ export default function InvoicesPage() {
                       <span className="block break-words text-sm text-ink-soft">
                         {o.district} · {rs(o.total_cod)} · {manifest?.tracking_id}
                       </span>
+                      {o.invoice_printed_at && (
+                        <span className="mt-1 block text-xs font-extrabold text-frog-dark">
+                          ✅ Printed {printedLabel(o.invoice_printed_at)}
+                        </span>
+                      )}
                       {dups && (
                         <span className="mt-1 block text-xs font-extrabold text-flame-dark">
                           ⚠️ Possible duplicate of {describeMatch(dups[0], eligibleIds.has(dups[0].order.id))}
@@ -474,15 +573,29 @@ export default function InvoicesPage() {
                         </span>
                       )}
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => setCancelTarget(o)}
-                      aria-label={`Cancel order for ${o.customer_name}`}
-                      title="Customer called it off before pickup — cancel and put the stock back"
-                      className="min-h-11 shrink-0 rounded-xl px-2 font-display text-xs font-extrabold text-flame-dark transition hover:bg-flame-tint"
-                    >
-                      🚫 Cancel
-                    </button>
+                    <div className="flex shrink-0 flex-col items-end">
+                      <button
+                        type="button"
+                        onClick={() => setCancelTarget(o)}
+                        aria-label={`Cancel order for ${o.customer_name}`}
+                        title="Customer called it off before pickup — cancel and put the stock back"
+                        className="min-h-11 rounded-xl px-2 font-display text-xs font-extrabold text-flame-dark transition hover:bg-flame-tint"
+                      >
+                        🚫 Cancel
+                      </button>
+                      {o.invoice_printed_at && (
+                        <button
+                          type="button"
+                          disabled={marking}
+                          onClick={() => void markPrinted([o.id], false)}
+                          aria-label={`Mark invoice for ${o.customer_name} as not printed`}
+                          title="Lost or spoiled? Put it back in “Not printed yet”."
+                          className="min-h-11 rounded-xl px-2 font-display text-xs font-extrabold text-ink-soft transition hover:bg-pond"
+                        >
+                          ↩ Not printed
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -538,6 +651,31 @@ export default function InvoicesPage() {
             ))}
         </div>
       </div>
+      {printCheck && (
+        <div
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="print-check-title"
+          className="print-hide fixed inset-x-0 bottom-0 z-[55] p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[30rem] sm:-translate-x-1/2 sm:p-0"
+        >
+          <div className="rounded-2xl border-2 border-frog bg-surface p-4 shadow-2xl">
+            <p id="print-check-title" className="font-display text-base font-extrabold text-ink">
+              🖨️ Did all {printCheck.length} invoice{printCheck.length === 1 ? "" : "s"} print?
+            </p>
+            <p className="mt-1 text-sm font-semibold text-ink-soft">
+              Yes moves them out of “Not printed yet”, so tomorrow you only see the rest.
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <Button tone="ghost" disabled={marking} onClick={() => setPrintCheck(null)}>
+                Not yet
+              </Button>
+              <Button tone="frog" disabled={marking} onClick={() => void markPrinted(printCheck, true)}>
+                {marking ? "Saving…" : "Yes, mark printed"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
       {cancelTarget && (
         <CancelOrderDialog
           order={cancelTarget}

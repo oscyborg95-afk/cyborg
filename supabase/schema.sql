@@ -437,6 +437,8 @@ alter table orders add column if not exists idempotency_key varchar;
 alter table orders add column if not exists archived_at timestamptz;
 alter table orders add column if not exists cancelled_at timestamptz; -- cancelled after booking, before pickup
 alter table orders add column if not exists cancel_reason varchar not null default '';
+alter table orders add column if not exists invoice_printed_at timestamptz; -- invoice confirmed printed
+create index if not exists idx_orders_unprinted on orders(created_at) where invoice_printed_at is null and order_status = 'booked';
 alter table orders add column if not exists sales_account_id uuid references sales_accounts(id);
 update orders set sales_account_id = '00000000-0000-4000-8000-000000000001' where sales_account_id is null;
 alter table orders alter column sales_account_id set default '00000000-0000-4000-8000-000000000001';

@@ -60,6 +60,8 @@ export interface Order {
   // Set when the order is cancelled; the reason is what the operator typed.
   cancelled_at?: string | null;
   cancel_reason?: string | null;
+  // When the operator confirmed the invoice was printed; null = not yet.
+  invoice_printed_at?: string | null;
   created_at: string;
 }
 

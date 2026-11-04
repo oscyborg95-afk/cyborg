@@ -257,6 +257,12 @@ async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
   // Cancelling after booking: when and why, so the audit trail survives.
   await db.query("alter table orders add column if not exists cancelled_at timestamptz");
   await db.query("alter table orders add column if not exists cancel_reason varchar not null default ''");
+  // When the operator confirmed this order's invoice came out of the printer,
+  // so the next batch is "everything not printed yet" instead of a date hunt.
+  await db.query("alter table orders add column if not exists invoice_printed_at timestamptz");
+  await db.query(
+    "create index if not exists idx_orders_unprinted on orders(created_at) where invoice_printed_at is null and order_status = 'booked'"
+  );
   // The invoice printer reads one day/range at a time; without this every
   // batch scans the whole table to find it.
   await db.query("create index if not exists idx_orders_created on orders(created_at desc)");
@@ -769,7 +775,7 @@ export async function cancelOrder(id: string, reason: string): Promise<Order> {
 const INVOICE_ORDER_COLUMNS = `o.id, o.sales_account_id, o.order_no, o.customer_name, o.phone_number, o.phone_2,
   o.parsed_address, o.city, o.district, o.product_id, o.item_name, o.items, o.product_price,
   o.shipping_fee, o.discount, o.total_cod, o.payment_method, o.order_status,
-  o.cancelled_at, o.cancel_reason, o.created_at`;
+  o.cancelled_at, o.cancel_reason, o.invoice_printed_at, o.created_at`;
 
 // Just enough of a neighbouring order to judge "is this a duplicate?".
 export type DuplicateContextOrder = Pick<
@@ -784,18 +790,21 @@ const invoicePhoneKey = (phone: string | null | undefined) => (phone ?? "").repl
 // `windowHours` of the batch. Only dispatched orders (with a manifest) are
 // returned, bounded by the date range, so the read is one batch rather than the
 // shop's history. With no range, the latest `limit` dispatched orders.
+// `unprinted` instead returns every booked order whose invoice has not been
+// printed yet, whatever day it was dispatched.
 export async function listInvoiceBatch(input: {
   from: string | null;
   to: string | null;
   windowHours: number;
   limit?: number;
+  unprinted?: boolean;
 }): Promise<{ orders: Order[]; manifests: ShippingManifest[]; related: DuplicateContextOrder[] }> {
   const limit = input.limit ?? 300;
   let orders: Order[];
   let manifests: ShippingManifest[];
   if (pool) {
     await ensureOrderNoSchema(pool);
-    const ranged = Boolean(input.from && input.to);
+    const ranged = !input.unprinted && Boolean(input.from && input.to);
     const { rows } = await pool.query(
       `select ${INVOICE_ORDER_COLUMNS},
               m.id as m_id, m.courier_name as m_courier_name, m.tracking_id as m_tracking_id,
@@ -804,6 +813,7 @@ export async function listInvoiceBatch(input: {
          join shipping_manifests m on m.order_id = o.id
         where o.archived_at is null
           ${ranged ? "and o.created_at >= $1 and o.created_at < $2" : ""}
+          ${input.unprinted ? "and o.order_status = 'booked' and o.invoice_printed_at is null" : ""}
         order by o.created_at desc
         limit ${ranged ? "$3" : "$1"}`,
       ranged ? [input.from, input.to, limit] : [limit]
@@ -830,10 +840,11 @@ export async function listInvoiceBatch(input: {
     orders = [...memOrders.values()]
       .filter((o) => !o.archived_at)
       .filter((o) => shipped.has(o.id))
-      .filter((o) => {
-        const t = new Date(o.created_at).getTime();
-        return t >= fromT && t < toT;
-      })
+      .filter((o) =>
+        input.unprinted
+          ? o.order_status === "booked" && !o.invoice_printed_at
+          : new Date(o.created_at).getTime() >= fromT && new Date(o.created_at).getTime() < toT
+      )
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit);
     const ids = new Set(orders.map((o) => o.id));
@@ -878,6 +889,34 @@ export async function listInvoiceBatch(input: {
     );
   }
   return { orders, manifests, related };
+}
+
+// Record (or undo) that these orders' invoices came out of the printer.
+// Returns the new stamp per order so the page can update without a re-read.
+export async function markInvoicesPrinted(
+  ids: string[],
+  printed: boolean
+): Promise<Array<{ id: string; invoice_printed_at: string | null }>> {
+  if (ids.length === 0) return [];
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    const { rows } = await pool.query(
+      `update orders set invoice_printed_at = case when $2::boolean then now() else null end
+        where id = any($1::uuid[])
+        returning id, invoice_printed_at`,
+      [ids, printed]
+    );
+    return rows as Array<{ id: string; invoice_printed_at: string | null }>;
+  }
+  const stamp = printed ? new Date().toISOString() : null;
+  const out: Array<{ id: string; invoice_printed_at: string | null }> = [];
+  for (const id of ids) {
+    const order = memOrders.get(id);
+    if (!order) continue;
+    memOrders.set(id, { ...order, invoice_printed_at: stamp });
+    out.push({ id, invoice_printed_at: stamp });
+  }
+  return out;
 }
 
 export class OrderBookingConflictError extends Error {}
