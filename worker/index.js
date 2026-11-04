@@ -202,43 +202,6 @@ function emitMessage(msg) {
   io.emit("wa:message", msg);
 }
 
-// Debounce bursty customer messages into one autonomous-agent turn. Customers
-// often send name, phone, and address as separate bubbles; one reply after the
-// burst feels natural and prevents contradictory decisions.
-const agentTimers = new Map();
-function scheduleSalesAgent(msg) {
-  if (msg.fromMe) return;
-  const baseUrl = process.env.APP_URL || "http://localhost:3000";
-  const delay = Math.max(500, Number(process.env.AI_REPLY_DEBOUNCE_MS || 1200));
-  const old = agentTimers.get(msg.chatId);
-  if (old) clearTimeout(old);
-  agentTimers.set(
-    msg.chatId,
-    setTimeout(async () => {
-      agentTimers.delete(msg.chatId);
-      try {
-        const response = await fetch(`${baseUrl}/api/agent/inbound`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-agent-secret": process.env.AGENT_WEBHOOK_SECRET || "",
-            "x-tenant-id": TENANT_ID,
-          },
-          body: JSON.stringify(msg),
-          signal: AbortSignal.timeout(55_000),
-        });
-        if (!response.ok) {
-          console.error(
-            `[cyborg-wa-worker] sales agent webhook failed (${response.status}): ${(await response.text()).slice(0, 180)}`
-          );
-        }
-      } catch (err) {
-        console.error("[cyborg-wa-worker] sales agent webhook offline:", err.message);
-      }
-    }, delay)
-  );
-}
-
 function setReady(value) {
   ready = value;
   io.emit("wa:status", { ready });
@@ -350,9 +313,6 @@ if (MOCK) {
 
   app.delete("/chats/:chatId", (req, res) => {
     const chatId = req.params.chatId;
-    const timer = agentTimers.get(chatId);
-    if (timer) clearTimeout(timer);
-    agentTimers.delete(chatId);
     const chat = chats.get(chatId);
     let media = 0;
     for (const message of chat?.messages ?? []) {
@@ -458,7 +418,6 @@ if (MOCK) {
     };
     chat.messages.push(msg);
     emitMessage(msg);
-    scheduleSalesAgent(msg);
     res.json({ ok: true });
   });
 
@@ -656,10 +615,6 @@ async function listMessages(jid) {
 }
 
 async function deleteStoredChat(jid) {
-  const timer = agentTimers.get(jid);
-  if (timer) clearTimeout(timer);
-  agentTimers.delete(jid);
-
   if (pool) {
     const client = await pool.connect();
     try {
@@ -1000,18 +955,14 @@ async function connectToWhatsApp() {
   });
 
   // Baileys also emits `append` upserts while restoring history after a
-  // reconnect. Persist those for the inbox, but only `notify` represents a new
-  // live message that is allowed to trigger the autonomous agent.
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+  // reconnect; both kinds are persisted for the inbox.
+  sock.ev.on("messages.upsert", async ({ messages }) => {
     for (const m of messages) {
       const msg = normalize(m);
       if (!msg) continue;
       try {
         const isNew = await saveMessage(msg);
-        if (isNew) {
-          emitMessage(msg);
-          if (type === "notify") scheduleSalesAgent(msg);
-        }
+        if (isNew) emitMessage(msg);
       } catch (err) {
         console.error("[cyborg-wa-worker] failed to store message:", err.message);
       }

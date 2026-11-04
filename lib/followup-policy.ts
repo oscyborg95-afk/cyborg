@@ -42,9 +42,8 @@ function colomboTime(date: Date): string {
   }).format(date);
 }
 
-// The daylight window follow-ups are allowed to go out in. Deliberately
-// narrower than the agent's quiet hours: a reminder nobody asked for at 21:30
-// reads as spam even though a *reply* at 21:30 would be welcome.
+// The daylight window follow-ups are allowed to go out in: a reminder nobody
+// asked for at 21:30 reads as spam even though a *reply* at 21:30 is welcome.
 export function insideSendWindow(
   settings: Pick<FollowUpSettings, "window_start" | "window_end">,
   date = new Date()
@@ -55,19 +54,17 @@ export function insideSendWindow(
   return start < end ? time >= start && time < end : time >= start || time < end;
 }
 
-export type DispatchBlock = "quiet_hours" | "outside_window" | "daily_cap" | "min_gap";
+export type DispatchBlock = "outside_window" | "daily_cap" | "min_gap";
 
-// The whole throttle in one place: the four reasons a tick is allowed to find
+// The whole throttle in one place: the three reasons a tick is allowed to find
 // due work and still send nothing. Kept pure so the limits protecting the
 // WhatsApp number are covered by tests rather than by a live experiment.
 export function dispatchBlockReason(
   settings: Pick<FollowUpSettings, "window_start" | "window_end" | "daily_cap" | "min_gap_minutes">,
-  quietHours: boolean,
   pace: { sent_24h: number; last_sent_at: string | null },
   now = new Date()
 ): DispatchBlock | null {
   if (!insideSendWindow(settings, now)) return "outside_window";
-  if (quietHours) return "quiet_hours";
   if (pace.sent_24h >= settings.daily_cap) return "daily_cap";
   if (
     pace.last_sent_at &&

@@ -9,7 +9,6 @@ import {
 import {
   ensureCustomerProfile,
   getCustomerProfile,
-  listAgentRuns,
   listCustomerEvents,
   listCustomerProfiles,
 } from "./crm-db";
@@ -127,13 +126,15 @@ export async function getCustomerDetail(phoneKeyValue: string) {
   // for exactly those ids — reading the whole table returned only the 2000
   // oldest events, so a recent customer's timeline came back empty.
   const orders = await listCustomerOrders(key);
-  const [summaries, manifests, trackingEvents, alerts, events, runs] = await Promise.all([
+  // Manifests and alerts are read for this customer's orders only — the
+  // unscoped reads returned every shop-wide row just to filter them here.
+  const ids = orders.map((order) => order.id);
+  const [summaries, manifests, trackingEvents, alerts, events] = await Promise.all([
     listCustomerSummaries(),
-    listManifests(),
-    listTrackingEventsForOrders(orders.map((order) => order.id)),
-    listCustomerAlerts(),
+    listManifests(ids),
+    listTrackingEventsForOrders(ids),
+    listCustomerAlerts(ids),
     listCustomerEvents(key),
-    listAgentRuns(key),
   ]);
   let customer =
     summaries.find(
@@ -159,7 +160,6 @@ export async function getCustomerDetail(phoneKeyValue: string) {
     tracking_events: trackingEvents, // already scoped to this customer's orders
     alerts: alerts.filter((alert) => orderIds.has(alert.order_id)),
     events,
-    agent_runs: runs,
     messages: messages.slice(-50),
   };
 }

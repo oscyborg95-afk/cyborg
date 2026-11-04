@@ -396,7 +396,7 @@ export interface WaMessage {
   media?: string;
 }
 
-// --- Customer intelligence + autonomous sales agent ------------------------
+// --- Customer intelligence ------------------------------------------------
 
 export type CustomerLanguage = "auto" | "si" | "ta" | "en";
 export type CustomerLanguageStyle =
@@ -406,21 +406,6 @@ export type CustomerLanguageStyle =
   | "ta_latin"
   | "en"
   | "mixed";
-export type AgentMode = "off" | "draft" | "auto";
-export type AgentFeedbackStatus =
-  | "none"
-  | "pending"
-  | "processing"
-  | "approved"
-  | "edited"
-  | "rejected";
-export type AgentRunStatus =
-  | "processing"
-  | "drafted"
-  | "sent"
-  | "skipped"
-  | "handoff"
-  | "failed";
 
 export interface CustomerProfile {
   phone_key: string;
@@ -505,155 +490,12 @@ export interface AttentionItem {
   customer?: CustomerSummary | null;
 }
 
-export interface AgentConfig {
-  mode: AgentMode;
-  min_confidence: number;
-  reply_delay_seconds: number;
-  business_context: string;
-  personality: string;
-  quiet_hours_start: string;
-  quiet_hours_end: string;
-  updated_at: string;
-}
-
-export interface AgentDecision {
-  intent:
-    | "greeting"
-    | "product_question"
-    | "price_question"
-    | "availability"
-    | "order"
-    | "address"
-    | "confirmation"
-    | "tracking"
-    | "complaint"
-    | "other";
-  language: Exclude<CustomerLanguage, "auto">;
-  language_style: CustomerLanguageStyle;
-  language_confidence: number;
-  confidence: number;
-  reply: string;
-  /**
-   * The reply split the way a person actually types on WhatsApp — one or a few
-   * short bubbles sent in sequence. `reply` is the same text joined with
-   * newlines, kept for storage, review, and validation.
-   */
-  reply_bubbles: string[];
-  next_state: ChatStateValue;
-  action: "reply" | "handoff" | "skip";
-  handoff_reason: string;
-  customer_name: string;
-  order_ready: boolean;
-  summary: string;
-  sales_stage:
-    | "discovery"
-    | "consideration"
-    | "objection"
-    | "checkout_details"
-    | "checkout_confirmation"
-    | "post_purchase"
-    | "support";
-  next_action: string;
-  objection: string;
-  customer_need: string;
-  interested_product: string;
-  quantity: number | null;
-  buying_intent: "low" | "medium" | "high";
-  missing_fields: string[];
-}
-
-export interface AgentRun {
-  id: string;
-  trigger_message_id: string;
-  phone_key: string;
-  chat_id: string;
-  intent: AgentDecision["intent"] | null;
-  language: Exclude<CustomerLanguage, "auto"> | null;
-  confidence: number;
-  decision: AgentDecision | null;
-  reply: string;
-  status: AgentRunStatus;
-  error: string;
-  feedback_status: AgentFeedbackStatus;
-  feedback_reason: string;
-  final_reply: string;
-  reviewed_at: string | null;
-  created_at: string;
-  completed_at: string | null;
-}
-
-export interface LeadMemory {
-  phone_key: string;
-  detected_language: Exclude<CustomerLanguage, "auto"> | null;
-  language_style: CustomerLanguageStyle | null;
-  language_confidence: number;
-  language_observations: number;
-  interested_product: string;
-  quantity: number | null;
-  customer_need: string;
-  objection: string;
-  buying_intent: "low" | "medium" | "high";
-  collected_fields: string[];
-  last_question: string;
-  next_action: string;
-  updated_at: string;
-}
-
 export interface LanguageAssessment {
   language: Exclude<CustomerLanguage, "auto">;
   style: CustomerLanguageStyle;
   confidence: number;
   explicit: boolean;
   evidence: string;
-}
-
-export interface LearningReplyPair {
-  customer: string;
-  shop: string;
-}
-
-export interface LearningConversation {
-  id: string;
-  phone_key: string;
-  chat_id: string;
-  customer_name: string;
-  order_nos: string[];
-  products: string[];
-  language_style: CustomerLanguageStyle;
-  message_count: number;
-  pairs: LearningReplyPair[];
-  search_text: string;
-  approved_at: string;
-  updated_at: string;
-}
-
-export interface LearningCandidate {
-  phone_key: string;
-  chat_id: string | null;
-  customer_name: string;
-  order_nos: string[];
-  products: string[];
-  delivered_at: string;
-  approved: boolean;
-  message_count: number | null;
-}
-
-export interface SalesStyleProfile {
-  instructions: string;
-  traits: {
-    average_words: number;
-    question_rate: number;
-    emoji_rate: number;
-    language_styles: Partial<Record<CustomerLanguageStyle, number>>;
-  };
-  sample_count: number;
-  example_count: number;
-  updated_at: string;
-}
-
-export interface SalesLearningContext {
-  style_profile: SalesStyleProfile | null;
-  relevant_examples: LearningReplyPair[];
 }
 
 // --- Automatic follow-ups ---------------------------------------------------

@@ -76,8 +76,7 @@ function startTenant(tenant) {
       WORKER_MANAGED: "true",
       PGOPTIONS: `-c search_path=${schema},public`,
       MIGRATE_FILE_AUTH: schema === "public" ? "true" : "false",
-      // Only the manager runs global tracking cron. Tenant-specific WhatsApp
-      // agent callbacks still originate from each child.
+      // Only the manager runs the global tracking cron.
       APP_TRACKING_CRON_URL: "",
     },
     stdio: "inherit",

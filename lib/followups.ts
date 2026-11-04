@@ -12,14 +12,12 @@
 // burst that looks exactly like the bulk messaging WhatsApp bans numbers for.
 
 import {
-  getAgentConfig,
   getCustomerProfile,
   listCustomerProfiles,
   recordCustomerEvent,
   updateCustomerProfile,
 } from "./crm-db";
 import { getSettings, listChatStates, listAllOrders } from "./db";
-import { insideQuietHours } from "./agent-policy";
 import {
   FOLLOW_UP_TRIGGER_STATES,
   STOP_REASON_LABELS,
@@ -56,7 +54,7 @@ import type { CustomerProfile } from "./types";
 export const FOLLOW_UP_OPT_OUT_TAG = "no-followup";
 
 export interface FollowUpSweepResult {
-  skipped?: "disabled" | "quiet_hours" | "outside_window" | "daily_cap" | "min_gap";
+  skipped?: "disabled" | "outside_window" | "daily_cap" | "min_gap";
   enrolled: number;
   sent: number;
   stopped: number;
@@ -155,13 +153,10 @@ async function enrollColdLeads(): Promise<number> {
 
 async function dispatchDue(maxSends: number): Promise<FollowUpSweepResult> {
   const settings = await getFollowUpSettings();
-  const agentConfig = await getAgentConfig();
   const now = new Date();
 
   const pace = await getSendPace();
-  // The agent's own quiet hours are honoured on top of the (narrower) send
-  // window, so widening the window can never message someone at 1am by accident.
-  const blocked = dispatchBlockReason(settings, insideQuietHours(agentConfig, now), pace, now);
+  const blocked = dispatchBlockReason(settings, pace, now);
   if (blocked) return { ...EMPTY, sent_24h: pace.sent_24h, skipped: blocked };
 
   const budget = Math.max(1, Math.min(maxSends, settings.daily_cap - pace.sent_24h));

@@ -3,10 +3,6 @@ import { queryDatabase, usingSupabase, withTransaction } from "./db";
 import { markSchemaCurrent, schemaIsCurrent } from "./schema-once";
 import { requireTenantSession } from "./tenant-context.ts";
 import type {
-  AgentConfig,
-  AgentDecision,
-  AgentRun,
-  AgentRunStatus,
   AttentionItem,
   AttentionKind,
   AttentionPriority,
@@ -15,7 +11,6 @@ import type {
   CustomerEventKind,
   CustomerLanguage,
   CustomerProfile,
-  LeadMemory,
 } from "./types";
 
 const g = globalThis as unknown as {
@@ -23,30 +18,11 @@ const g = globalThis as unknown as {
   __customerProfiles?: Map<string, CustomerProfile>;
   __customerEvents?: CustomerEvent[];
   __attentionItems?: Map<string, AttentionItem>;
-  __agentConfig?: AgentConfig;
-  __agentRuns?: Map<string, AgentRun>;
-  __leadMemories?: Map<string, LeadMemory>;
 };
 
 const memProfiles: Map<string, CustomerProfile> = (g.__customerProfiles ??= new Map());
 const memEvents: CustomerEvent[] = (g.__customerEvents ??= []);
 const memAttention: Map<string, AttentionItem> = (g.__attentionItems ??= new Map());
-const memRuns: Map<string, AgentRun> = (g.__agentRuns ??= new Map());
-const memLeadMemories: Map<string, LeadMemory> = (g.__leadMemories ??= new Map());
-
-const DEFAULT_AGENT_CONFIG: AgentConfig = {
-  mode: "draft",
-  min_confidence: 0.78,
-  reply_delay_seconds: 6,
-  business_context: "",
-  personality:
-    "You sell for a small Sri Lankan online shop and you know the products well. " +
-    "Friendly, direct, a little informal — the way a good shop assistant talks to a regular. " +
-    "You help people decide rather than pushing them, and you say so plainly when you are not sure.",
-  quiet_hours_start: "22:00",
-  quiet_hours_end: "07:00",
-  updated_at: new Date(0).toISOString(),
-};
 
 export interface PurgedCustomerData {
   profiles: number;
@@ -198,6 +174,12 @@ export async function purgeCustomerData(
         "delete from ai_lead_memory where phone_key=$1",
         [phoneKey]
       );
+      // Left over from the retired AI salesperson's "learn my style" feature:
+      // still the customer's conversation text, so it goes with the chat.
+      const learning = await db.query("select to_regclass('ai_learning_conversations') is not null as ok");
+      if (learning.rows[0]?.ok) {
+        await db.query("delete from ai_learning_conversations where phone_key=$1", [phoneKey]);
+      }
       const profiles = await db.query(
         "delete from customer_profiles where phone_key=$1",
         [phoneKey]
@@ -213,7 +195,6 @@ export async function purgeCustomerData(
   }
 
   const profiles = Number(memProfiles.delete(phoneKey));
-  const leadMemories = Number(memLeadMemories.delete(phoneKey));
   let events = 0;
   for (let index = memEvents.length - 1; index >= 0; index -= 1) {
     const event = memEvents[index];
@@ -227,13 +208,7 @@ export async function purgeCustomerData(
     memAttention.delete(key);
     attentionItems += 1;
   }
-  let agentRuns = 0;
-  for (const [triggerId, run] of memRuns) {
-    if (run.phone_key !== phoneKey && run.chat_id !== chatId) continue;
-    memRuns.delete(triggerId);
-    agentRuns += 1;
-  }
-  return { profiles, events, attentionItems, agentRuns, leadMemories };
+  return { profiles, events, attentionItems, agentRuns: 0, leadMemories: 0 };
 }
 
 export async function ensureCustomerProfile(input: {
@@ -579,369 +554,6 @@ export async function resolveAttentionByUniqueKey(uniqueKey: string): Promise<vo
     resolved_at: nowIso(),
     updated_at: nowIso(),
   });
-}
-
-export async function getAgentConfig(): Promise<AgentConfig> {
-  if (usingSupabase) {
-    await ensureCrmSchema();
-    const { rows } = await queryDatabase("select * from ai_agent_config where id=1");
-    return rows[0]
-      ? ({ ...DEFAULT_AGENT_CONFIG, ...rows[0] } as unknown as AgentConfig)
-      : DEFAULT_AGENT_CONFIG;
-  }
-  return g.__agentConfig ?? DEFAULT_AGENT_CONFIG;
-}
-
-export async function updateAgentConfig(input: Partial<AgentConfig>): Promise<AgentConfig> {
-  const current = await getAgentConfig();
-  const next = { ...current, ...input, updated_at: nowIso() };
-  if (usingSupabase) {
-    const { rows } = await queryDatabase(
-      `insert into ai_agent_config
-         (id, mode, min_confidence, reply_delay_seconds, business_context,
-          personality, quiet_hours_start, quiet_hours_end, updated_at)
-       values (1,$1,$2,$3,$4,$5,$6,$7,now())
-       on conflict (id) do update set
-         mode=excluded.mode, min_confidence=excluded.min_confidence,
-         reply_delay_seconds=excluded.reply_delay_seconds,
-         business_context=excluded.business_context, personality=excluded.personality,
-         quiet_hours_start=excluded.quiet_hours_start,
-         quiet_hours_end=excluded.quiet_hours_end, updated_at=now()
-       returning *`,
-      [
-        next.mode,
-        next.min_confidence,
-        next.reply_delay_seconds,
-        next.business_context,
-        next.personality,
-        next.quiet_hours_start,
-        next.quiet_hours_end,
-      ]
-    );
-    return rows[0] as unknown as AgentConfig;
-  }
-  g.__agentConfig = next;
-  return next;
-}
-
-export async function claimAgentRun(input: {
-  trigger_message_id: string;
-  phone_key: string;
-  chat_id: string;
-}): Promise<AgentRun | null> {
-  if (usingSupabase) {
-    await ensureCrmSchema();
-    const { rows } = await queryDatabase(
-      `insert into ai_agent_runs (trigger_message_id, phone_key, chat_id)
-       values ($1,$2,$3)
-       on conflict (trigger_message_id) do update set
-         intent=null, language=null, confidence=0, decision=null, reply='',
-         status='processing', error='', feedback_status='none',
-         feedback_reason='', final_reply='', reviewed_at=null,
-         created_at=now(), completed_at=null
-       where ai_agent_runs.status='failed'
-       returning *`,
-      [input.trigger_message_id, input.phone_key, input.chat_id]
-    );
-    return (rows[0] as unknown as AgentRun | undefined) ?? null;
-  }
-  const existing = memRuns.get(input.trigger_message_id);
-  if (existing && existing.status !== "failed") return null;
-  const run: AgentRun = {
-    id: existing?.id ?? randomUUID(),
-    trigger_message_id: input.trigger_message_id,
-    phone_key: input.phone_key,
-    chat_id: input.chat_id,
-    intent: null,
-    language: null,
-    confidence: 0,
-    decision: null,
-    reply: "",
-    status: "processing",
-    error: "",
-    feedback_status: "none",
-    feedback_reason: "",
-    final_reply: "",
-    reviewed_at: null,
-    created_at: nowIso(),
-    completed_at: null,
-  };
-  memRuns.set(input.trigger_message_id, run);
-  return run;
-}
-
-export async function finishAgentRun(
-  triggerMessageId: string,
-  input: {
-    status: AgentRunStatus;
-    decision?: AgentDecision | null;
-    reply?: string;
-    error?: string;
-  }
-): Promise<AgentRun | null> {
-  const decision = input.decision ?? null;
-  if (usingSupabase) {
-    await ensureCrmSchema();
-    const { rows } = await queryDatabase(
-      `update ai_agent_runs set
-         intent=$2, language=$3, confidence=$4, decision=$5, reply=$6,
-         status=$7::varchar, error=$8,
-         feedback_status=case when $7::varchar='drafted' then 'pending' else feedback_status end,
-         completed_at=now()
-       where trigger_message_id=$1 returning *`,
-      [
-        triggerMessageId,
-        decision?.intent ?? null,
-        decision?.language ?? null,
-        decision?.confidence ?? 0,
-        decision ? JSON.stringify(decision) : null,
-        input.reply ?? decision?.reply ?? "",
-        input.status,
-        input.error ?? "",
-      ]
-    );
-    return (rows[0] as unknown as AgentRun | undefined) ?? null;
-  }
-  const current = memRuns.get(triggerMessageId);
-  if (!current) return null;
-  const next: AgentRun = {
-    ...current,
-    intent: decision?.intent ?? null,
-    language: decision?.language ?? null,
-    confidence: decision?.confidence ?? 0,
-    decision,
-    reply: input.reply ?? decision?.reply ?? "",
-    status: input.status,
-    error: input.error ?? "",
-    feedback_status: input.status === "drafted" ? "pending" : current.feedback_status,
-    completed_at: nowIso(),
-  };
-  memRuns.set(triggerMessageId, next);
-  return next;
-}
-
-export async function expireStaleAgentRuns(maxAgeSeconds = 90): Promise<number> {
-  const safeAge = Math.max(30, Math.min(600, Math.round(maxAgeSeconds)));
-  const timeoutError =
-    "The server stopped this run before recording a result. Check the latest conversation before retrying.";
-  if (usingSupabase) {
-    await ensureCrmSchema();
-    const { rows } = await queryDatabase(
-      `update ai_agent_runs set
-         status='failed', error=$2, completed_at=now()
-       where status='processing'
-         and created_at < now() - ($1::double precision * interval '1 second')
-       returning id`,
-      [safeAge, timeoutError]
-    );
-    return rows.length;
-  }
-  const cutoff = Date.now() - safeAge * 1000;
-  let expired = 0;
-  for (const [triggerId, run] of memRuns) {
-    if (run.status !== "processing" || new Date(run.created_at).getTime() >= cutoff) continue;
-    memRuns.set(triggerId, {
-      ...run,
-      status: "failed",
-      error: timeoutError,
-      completed_at: nowIso(),
-    });
-    expired += 1;
-  }
-  return expired;
-}
-
-export async function listAgentRuns(phoneKey?: string, limit = 100): Promise<AgentRun[]> {
-  await expireStaleAgentRuns();
-  if (usingSupabase) {
-    await ensureCrmSchema();
-    const { rows } = await queryDatabase(
-      `select * from ai_agent_runs
-       where ($1::varchar is null or phone_key=$1)
-       order by created_at desc limit $2`,
-      [phoneKey ?? null, limit]
-    );
-    return rows as unknown as AgentRun[];
-  }
-  return [...memRuns.values()]
-    .filter((run) => !phoneKey || run.phone_key === phoneKey)
-    .sort((a, b) => b.created_at.localeCompare(a.created_at))
-    .slice(0, limit);
-}
-
-export async function getAgentRun(id: string): Promise<AgentRun | null> {
-  if (usingSupabase) {
-    await ensureCrmSchema();
-    const { rows } = await queryDatabase("select * from ai_agent_runs where id=$1", [id]);
-    return (rows[0] as unknown as AgentRun | undefined) ?? null;
-  }
-  return [...memRuns.values()].find((run) => run.id === id) ?? null;
-}
-
-export async function claimAgentDraftReview(id: string): Promise<AgentRun | null> {
-  if (usingSupabase) {
-    await ensureCrmSchema();
-    const { rows } = await queryDatabase(
-      `update ai_agent_runs as target set feedback_status='processing'
-       where target.id=$1 and target.status='drafted' and target.feedback_status='pending'
-         and not exists (
-           select 1 from ai_agent_runs newer
-           where newer.phone_key=target.phone_key and newer.created_at > target.created_at
-         )
-       returning *`,
-      [id]
-    );
-    return (rows[0] as unknown as AgentRun | undefined) ?? null;
-  }
-  const run = await getAgentRun(id);
-  if (!run || run.status !== "drafted" || run.feedback_status !== "pending") return null;
-  const hasNewer = [...memRuns.values()].some(
-    (candidate) =>
-      candidate.phone_key === run.phone_key && candidate.created_at > run.created_at
-  );
-  if (hasNewer) return null;
-  const next = { ...run, feedback_status: "processing" as const };
-  memRuns.set(run.trigger_message_id, next);
-  return next;
-}
-
-export async function finishAgentDraftReview(
-  id: string,
-  input: {
-    status: "approved" | "edited" | "rejected" | "pending";
-    reason?: string;
-    finalReply?: string;
-    sent?: boolean;
-  }
-): Promise<AgentRun | null> {
-  if (usingSupabase) {
-    await ensureCrmSchema();
-    const { rows } = await queryDatabase(
-      `update ai_agent_runs set
-         feedback_status=$2, feedback_reason=$3, final_reply=$4,
-         status=case when $5 then 'sent' else status end,
-         reviewed_at=case when $2='pending' then null else now() end
-       where id=$1 returning *`,
-      [id, input.status, input.reason ?? "", input.finalReply ?? "", input.sent ?? false]
-    );
-    return (rows[0] as unknown as AgentRun | undefined) ?? null;
-  }
-  const run = await getAgentRun(id);
-  if (!run) return null;
-  const next: AgentRun = {
-    ...run,
-    feedback_status: input.status,
-    feedback_reason: input.reason ?? "",
-    final_reply: input.finalReply ?? "",
-    status: input.sent ? "sent" : run.status,
-    reviewed_at: input.status === "pending" ? null : nowIso(),
-  };
-  memRuns.set(run.trigger_message_id, next);
-  return next;
-}
-
-export async function getLeadMemory(phoneKey: string): Promise<LeadMemory | null> {
-  if (usingSupabase) {
-    await ensureCrmSchema();
-    const { rows } = await queryDatabase(
-      "select * from ai_lead_memory where phone_key=$1",
-      [phoneKey]
-    );
-    return (rows[0] as unknown as LeadMemory | undefined) ?? null;
-  }
-  return memLeadMemories.get(phoneKey) ?? null;
-}
-
-export async function updateLeadMemoryFromDecision(
-  phoneKey: string,
-  decision: AgentDecision
-): Promise<LeadMemory> {
-  const current = await getLeadMemory(phoneKey);
-  const sameLanguage =
-    current?.detected_language === decision.language &&
-    current?.language_style === decision.language_style;
-  const observations =
-    decision.language_confidence >= 0.88
-      ? sameLanguage
-        ? (current?.language_observations ?? 0) + 1
-        : 1
-      : (current?.language_observations ?? 0);
-  const collectedFields = [
-    ...(current?.collected_fields ?? []),
-    ...[
-      decision.customer_name ? "name" : "",
-      decision.interested_product ? "product" : "",
-      decision.quantity ? "quantity" : "",
-    ].filter(Boolean),
-  ];
-  const next: LeadMemory = {
-    phone_key: phoneKey,
-    detected_language:
-      decision.language_confidence >= 0.75
-        ? decision.language
-        : (current?.detected_language ?? null),
-    language_style:
-      decision.language_confidence >= 0.75
-        ? decision.language_style
-        : (current?.language_style ?? null),
-    language_confidence: Math.max(
-      decision.language_confidence,
-      sameLanguage ? (current?.language_confidence ?? 0) : 0
-    ),
-    language_observations: observations,
-    interested_product: decision.interested_product || current?.interested_product || "",
-    quantity: decision.quantity ?? current?.quantity ?? null,
-    customer_need: decision.customer_need || current?.customer_need || "",
-    objection: decision.objection,
-    buying_intent: decision.buying_intent,
-    collected_fields: [...new Set(collectedFields)],
-    last_question: decision.next_action,
-    next_action: decision.next_action,
-    updated_at: nowIso(),
-  };
-
-  if (usingSupabase) {
-    const { rows } = await queryDatabase(
-      `insert into ai_lead_memory
-         (phone_key, detected_language, language_style, language_confidence,
-          language_observations, interested_product, quantity, customer_need,
-          objection, buying_intent, collected_fields, last_question, next_action, updated_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now())
-       on conflict (phone_key) do update set
-         detected_language=excluded.detected_language,
-         language_style=excluded.language_style,
-         language_confidence=excluded.language_confidence,
-         language_observations=excluded.language_observations,
-         interested_product=excluded.interested_product,
-         quantity=excluded.quantity,
-         customer_need=excluded.customer_need,
-         objection=excluded.objection,
-         buying_intent=excluded.buying_intent,
-         collected_fields=excluded.collected_fields,
-         last_question=excluded.last_question,
-         next_action=excluded.next_action,
-         updated_at=now()
-       returning *`,
-      [
-        phoneKey,
-        next.detected_language,
-        next.language_style,
-        next.language_confidence,
-        next.language_observations,
-        next.interested_product,
-        next.quantity,
-        next.customer_need,
-        next.objection,
-        next.buying_intent,
-        JSON.stringify(next.collected_fields),
-        next.last_question,
-        next.next_action,
-      ]
-    );
-    return rows[0] as unknown as LeadMemory;
-  }
-  memLeadMemories.set(phoneKey, next);
-  return next;
 }
 
 export function sanitizeLanguage(value: unknown): CustomerLanguage {

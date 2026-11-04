@@ -183,16 +183,14 @@ test("the pacing gate blocks on window, cap and gap in that order", () => {
   const night = new Date("2026-07-21T22:00:00Z"); // 03:30 Colombo
   const clear = { sent_24h: 0, last_sent_at: null };
 
-  assert.equal(dispatchBlockReason(limits, false, clear, noon), null);
-  assert.equal(dispatchBlockReason(limits, false, clear, night), "outside_window");
-  // Quiet hours veto a send even when the window says it is fine.
-  assert.equal(dispatchBlockReason(limits, true, clear, noon), "quiet_hours");
+  assert.equal(dispatchBlockReason(limits, clear, noon), null);
+  assert.equal(dispatchBlockReason(limits, clear, night), "outside_window");
   assert.equal(
-    dispatchBlockReason(limits, false, { sent_24h: 40, last_sent_at: null }, noon),
+    dispatchBlockReason(limits, { sent_24h: 40, last_sent_at: null }, noon),
     "daily_cap"
   );
   assert.equal(
-    dispatchBlockReason(limits, false, { sent_24h: 39, last_sent_at: null }, noon),
+    dispatchBlockReason(limits, { sent_24h: 39, last_sent_at: null }, noon),
     null
   );
 });
@@ -202,11 +200,11 @@ test("the minimum gap is enforced from the last send, not the last tick", () => 
   const now = new Date("2026-07-22T07:00:00Z");
   const ago = (minutes) => new Date(now.getTime() - minutes * 60_000).toISOString();
   assert.equal(
-    dispatchBlockReason(limits, false, { sent_24h: 1, last_sent_at: ago(2) }, now),
+    dispatchBlockReason(limits, { sent_24h: 1, last_sent_at: ago(2) }, now),
     "min_gap"
   );
   assert.equal(
-    dispatchBlockReason(limits, false, { sent_24h: 1, last_sent_at: ago(6) }, now),
+    dispatchBlockReason(limits, { sent_24h: 1, last_sent_at: ago(6) }, now),
     null
   );
 });
