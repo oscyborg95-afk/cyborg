@@ -1,7 +1,7 @@
 import {
   getSettings,
-  listChatStates,
-  listOrders,
+  getChatStateByPhoneKey,
+  listCustomerOrders,
   listProducts,
   upsertChatState,
 } from "./db";
@@ -254,14 +254,16 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
     }
 
     stage = "loading conversation context";
-    const [messages, orders, products, states, settings, leadMemory, learning] = await Promise.all([
+    // Only this customer's orders and chat state: reading the 200 newest orders
+    // and every chat state on each inbound message was pure database egress.
+    const [messages, customerOrders, products, state, settings, leadMemory, learning] = await Promise.all([
       workerFetch<WaMessage[]>(
         `/messages/${encodeURIComponent(trigger.chatId)}?peek=1`,
         { signal: controller.signal }
       ),
-      listOrders(true),
+      listCustomerOrders(key),
       listProducts(),
-      listChatStates(),
+      getChatStateByPhoneKey(key),
       getSettings(),
       getLeadMemory(key),
       // Learning is an optional writing aid; a profile/schema issue must never
@@ -279,12 +281,6 @@ export async function runSalesAgent(trigger: AgentTrigger): Promise<AgentRun | n
       });
     }
 
-    const customerOrders = orders.filter(
-      (order) =>
-        phoneKey(order.phone_number) === key ||
-        (order.phone_2 && phoneKey(order.phone_2) === key)
-    );
-    const state = states.find((entry) => phoneKey(entry.phone_number) === key);
     stage = "generating the sales reply";
     const decision = await decideSalesReply({
       config,

@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   createOrder,
+  listAlertedOrderIds,
   listDeliveryAttempts,
-  listCustomerAlerts,
+  listLatestTrackingEvents,
   listManifests,
-  listOrders,
-  listTrackingEventsForOrders,
+  listOrdersLite,
+  listOrdersPage,
   usingSupabase,
 } from "@/lib/db";
 import type { NewOrder } from "@/lib/types";
@@ -13,22 +14,48 @@ import { stopFollowUpsForConversion } from "@/lib/followups";
 import { itemsSummary, parseItems } from "@/lib/items";
 import { codToCollect, orderValue, paymentMethodOf } from "@/lib/payments";
 
-export async function GET() {
+const DEFAULT_PAGE = 100;
+const MAX_PAGE = 1000;
+
+// Two shapes, both sized for database egress:
+//  - ?view=lite → orders + manifests only (Workspace, Broadcast).
+//  - default    → the Orders screen: the newest `limit` orders plus every
+//    still-open order, each with only its latest checkpoint and a flag for
+//    alert history. Full timelines and alert messages load per order from
+//    /api/orders/:id/timeline when opened. Delivery attempts are read only
+//    for parcels still with the courier — the rescue queue's whole input.
+export async function GET(req: NextRequest) {
+  const params = req.nextUrl.searchParams;
+  const lite = params.get("view") === "lite";
+  const requested = Number(params.get("limit"));
+  const limit = Number.isFinite(requested) && requested > 0
+    ? Math.min(Math.floor(requested), MAX_PAGE)
+    : lite ? 200 : DEFAULT_PAGE;
   try {
-    // The timeline is fetched for the orders this screen actually shows: a
-    // whole-table read used to be capped at the 2000 OLDEST events, which hid
-    // every recent checkpoint once the table grew past that.
-    // Everything else is scoped to those same orders: whole-table reads of
-    // manifests, alerts and delivery attempts were most of this route's egress.
-    const orders = await listOrders();
+    if (lite) {
+      const orders = await listOrdersLite(limit);
+      const manifests = await listManifests(orders.map((o) => o.id));
+      return NextResponse.json({ orders, manifests });
+    }
+    const { orders, total } = await listOrdersPage(limit);
     const orderIds = orders.map((o) => o.id);
-    const [manifests, events, alerts, deliveryAttempts] = await Promise.all([
+    const inFlight = orders.filter((o) => o.order_status === "booked").map((o) => o.id);
+    const [manifests, latestEvents, alertedOrderIds, deliveryAttempts] = await Promise.all([
       listManifests(orderIds),
-      listTrackingEventsForOrders(orderIds),
-      listCustomerAlerts(orderIds),
-      listDeliveryAttempts(orderIds),
+      listLatestTrackingEvents(orderIds),
+      listAlertedOrderIds(orderIds),
+      listDeliveryAttempts(inFlight),
     ]);
-    return NextResponse.json({ orders, manifests, events, alerts, deliveryAttempts, usingSupabase });
+    return NextResponse.json({
+      orders,
+      total,
+      limit,
+      manifests,
+      latestEvents,
+      alertedOrderIds,
+      deliveryAttempts,
+      usingSupabase,
+    });
   } catch (err) {
     console.error("Orders load failed", err);
     return NextResponse.json(

@@ -503,6 +503,68 @@ export async function listOrders(includeArchived = false): Promise<Order[]> {
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
+// Order columns the browser screens read. raw_address (the pasted chat text,
+// often the widest column) and idempotency_key are never read back by a page.
+const ORDER_SCREEN_COLUMNS = `id, sales_account_id, order_no, customer_name, phone_number, phone_2,
+  parsed_address, city, city_id, district, product_id, item_name, items, product_price, shipping_fee,
+  discount, total_cod, payment_method, replaces_order_id, order_status, remitted_at, remittance_id,
+  archived_at, cancelled_at, cancel_reason, created_at, '' as raw_address`;
+
+// The Orders screen: the newest `limit` orders for browsing history, plus
+// every order that still needs work no matter how old — pending (to book),
+// booked (in flight) and delivered-but-unpaid (to reconcile) — so paging the
+// history can never hide an operational task. `total` lets the page say how
+// much older history is left to load.
+export async function listOrdersPage(limit: number): Promise<{ orders: Order[]; total: number }> {
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    const [{ rows }, count] = await Promise.all([
+      pool.query(
+        `with recent as (
+           select id from orders where archived_at is null order by created_at desc limit $1
+         )
+         select ${ORDER_SCREEN_COLUMNS}
+           from orders
+          where archived_at is null
+            and (id in (select id from recent)
+                 or order_status in ('pending', 'booked')
+                 or (order_status = 'delivered' and remitted_at is null))
+          order by created_at desc`,
+        [limit]
+      ),
+      pool.query("select count(*)::int as total from orders where archived_at is null"),
+    ]);
+    return { orders: rows as Order[], total: (count.rows[0]?.total as number) ?? rows.length };
+  }
+  const live = [...memOrders.values()]
+    .filter((o) => !o.archived_at)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const recent = new Set(live.slice(0, limit).map((o) => o.id));
+  const orders = live.filter(
+    (o) =>
+      recent.has(o.id) ||
+      o.order_status === "pending" ||
+      o.order_status === "booked" ||
+      (o.order_status === "delivered" && !o.remitted_at)
+  );
+  return { orders, total: live.length };
+}
+
+// The Workspace and Broadcast screens: newest orders for risk/history checks,
+// without the address blob nobody reads back.
+export async function listOrdersLite(limit = 200): Promise<Order[]> {
+  if (pool) {
+    await ensureOrderNoSchema(pool);
+    const { rows } = await pool.query(
+      `select ${ORDER_SCREEN_COLUMNS} from orders
+        where archived_at is null order by created_at desc limit $1`,
+      [limit]
+    );
+    return rows as Order[];
+  }
+  return (await listOrders()).slice(0, limit);
+}
+
 // CRM, reporting and lifetime-metric queries must never inherit the 200-row
 // operational screen cap — a capped feed makes cumulative counters (level
 // progress, badges, monthly P&L) stall once the shop passes 200 orders.
@@ -2348,6 +2410,35 @@ export async function listTrackingEventsForOrders(orderIds: string[]): Promise<T
     .sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
+// Only the newest checkpoint per order — what an order row shows. The full
+// timeline is fetched when someone opens it.
+export async function listLatestTrackingEvents(orderIds: string[]): Promise<TrackingEvent[]> {
+  if (orderIds.length === 0) return [];
+  if (pool) {
+    try {
+      const { rows } = await pool.query(
+        `select distinct on (order_id) *
+           from tracking_events
+          where order_id = any($1::uuid[])
+          order by order_id, created_at desc`,
+        [orderIds]
+      );
+      return rows as TrackingEvent[];
+    } catch (err) {
+      if (isUndefinedTable(err)) return [];
+      throw err;
+    }
+  }
+  const latest = new Map<string, TrackingEvent>();
+  const ids = new Set(orderIds);
+  for (const e of memTrackingEvents) {
+    if (!ids.has(e.order_id)) continue;
+    const prev = latest.get(e.order_id);
+    if (!prev || e.created_at >= prev.created_at) latest.set(e.order_id, e);
+  }
+  return [...latest.values()];
+}
+
 export async function getLatestTrackingEvent(order_id: string): Promise<TrackingEvent | null> {
   if (pool) {
     try {
@@ -2417,6 +2508,22 @@ export async function listCustomerAlerts(orderIds?: string[]): Promise<CustomerA
   return [...memAlerts.values()]
     .filter((alert) => !ids || ids.has(alert.order_id))
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+// Which of these orders have any customer alert — enough for a row to offer
+// its alert history without shipping every message body to the browser.
+export async function listAlertedOrderIds(orderIds: string[]): Promise<string[]> {
+  if (orderIds.length === 0) return [];
+  if (pool) {
+    await ensureAlertsSchema(pool);
+    const { rows } = await pool.query(
+      "select distinct order_id from customer_alerts where order_id = any($1::uuid[])",
+      [orderIds]
+    );
+    return rows.map((r) => r.order_id as string);
+  }
+  const ids = new Set(orderIds);
+  return [...new Set([...memAlerts.values()].map((a) => a.order_id))].filter((id) => ids.has(id));
 }
 
 // Has this exact alert already been delivered for this order? The gate that
@@ -2922,6 +3029,24 @@ export async function listChatStates(): Promise<ChatState[]> {
     return rows as ChatState[];
   }
   return [...memChatStates.values()];
+}
+
+// One customer's chat state by phone key — the agent used to read every
+// chat state to find this one row.
+export async function getChatStateByPhoneKey(key: string): Promise<ChatState | null> {
+  if (key.length < 9) return null;
+  if (pool) {
+    const { rows } = await pool.query(
+      `select * from chat_states
+        where right(regexp_replace(coalesce(phone_number, ''), '\\D', '', 'g'), 9) = $1
+        order by updated_at desc limit 1`,
+      [key]
+    );
+    return (rows[0] as ChatState) ?? null;
+  }
+  return (
+    [...memChatStates.values()].find((s) => s.phone_number.replace(/\D/g, "").slice(-9) === key) ?? null
+  );
 }
 
 export async function upsertChatState(

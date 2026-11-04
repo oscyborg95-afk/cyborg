@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { DISTRICTS, shippingFeeFor } from "@/lib/districts";
 import { makeTemplates } from "@/lib/templates";
@@ -117,6 +117,9 @@ function fmtDateTime(iso: string): string {
   });
 }
 
+// Orders per history page. Open orders always load on top of this.
+const PAGE_SIZE = 100;
+
 type DatePreset = "all" | "today" | "yesterday" | "7days" | "month" | "custom";
 type StatusFilter = "all" | "pending" | "booked" | "delivered" | "returned" | "cancelled" | "unremitted";
 
@@ -179,8 +182,16 @@ export default function OrdersPage() {
   const [saving, setSaving] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [manifests, setManifests] = useState<ShippingManifest[]>([]);
-  const [events, setEvents] = useState<TrackingEvent[]>([]);
-  const [alerts, setAlerts] = useState<CustomerAlert[]>([]);
+  // Newest checkpoint per order; full timelines load when an order is opened.
+  const [latestEvents, setLatestEvents] = useState<TrackingEvent[]>([]);
+  const [alertedIds, setAlertedIds] = useState<Set<string>>(new Set());
+  const [openTimelines, setOpenTimelines] = useState<Set<string>>(new Set());
+  // Bumped on every refresh so any open timeline re-reads its history.
+  const [timelineVersion, setTimelineVersion] = useState(0);
+  // History is paged: the newest `pageLimit` orders plus every open order.
+  const pageLimitRef = useRef(PAGE_SIZE);
+  const [totalOrders, setTotalOrders] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [alertBusy, setAlertBusy] = useState<string | null>(null); // `${orderId}:${kind}`
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showManual, setShowManual] = useState(false);
@@ -213,7 +224,7 @@ export default function OrdersPage() {
   const refresh = useCallback(async () => {
     try {
       const [ordersRes, productsRes, settingsRes, healthRes, accountsRes] = await Promise.all([
-        fetch("/api/orders"),
+        fetch(`/api/orders?limit=${pageLimitRef.current}`),
         fetch("/api/products"),
         fetch("/api/settings"),
         fetch("/api/tracking/health"),
@@ -223,8 +234,10 @@ export default function OrdersPage() {
       if (ordersRes.ok) {
         setOrders(data.orders);
         setManifests(data.manifests);
-        setEvents(data.events ?? []);
-        setAlerts(data.alerts ?? []);
+        setLatestEvents(data.latestEvents ?? []);
+        setAlertedIds(new Set<string>(data.alertedOrderIds ?? []));
+        setTotalOrders(data.total ?? data.orders.length);
+        setTimelineVersion((v) => v + 1);
         setDeliveryAttempts(data.deliveryAttempts ?? []);
         setUsingSupabase(data.usingSupabase);
         setDeliveryLoadError(null);
@@ -271,9 +284,32 @@ export default function OrdersPage() {
     }
   }, [refresh]);
 
+  const loadOlderOrders = useCallback(async () => {
+    setLoadingMore(true);
+    pageLimitRef.current += PAGE_SIZE;
+    try {
+      await refresh();
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [refresh]);
+
+  const latestByOrder = useMemo(
+    () => new Map(latestEvents.map((e) => [e.order_id, e])),
+    [latestEvents]
+  );
+
+  const setTimelineOpen = (key: string, open: boolean) =>
+    setOpenTimelines((prev) => {
+      if (prev.has(key) === open) return prev;
+      const next = new Set(prev);
+      if (open) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+
   useEffect(() => {
     // Load, then pull the latest courier statuses once per visit.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh().then(syncTracking);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1164,13 +1200,10 @@ export default function OrdersPage() {
           <section className="space-y-3 md:hidden" aria-label="Orders">
             {filteredOrders.map((order) => {
               const manifest = manifests.find((m) => m.order_id === order.id);
-              const orderEvents = events
-                .filter((event) => event.order_id === order.id)
-                .sort((a, b) => a.created_at.localeCompare(b.created_at));
-              const latest = orderEvents[orderEvents.length - 1];
+              const latest = latestByOrder.get(order.id);
               const latestStyle = latest ? OUTCOME_STYLE[latest.outcome] : null;
-              const orderAlerts = alerts.filter((alert) => alert.order_id === order.id);
-              const trackable = Boolean(manifest || orderEvents.length || orderAlerts.length);
+              const trackable = Boolean(manifest || latest || alertedIds.has(order.id));
+              const timelineProps = { order, manifest, version: timelineVersion, busyKey: alertBusy, onSend: handleSendAlert };
               const archiveDisabled =
                 deletingId === order.id ||
                 order.order_status === "booked" ||
@@ -1233,7 +1266,7 @@ export default function OrdersPage() {
                         <>
                           <p className="truncate font-mono text-sm font-bold text-ink">{manifest.tracking_id}</p>
                           <p className="truncate text-sm font-bold text-ink-soft">
-                            {latestStyle ? `${latestStyle.emoji} ${latest.checkpoint}` : "Booked with courier"}
+                            {latestStyle ? `${latestStyle.emoji} ${latest?.checkpoint}` : "Booked with courier"}
                           </p>
                         </>
                       ) : (
@@ -1280,13 +1313,12 @@ export default function OrdersPage() {
                         {redeliverSentId === order.id ? "Offer sent ✓" : "💬 Send redelivery offer"}
                       </Button>
                     ) : trackable ? (
-                      <details className="group">
+                      <details className="group" onToggle={(e) => setTimelineOpen(`${order.id}:main`, e.currentTarget.open)}>
                         <summary className="btn3d flex min-h-11 cursor-pointer list-none items-center justify-center border-sky-dark bg-sky px-4 py-2 font-display text-sm font-extrabold text-white">
                           🧭 View delivery timeline <span className="ml-2 group-open:rotate-180" aria-hidden="true">▾</span>
                         </summary>
                         <div className="mt-3 rounded-xl border-2 border-cardline bg-cream/35 p-3">
-                          <Timeline events={orderEvents} manifest={manifest} />
-                          <AlertsPanel order={order} alerts={orderAlerts} busyKey={alertBusy} onSend={handleSendAlert} />
+                          {openTimelines.has(`${order.id}:main`) && <LazyTimeline {...timelineProps} />}
                         </div>
                       </details>
                     ) : (
@@ -1307,13 +1339,12 @@ export default function OrdersPage() {
                         </Button>
                       )}
                       {trackable && (
-                        <details className="group/timeline rounded-xl border-2 border-cardline bg-cream/35">
+                        <details className="group/timeline rounded-xl border-2 border-cardline bg-cream/35" onToggle={(e) => setTimelineOpen(`${order.id}:more`, e.currentTarget.open)}>
                           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between px-3 font-display text-sm font-extrabold text-ink">
                             Tracking &amp; customer alerts <span className="group-open/timeline:rotate-180" aria-hidden="true">▾</span>
                           </summary>
                           <div className="border-t border-cardline p-3">
-                            <Timeline events={orderEvents} manifest={manifest} />
-                            <AlertsPanel order={order} alerts={orderAlerts} busyKey={alertBusy} onSend={handleSendAlert} />
+                            {openTimelines.has(`${order.id}:more`) && <LazyTimeline {...timelineProps} />}
                           </div>
                         </details>
                       )}
@@ -1363,16 +1394,12 @@ export default function OrdersPage() {
               <tbody>
                 {filteredOrders.map((order) => {
                   const manifest = manifests.find((m) => m.order_id === order.id);
-                  const orderEvents = events
-                    .filter((e) => e.order_id === order.id)
-                    .sort((a, b) => a.created_at.localeCompare(b.created_at));
-                  const latest = orderEvents[orderEvents.length - 1];
+                  const latest = latestByOrder.get(order.id);
                   const latestStyle = latest ? OUTCOME_STYLE[latest.outcome] : null;
                   const expanded = expandedId === order.id;
-                  const orderAlerts = alerts.filter((a) => a.order_id === order.id);
                   // Expandable when there's a timeline OR any customer alert to
                   // review/resend, so alert history is never stranded.
-                  const trackable = Boolean(manifest || orderEvents.length || orderAlerts.length);
+                  const trackable = Boolean(manifest || latest || alertedIds.has(order.id));
                   return (
                     <Fragment key={order.id}>
                       <tr className="border-b border-cardline/60 align-top">
@@ -1474,7 +1501,7 @@ export default function OrdersPage() {
                               </div>
                               {latestStyle && (
                                 <div className="mt-0.5 font-display text-xs font-bold text-ink-soft">
-                                  {latestStyle.emoji} {latest.checkpoint}
+                                  {latestStyle.emoji} {latest?.checkpoint}
                                 </div>
                               )}
                               {manifest.pdf_label_url && (
@@ -1579,10 +1606,10 @@ export default function OrdersPage() {
                       {expanded && (
                         <tr className="border-b border-cardline/60 bg-cream/40">
                           <td colSpan={6} className="px-4 py-4">
-                            <Timeline events={orderEvents} manifest={manifest} />
-                            <AlertsPanel
+                            <LazyTimeline
                               order={order}
-                              alerts={orderAlerts}
+                              manifest={manifest}
+                              version={timelineVersion}
                               busyKey={alertBusy}
                               onSend={handleSendAlert}
                             />
@@ -1595,6 +1622,17 @@ export default function OrdersPage() {
               </tbody>
             </table>
           </div>
+          {totalOrders > orders.length && (
+            <div className="mt-4 flex flex-col items-center gap-2 text-center">
+              <p className="text-sm font-bold text-ink-soft">
+                Showing the newest {orders.length} of {totalOrders} orders. Every pending, in-flight and
+                unpaid order is always loaded.
+              </p>
+              <Button tone="ghost" onClick={() => void loadOlderOrders()} disabled={loadingMore}>
+                {loadingMore ? "Loading…" : `Load ${Math.min(PAGE_SIZE, totalOrders - orders.length)} older orders`}
+              </Button>
+            </div>
+          )}
           </>
         )}
       </Card>
@@ -2419,6 +2457,51 @@ function HealthStat({ label, value, warn = false }: { label: string; value: stri
       <div className="font-display text-[10px] font-extrabold uppercase tracking-wide text-ink-soft">{label}</div>
       <div className={`mt-1 font-display text-sm font-extrabold ${warn ? "text-flame-dark" : "text-ink"}`}>{value}</div>
     </div>
+  );
+}
+
+// One order's timeline + alert history, fetched when it is opened (and again
+// whenever the page refreshes while it is open).
+function LazyTimeline({
+  order,
+  manifest,
+  version,
+  busyKey,
+  onSend,
+}: {
+  order: Order;
+  manifest?: ShippingManifest;
+  version: number;
+  busyKey: string | null;
+  onSend: (order: Order, kind: AlertKind, alreadySent: boolean) => void;
+}) {
+  const [data, setData] = useState<{ events: TrackingEvent[]; alerts: CustomerAlert[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch(`/api/orders/${order.id}/timeline`, { signal: ctrl.signal })
+      .then(async (res) => {
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Timeline could not be loaded");
+        setData(body);
+        setError(null);
+      })
+      .catch((err) => {
+        if (!ctrl.signal.aborted) setError(err instanceof Error ? err.message : "Timeline could not be loaded");
+      });
+    return () => ctrl.abort();
+  }, [order.id, version]);
+  if (error && !data) {
+    return <p role="alert" className="text-sm font-bold text-flame-dark">⚠️ {error}</p>;
+  }
+  if (!data) {
+    return <p className="text-sm font-bold text-ink-soft" aria-busy="true">Loading timeline…</p>;
+  }
+  return (
+    <>
+      <Timeline events={data.events} manifest={manifest} />
+      <AlertsPanel order={order} alerts={data.alerts} busyKey={busyKey} onSend={onSend} />
+    </>
   );
 }
 

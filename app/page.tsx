@@ -426,7 +426,7 @@ export default function Workspace() {
   }, []);
 
   const loadOrders = useCallback(async () => {
-    const res = await fetch("/api/orders");
+    const res = await fetch("/api/orders?view=lite");
     const data = await res.json();
     if (res.ok) {
       setOrders(data.orders);

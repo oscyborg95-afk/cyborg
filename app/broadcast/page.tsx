@@ -41,7 +41,7 @@ export default function BroadcastPage() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/orders");
+      const res = await fetch("/api/orders?view=lite");
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not load past customers");
       setOrders(data.orders);
