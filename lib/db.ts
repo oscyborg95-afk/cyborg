@@ -28,6 +28,13 @@ import type {
   TrackingNotificationJob,
 } from "./types";
 import type { CourierInvoiceLine, ParsedCourierInvoice } from "./remittance-invoice";
+import type { ChargeSample, LatestInvoiceTotals, OutstandingParcel } from "./payout-estimate.ts";
+import {
+  courierCancelReason,
+  isTerminalDeliveryStatus,
+  orderStatusForDeliveryEvent,
+  TERMINAL_DELIVERY_STATUSES,
+} from "./delivery-events.ts";
 import { getTenantSession, requireTenantSession } from "./tenant-context.ts";
 import { authorizedTenantSchema } from "./tenants.ts";
 import { markSchemaCurrent, schemaIsCurrent } from "./schema-once.ts";
@@ -1294,7 +1301,7 @@ export async function ingestDeliveryEvent(input: {
         };
       }
 
-      const isResolved = input.status === "delivered" || input.status === "returned_to_ho";
+      const isResolved = isTerminalDeliveryStatus(input.status);
       const dateSource = input.next_delivery_date ? "courier" : "unknown";
       const { rows: attempts } = await db.query(
         `insert into delivery_attempts
@@ -1303,8 +1310,8 @@ export async function ingestDeliveryEvent(input: {
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          on conflict (order_id, attempt_no) do update set
            status = case
-             when excluded.status in ('delivered','returned_to_ho') then excluded.status
-             when delivery_attempts.status in ('delivered','returned_to_ho') then delivery_attempts.status
+             when excluded.status in ('delivered','returned_to_ho','cancelled') then excluded.status
+             when delivery_attempts.status in ('delivered','returned_to_ho','cancelled') then delivery_attempts.status
              when excluded.status = 'branch_rescheduled' and delivery_attempts.status = 'rescheduled' then delivery_attempts.status
              else excluded.status end,
            reason = case when excluded.reason <> '' then excluded.reason else delivery_attempts.reason end,
@@ -1313,7 +1320,7 @@ export async function ingestDeliveryEvent(input: {
            next_delivery_date = coalesce(excluded.next_delivery_date, delivery_attempts.next_delivery_date),
            date_source = case when excluded.next_delivery_date is not null then excluded.date_source else delivery_attempts.date_source end,
            call_due_at = coalesce(excluded.call_due_at, delivery_attempts.call_due_at),
-           call_status = case when excluded.status in ('delivered','returned_to_ho') then 'resolved' else delivery_attempts.call_status end,
+           call_status = case when excluded.status in ('delivered','returned_to_ho','cancelled') then 'resolved' else delivery_attempts.call_status end,
            updated_at = now()
          returning *`,
         [
@@ -1339,15 +1346,16 @@ export async function ingestDeliveryEvent(input: {
       ]);
       await addTrackingEvent(tracked.order.id, checkpoint, input.status, db, input.occurred_at);
 
-      if (
-        (input.status === "delivered" || input.status === "returned_to_ho") &&
-        tracked.order.order_status === "booked"
-      ) {
-        await updateOrderStatus(
-          tracked.order.id,
-          input.status === "delivered" ? "delivered" : "returned",
-          db
-        );
+      const nextOrderStatus = orderStatusForDeliveryEvent(input.status);
+      if (nextOrderStatus && tracked.order.order_status === "booked") {
+        await updateOrderStatus(tracked.order.id, nextOrderStatus, db);
+        if (nextOrderStatus === "cancelled") {
+          // Stamp when the courier cancelled, not when we noticed: the poller
+          // can find a cancellation months after it happened.
+          await db.query("update orders set cancelled_at = $1, cancel_reason = $2 where id = $3", [
+            input.occurred_at, courierCancelReason(input.reason), tracked.order.id,
+          ]);
+        }
       }
 
       for (const job of input.notifications) {
@@ -1400,7 +1408,7 @@ export async function ingestDeliveryEvent(input: {
     raw_payload: input.raw_payload, created_at: now,
   };
   memDeliveryEvents.set(event.id, event);
-  const resolved = input.status === "delivered" || input.status === "returned_to_ho";
+  const resolved = isTerminalDeliveryStatus(input.status);
   const attempt: DeliveryAttempt = {
     id: oldAttempt?.id ?? randomUUID(),
     order_id: tracked.order.id,
@@ -1409,7 +1417,7 @@ export async function ingestDeliveryEvent(input: {
     status:
       input.status === "branch_rescheduled" && oldAttempt?.status === "rescheduled"
         ? oldAttempt.status
-        : resolved || !["delivered", "returned_to_ho"].includes(oldAttempt?.status ?? "")
+        : resolved || !TERMINAL_DELIVERY_STATUSES.has(oldAttempt?.status ?? "out_for_delivery")
           ? input.status
           : oldAttempt!.status,
     reason: input.reason || oldAttempt?.reason || "",
@@ -1466,8 +1474,16 @@ export async function ingestDeliveryEvent(input: {
   }
   await updateManifestCheckpoint(tracked.manifest.id, input.status.replaceAll("_", " "));
   await addTrackingEvent(tracked.order.id, input.status.replaceAll("_", " "), input.status, null, input.occurred_at);
-  if (resolved && tracked.order.order_status === "booked") {
-    await updateOrderStatus(tracked.order.id, input.status === "delivered" ? "delivered" : "returned", null);
+  const nextOrderStatus = orderStatusForDeliveryEvent(input.status);
+  if (nextOrderStatus && tracked.order.order_status === "booked") {
+    await updateOrderStatus(tracked.order.id, nextOrderStatus, null);
+    if (nextOrderStatus === "cancelled") {
+      memOrders.set(tracked.order.id, {
+        ...memOrders.get(tracked.order.id)!,
+        cancelled_at: input.occurred_at,
+        cancel_reason: courierCancelReason(input.reason),
+      });
+    }
   }
   return { duplicate: false, event_id: event.id, order_id: tracked.order.id, attempt_id: attempt.id };
 }
@@ -1554,7 +1570,7 @@ export async function recordCustomerDeliveryReply(
           select inner_a.id from delivery_attempts inner_a
             join orders o on o.id = inner_a.order_id
            where inner_a.call_status not in ('called_confirmed','resolved')
-             and inner_a.status not in ('delivered','returned_to_ho')
+             and inner_a.status not in ('delivered','returned_to_ho','cancelled')
              and (
                right(regexp_replace(o.phone_number, '\\D', '', 'g'), 9) = $1
                or right(regexp_replace(coalesce(o.phone_2,''), '\\D', '', 'g'), 9) = $1
@@ -1578,7 +1594,7 @@ export async function recordCustomerDeliveryReply(
       return (
         matches &&
         !["called_confirmed", "resolved"].includes(attempt.call_status) &&
-        !["delivered", "returned_to_ho"].includes(attempt.status)
+        !TERMINAL_DELIVERY_STATUSES.has(attempt.status)
       );
     })
     .sort(([, a], [, b]) => b.last_event_at.localeCompare(a.last_event_at));
@@ -2865,6 +2881,117 @@ export async function listCourierRemittances(): Promise<CourierRemittance[]> {
     return rows as CourierRemittance[];
   }
   return [...memRemittances.values()].sort((a, b) => b.paid_at.localeCompare(a.paid_at));
+}
+
+export interface PayoutEstimateData {
+  parcels: OutstandingParcel[];
+  charge_history: ChargeSample[];
+  latest_invoice: LatestInvoiceTotals | null;
+  last_paid_at: string | null;
+}
+
+/**
+ * Everything the payout estimate needs, kept small: unsettled delivered orders
+ * with their delivery event, and past invoice charges pre-aggregated per place
+ * (a few hundred rows however many invoices exist).
+ */
+export async function getPayoutEstimateData(): Promise<PayoutEstimateData> {
+  if (pool) {
+    await ensureRemittanceSchema(pool);
+    const [parcels, history, latest] = await Promise.all([
+      pool.query(
+        `select o.id as order_id, o.total_cod, coalesce(o.city, '') as city, coalesce(o.district, '') as district,
+                d.occurred_at as delivered_at,
+                coalesce(d.raw_payload->>'status_name', '') as delivered_status,
+                coalesce(d.reason, '') as delivered_remarks
+         from orders o
+         left join lateral (
+           select e.occurred_at, e.raw_payload, e.reason from delivery_events e
+           where e.order_id = o.id and e.status = 'delivered'
+           order by e.occurred_at desc limit 1
+         ) d on true
+         where o.order_status = 'delivered' and o.remitted_at is null`
+      ),
+      // Last six months only, so a courier tariff change works its way in.
+      pool.query(
+        `select coalesce(o.city, '') as city, coalesce(o.district, '') as district,
+                l.delivery_charge, count(*)::int as count
+         from courier_remittance_lines l
+         join courier_remittances r on r.id = l.remittance_id
+         join orders o on o.id = l.matched_order_id
+         where r.paid_at > now() - interval '180 days'
+         group by 1, 2, 3`
+      ),
+      pool.query(
+        `select collected_cod, commission, invoice_vat, delivery_charges, paid_at
+         from courier_remittances order by paid_at desc limit 1`
+      ),
+    ]);
+    const last = latest.rows[0] as (LatestInvoiceTotals & { paid_at: string | Date }) | undefined;
+    const iso = (value: string | Date | null) => (value == null ? null : new Date(value).toISOString());
+    return {
+      parcels: parcels.rows.map((row) => ({
+        order_id: String(row.order_id),
+        total_cod: Number(row.total_cod),
+        city: String(row.city),
+        district: String(row.district),
+        delivered_at: iso(row.delivered_at as string | Date | null),
+        delivered_status: String(row.delivered_status),
+        delivered_remarks: String(row.delivered_remarks),
+      })),
+      charge_history: history.rows.map((row) => ({
+        city: String(row.city),
+        district: String(row.district),
+        delivery_charge: Number(row.delivery_charge),
+        count: Number(row.count),
+      })),
+      latest_invoice: last
+        ? {
+            collected_cod: Number(last.collected_cod),
+            commission: Number(last.commission),
+            invoice_vat: Number(last.invoice_vat),
+            delivery_charges: Number(last.delivery_charges),
+          }
+        : null,
+      last_paid_at: last ? iso(last.paid_at) : null,
+    };
+  }
+
+  const deliveredEvents = new Map<string, DeliveryEvent>();
+  for (const event of memDeliveryEvents.values()) {
+    if (event.status !== "delivered") continue;
+    const seen = deliveredEvents.get(event.order_id);
+    if (!seen || seen.occurred_at < event.occurred_at) deliveredEvents.set(event.order_id, event);
+  }
+  const latest = [...memRemittances.values()].sort((a, b) => b.paid_at.localeCompare(a.paid_at))[0];
+  return {
+    parcels: [...memOrders.values()]
+      .filter((order) => order.order_status === "delivered" && !order.remitted_at)
+      .map((order) => {
+        const event = deliveredEvents.get(order.id);
+        return {
+          order_id: order.id,
+          total_cod: Number(order.total_cod),
+          city: order.city ?? "",
+          district: order.district ?? "",
+          delivered_at: event?.occurred_at ?? null,
+          delivered_status: String(event?.raw_payload?.status_name ?? ""),
+          delivered_remarks: event?.reason ?? "",
+        };
+      }),
+    // The in-memory store keeps no per-line charges; the estimate falls back
+    // to the settings charge.
+    charge_history: [],
+    latest_invoice: latest
+      ? {
+          collected_cod: latest.collected_cod,
+          commission: latest.commission,
+          invoice_vat: latest.invoice_vat,
+          delivery_charges: latest.delivery_charges,
+        }
+      : null,
+    last_paid_at: latest?.paid_at ?? null,
+  };
 }
 
 export interface SellerPayoutAccount {

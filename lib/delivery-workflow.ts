@@ -5,8 +5,12 @@ import {
   ingestDeliveryEvent,
   type DeliveryNotificationInput,
 } from "./db.ts";
-import { ownerCallDueAt, type NormalizedDeliveryEvent } from "./delivery-events.ts";
-import { orderValue, owesRefund } from "./payments.ts";
+import {
+  isRecentCourierEvent,
+  ownerCallDueAt,
+  type NormalizedDeliveryEvent,
+} from "./delivery-events.ts";
+import { orderValue, owesRefund, paymentMethodOf } from "./payments.ts";
 import { phoneToChatId } from "./phone.ts";
 import { makeTemplates } from "./templates.ts";
 import type { BusinessSettings, Order, ShippingManifest } from "./types.ts";
@@ -87,6 +91,31 @@ function returnAlertBody(order: Order, event: NormalizedDeliveryEvent): string {
     cleanReason(event.reason) ? `Courier reason: ${cleanReason(event.reason)}` : "",
     "",
     "The parcel is on its way back to you. Call the customer if you want to re-book it.",
+  ].filter(Boolean).join("\n");
+}
+
+// The courier voided the waybill, almost always because it never collected
+// the parcel. Unlike a return nothing was lost in transit, but the customer is
+// still waiting for an order that never left, so the owner has to act.
+function courierCancelAlertBody(order: Order, event: NormalizedDeliveryEvent): string {
+  const value = Number(order.total_cod);
+  // A prepaid order that never shipped is money we hold for nothing.
+  const prepaid = paymentMethodOf(order) === "bank_transfer" ? orderValue(order) : 0;
+  return [
+    "⛔ COURIER CANCELLED THE BOOKING",
+    "",
+    `Tracking: ${event.trackingId}`,
+    `Customer: ${order.customer_name}`,
+    `Phone: ${order.phone_number}`,
+    `Order: ${order.order_no ?? order.id}`,
+    Number.isFinite(value) && value > 0 ? `COD value: Rs. ${value.toLocaleString("en-LK")}` : "",
+    prepaid > 0
+      ? `💸 PAID BY BANK TRANSFER: Rs. ${prepaid.toLocaleString("en-LK")} — re-book it or refund them.`
+      : "",
+    cleanReason(event.reason) ? `Courier note: ${cleanReason(event.reason)}` : "",
+    "",
+    "The order is now marked cancelled and its stock is back on the shelf. " +
+      "If the parcel is still with you and the customer still wants it, book it again.",
   ].filter(Boolean).join("\n");
 }
 
@@ -226,6 +255,19 @@ export async function processDeliveryEvent(
         dedupe_key: `delivery:${tracked.order.id}:owner_terminal_return`,
       });
     }
+  }
+
+  // Never a customer message: the parcel was not sent, so the "returned"
+  // apology would be false, and these surface weeks late. The owner hears
+  // only about a recent one; a backlog found late is just closed quietly.
+  if (event.status === "cancelled" && ownerChat && isRecentCourierEvent(event.occurredAt, now)) {
+    notifications.push({
+      recipient: "owner",
+      chat_id: ownerChat,
+      body: courierCancelAlertBody(tracked.order, event),
+      notification_type: "owner_courier_cancelled",
+      dedupe_key: `delivery:${tracked.order.id}:owner_courier_cancelled`,
+    });
   }
 
   return ingestDeliveryEvent({

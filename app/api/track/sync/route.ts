@@ -23,6 +23,7 @@ const ACTIONABLE = new Set([
   "branch_failed",
   "delivered",
   "returned_to_ho",
+  "cancelled",
 ]);
 
 // One courier round trip per parcel, so a shop with hundreds in flight cannot
@@ -41,6 +42,7 @@ export async function runTrackingSync(budgetMs = SYNC_BUDGET_MS) {
 
   let delivered = 0;
   let returned = 0;
+  let cancelled = 0;
   let inTransit = 0;
   let eventsAccepted = 0;
   let checked = 0;
@@ -72,6 +74,7 @@ export async function runTrackingSync(budgetMs = SYNC_BUDGET_MS) {
         const latest = events.at(-1);
         if (latest?.status === "delivered") delivered++;
         else if (latest?.status === "returned_to_ho") returned++;
+        else if (latest?.status === "cancelled") cancelled++;
         else inTransit++;
       } catch (error) {
         failures.push(
@@ -89,6 +92,7 @@ export async function runTrackingSync(budgetMs = SYNC_BUDGET_MS) {
     checked,
     delivered,
     returned,
+    cancelled,
     inTransit,
     eventsAccepted,
     alertsSent: 0,
@@ -108,6 +112,7 @@ export async function POST() {
         checked: 0,
         delivered: 0,
         returned: 0,
+        cancelled: 0,
         inTransit: 0,
         eventsAccepted: 0,
         alertsSent: 0,

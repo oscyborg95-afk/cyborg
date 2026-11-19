@@ -106,6 +106,7 @@ const OUTCOME_STYLE: Record<string, { dot: string; label: string; emoji: string 
   in_transit: { dot: "bg-gold", label: "In transit", emoji: "🚚" },
   delivered: { dot: "bg-frog", label: "Delivered", emoji: "✅" },
   returned: { dot: "bg-flame", label: "Returned", emoji: "↩️" },
+  cancelled: { dot: "bg-ink-soft", label: "Cancelled by courier", emoji: "⛔" },
 };
 
 function fmtDateTime(iso: string): string {
@@ -273,7 +274,9 @@ export default function OrdersPage() {
       setSyncNote(
         data.checked === 0
           ? "Nothing riding with the courier right now."
-          : `✅ ${data.delivered} delivered · ↩️ ${data.returned} returned · 🚚 ${data.inTransit} still moving` +
+          : `✅ ${data.delivered} delivered · ↩️ ${data.returned} returned · ` +
+              (data.cancelled ? `⛔ ${data.cancelled} cancelled by courier · ` : "") +
+              `🚚 ${data.inTransit} still moving` +
               (data.failures.length ? ` · ⚠️ ${data.failures.length} failed` : "")
       );
       await refresh();
@@ -1663,6 +1666,7 @@ const DELIVERY_STATUS_LABEL: Record<DeliveryAttempt["status"], string> = {
   branch_failed: "Failed · at branch",
   delivered: "Delivered",
   returned_to_ho: "Returned to HO",
+  cancelled: "Cancelled by courier",
 };
 
 const CALL_STATUS_LABEL: Record<DeliveryAttempt["call_status"], string> = {
@@ -1765,6 +1769,7 @@ const NOTIFICATION_TYPE_LABEL: Record<string, string> = {
   owner_morning_digest: "You · morning digest",
   owner_evening_digest: "You · evening digest",
   owner_terminal_return: "You · parcel returned",
+  owner_courier_cancelled: "You · courier cancelled booking",
   tracking: "Tracking update",
 };
 
@@ -1966,6 +1971,7 @@ function DeliveryRescuePanel({
         attempt.call_status !== "called_confirmed" &&
         attempt.status !== "delivered" &&
         attempt.status !== "returned_to_ho" &&
+        attempt.status !== "cancelled" &&
         !(attempt.status === "out_for_delivery" && attempt.attempt_no === 1)
       );
     }

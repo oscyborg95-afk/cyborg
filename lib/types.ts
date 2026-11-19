@@ -94,7 +94,10 @@ export type DeliveryEventStatus =
   | "failed_to_deliver"
   | "branch_failed"
   | "delivered"
-  | "returned_to_ho";
+  | "returned_to_ho"
+  // The courier voided the waybill. Trans Express does this on its own to any
+  // booking it never collected within 14 days ("Processing" → "Cancelled").
+  | "cancelled";
 
 export type DeliveryCallStatus =
   | "pending"

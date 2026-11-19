@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import type { ParsedCourierWebhook } from "./courier-webhook.ts";
-import type { DeliveryEventStatus } from "./types.ts";
+import type { DeliveryEventStatus, OrderStatus } from "./types.ts";
 
 export interface CourierHistoryRow {
   status_name: string;
@@ -36,7 +36,52 @@ const RECOGNIZED = new Set<DeliveryEventStatus>([
   "branch_failed",
   "delivered",
   "returned_to_ho",
+  "cancelled",
 ]);
+
+// Statuses after which the courier will not move the parcel again: the order
+// leaves "booked", stops being polled, and its delivery attempt is closed.
+export const TERMINAL_DELIVERY_STATUSES: ReadonlySet<DeliveryEventStatus> = new Set([
+  "delivered",
+  "returned_to_ho",
+  "cancelled",
+]);
+
+export function isTerminalDeliveryStatus(status: DeliveryEventStatus): boolean {
+  return TERMINAL_DELIVERY_STATUSES.has(status);
+}
+
+// What a booked order becomes once the courier reports this status. A
+// courier-cancelled waybill is our "cancelled", not "returned": in every
+// case seen so far the parcel was never collected, so no courier legs were
+// charged and the unit never left the shed. Both put the stock back.
+export function orderStatusForDeliveryEvent(status: DeliveryEventStatus): OrderStatus | null {
+  if (status === "delivered") return "delivered";
+  if (status === "returned_to_ho") return "returned";
+  if (status === "cancelled") return "cancelled";
+  return null;
+}
+
+// orders.cancel_reason is shown on the Orders screen next to a manual
+// cancellation, so it says who cancelled and keeps the courier's own words.
+export function courierCancelReason(remarks: string | null | undefined): string {
+  const note = remarks?.replace(/\s+/g, " ").trim() ?? "";
+  return (note ? `Cancelled by courier: ${note}` : "Cancelled by courier").slice(0, 200);
+}
+
+// A courier cancellation reaches us whenever the poller next looks, which
+// for the parcels it missed was weeks or months later. Only a recent one is
+// still worth interrupting the owner for.
+export const COURIER_CANCEL_ALERT_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
+export function isRecentCourierEvent(
+  occurredAt: string,
+  now = new Date(),
+  maxAgeMs = COURIER_CANCEL_ALERT_MAX_AGE_MS
+): boolean {
+  const at = Date.parse(occurredAt);
+  return Number.isFinite(at) && now.getTime() - at <= maxAgeMs;
+}
 
 export function normalizeDeliveryStatus(raw: string): DeliveryEventStatus | null {
   const value = raw.toLowerCase().replace(/[\s-]+/g, "_");
@@ -47,6 +92,18 @@ export function normalizeDeliveryStatus(raw: string): DeliveryEventStatus | null
   if (value.includes("reschedul")) return "rescheduled";
   if (value.includes("failed") && value.includes("deliver")) return "failed_to_deliver";
   if (value === "delivered" || value.includes("successfully_delivered")) return "delivered";
+  // Trans Express ends a parcel the store asked to deliver for a reduced amount
+  // as "Partially Delivered" ("Collected COD Rs. 1.00. Requested by online
+  // store"). It is finished and on the next invoice; ignoring it left the order
+  // in transit until the invoice import, invisible to the payout estimate. The
+  // raw status and remark stay on the event so the estimate can read the
+  // amount actually collected.
+  if (value.includes("partially_delivered")) return "delivered";
+  // Trans Express voids a booking it never collected within 14 days:
+  // "Processing" → "Cancelled", remark "Orders older than 14 day(s) have been
+  // canceled automatically." Ignoring it left those orders booked and polled
+  // forever. Both spellings ("cancelled", "canceled") match.
+  if (value.includes("cancel")) return "cancelled";
   return null;
 }
 
@@ -210,7 +267,8 @@ export function canonicalWebhookStatus(
   // would message the customer on a state the poller (correctly) stays quiet on.
   const fromRaw = event.rawStatus ? normalizeDeliveryStatus(event.rawStatus) : null;
   if (fromRaw && RECOGNIZED.has(fromRaw)) return fromRaw;
-  if (event.status === "returned" || event.status === "cancelled") return "returned_to_ho";
+  if (event.status === "returned") return "returned_to_ho";
+  if (event.status === "cancelled") return "cancelled";
   if (event.status === "redelivery") return "out_for_delivery";
   return normalizeDeliveryStatus(event.status);
 }

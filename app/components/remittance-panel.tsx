@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { CourierRemittance } from "@/lib/types";
+import type { PayoutEstimate } from "@/lib/payout-estimate";
 import { Button, Card } from "./ui";
 
 interface InvoiceSummary {
@@ -59,6 +60,16 @@ interface PayoutSummary {
 const money = (value: number) =>
   `Rs. ${Number(value || 0).toLocaleString("en-LK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const invoiceDay = (date: string) =>
+  new Date(`${date}T12:00:00+05:30`).toLocaleDateString("en-LK", {
+    timeZone: "Asia/Colombo",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
 const inputCls =
   "mt-1 min-h-11 w-full rounded-xl border-2 border-cardline bg-white/70 px-3 py-2 font-display text-base font-bold text-ink outline-none focus:border-gold sm:min-h-0 sm:text-sm";
 
@@ -88,6 +99,27 @@ export function RemittancePanel({
   const [sellerPayouts, setSellerPayouts] = useState<SellerPayout[]>([]);
   const [sellerPayments, setSellerPayments] = useState<SellerPayment[]>([]);
   const [settlingId, setSettlingId] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<PayoutEstimate | null>(null);
+  const [estimateFailed, setEstimateFailed] = useState(false);
+
+  async function loadEstimate() {
+    try {
+      const res = await fetch("/api/remittance/estimate");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setEstimate(data.estimate ?? null);
+      setEstimateFailed(false);
+    } catch {
+      setEstimateFailed(true);
+    }
+  }
+
+  // Re-estimate whenever the set of delivered, unsettled orders changes
+  // (tracking sync, a new delivery, a recorded invoice).
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadEstimate(), 0);
+    return () => window.clearTimeout(timer);
+  }, [outstandingCount, outstandingGross]);
 
   async function loadSellerPayouts() {
     const res = await fetch("/api/seller-settlements");
@@ -214,6 +246,7 @@ export function RemittancePanel({
       setPreview(null);
       setNotes("");
       await loadHistory();
+      await loadEstimate();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not record payout");
     } finally {
@@ -233,7 +266,9 @@ export function RemittancePanel({
             ["Actual cash received", summary ? summary.total_paid_to_me : null, "text-frog-dark", summary ? "All recorded payouts" : "Payout history unavailable"],
             [`Paid in ${summary?.month_label ?? "this month"}`, summary ? summary.paid_this_month : null, "text-frog-dark", summary ? "Actual receipts this month" : "Payout history unavailable"],
             ["Last payout", summary ? (summary.last_payout?.amount ?? 0) : null, "text-grape-dark", summary?.last_payout ? `${new Date(summary.last_payout.paid_at).toLocaleDateString("en-LK", { timeZone: "Asia/Colombo" })} · ${summary.last_payout.invoice_no}` : summary ? "No payouts recorded" : "Payout history unavailable"],
-            ["Awaiting courier payout", outstandingGross, "text-gold-dark", `${outstandingCount} delivered order${outstandingCount === 1 ? "" : "s"} · gross COD`],
+            estimate
+              ? ["Awaiting courier payout", estimate.total.net, "text-gold-dark", `Est. bank deposit · ${plural(estimate.total.count, "parcel")}`]
+              : ["Awaiting courier payout", outstandingGross, "text-gold-dark", `${plural(outstandingCount, "delivered order")} · gross COD${estimateFailed ? " (estimate unavailable)" : ""}`],
           ].map(([label, value, color, note], index) => (
             <div
               key={String(label)}
@@ -247,6 +282,42 @@ export function RemittancePanel({
             </div>
           ))}
         </div>
+        {estimate && estimate.total.count > 0 && (
+          <div className="mt-2 rounded-xl border-2 border-gold/50 bg-white/60 p-3 text-[11px] font-bold text-ink-soft">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="rounded-lg bg-surface/60 px-3 py-2">
+                <p className="font-display text-[10px] font-extrabold uppercase tracking-wide">
+                  {estimate.next.overdue ? "Invoice due now" : "Next invoice"} · delivered to {invoiceDay(estimate.next.period_end)}
+                </p>
+                <p className="font-display text-lg font-extrabold text-frog-dark">{money(estimate.next.net)}</p>
+                <p>
+                  {plural(estimate.next.count, "parcel")} · {money(estimate.next.gross_cod)} COD − {money(estimate.next.delivery_charges + estimate.next.commission + estimate.next.vat)} courier fees
+                </p>
+              </div>
+              <div className="rounded-lg bg-surface/60 px-3 py-2">
+                <p className="font-display text-[10px] font-extrabold uppercase tracking-wide">Invoice after that</p>
+                <p className="font-display text-lg font-extrabold text-ink">{money(estimate.later.net)}</p>
+                <p>
+                  {estimate.later.count === 0
+                    ? `Nothing delivered after ${invoiceDay(estimate.next.period_end)} yet`
+                    : `${plural(estimate.later.count, "parcel")} delivered after ${invoiceDay(estimate.next.period_end)}`}
+                </p>
+              </div>
+            </div>
+            {estimate.partial.length > 0 && (
+              <p className="mt-2 rounded-lg bg-flame-tint px-3 py-2 text-flame-dark">
+                ⚠️ {plural(estimate.partial.length, "partial delivery")}: courier collected {money(estimate.partial.reduce((sum, p) => sum + p.collected_cod, 0))} of {money(estimate.partial.reduce((sum, p) => sum + p.total_cod, 0))} COD
+                {estimate.partial.some((p) => !p.amount_known) ? " (some amounts unknown — counted as Rs. 0)" : ""}.
+              </p>
+            )}
+            <p className="mt-2">
+              Estimate = COD collected − delivery charge (usually {money(estimate.base_charge)}, {estimate.learned_from_lines > 0 ? `learned per city from ${plural(estimate.learned_from_lines, "past invoice line")}` : "from your courier cost setting"}) − {Number((estimate.commission_rate * 100).toFixed(2))}% commission
+              {estimate.vat_rate > 0 ? ` − ${Number((estimate.vat_rate * 100).toFixed(2))}% VAT on fees` : ""}
+              {estimate.prepaid_count > 0 ? ` · includes ${plural(estimate.prepaid_count, "prepaid parcel")} that only cost delivery` : ""}
+              {" "}· gross COD {money(estimate.total.gross_cod)}.
+            </p>
+          </div>
+        )}
         <div className="mt-2 grid gap-1 rounded-xl border border-gold/40 bg-white/50 p-2 text-[11px] font-bold text-ink-soft sm:grid-cols-2 lg:grid-cols-4">
           <span className="flex items-center justify-between gap-3 rounded-lg bg-surface/60 px-2 py-1.5"><span>Invoice expected</span><strong className="text-ink">{summary ? money(summary.total_invoice_expected) : "—"}</strong></span>
           <span className="flex items-center justify-between gap-3 rounded-lg bg-surface/60 px-2 py-1.5"><span>Gross COD settled</span><strong className="text-ink">{summary ? money(summary.total_gross_cod) : "—"}</strong></span>
