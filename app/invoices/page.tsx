@@ -39,7 +39,9 @@ function describeMatch(m: DuplicateMatch<RelatedOrder>, inBatch: boolean): strin
 // "unprinted": every booked order whose invoice hasn't been printed yet,
 // whatever day it was dispatched — the default, so leftovers from yesterday's
 // half-printed batch are simply waiting here.
-type DateFilterMode = "unprinted" | "single" | "range" | "all";
+// "history": invoices already printed, grouped by when they were printed, so a
+// lost or spoiled batch can be reprinted.
+type DateFilterMode = "unprinted" | "single" | "range" | "all" | "history";
 
 const printedLabel = (iso: string) =>
   new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -91,6 +93,7 @@ export default function InvoicesPage() {
   // The batch window the server should read; null = the latest dispatches.
   const batchQuery = useMemo(() => {
     if (filterMode === "unprinted") return "unprinted=1";
+    if (filterMode === "history") return "printed=1";
     if (filterMode === "all") return "";
     if (filterMode === "single") {
       if (!date) return null;
@@ -113,7 +116,8 @@ export default function InvoicesPage() {
         setManifests(data.manifests);
         setRelated(data.related);
         // Already-printed invoices start unticked, so a date batch defaults to
-        // only what still needs printing; tick one to reprint it.
+        // only what still needs printing; tick one to reprint it. In print
+        // history that is everything — pick a batch to reprint.
         setExcluded(
           new Set((data.orders as Order[]).filter((o) => o.invoice_printed_at).map((o) => o.id))
         );
@@ -180,7 +184,13 @@ export default function InvoicesPage() {
         : orders
             .filter((o) => manifestByOrder.has(o.id) && o.order_status !== "cancelled")
             .filter((o) => filterMode !== "unprinted" || !o.invoice_printed_at)
-            .sort((a, b) => a.created_at.localeCompare(b.created_at)),
+            .filter((o) => filterMode !== "history" || o.invoice_printed_at)
+            .sort((a, b) =>
+              filterMode === "history"
+                ? (b.invoice_printed_at ?? "").localeCompare(a.invoice_printed_at ?? "") ||
+                  a.created_at.localeCompare(b.created_at)
+                : a.created_at.localeCompare(b.created_at)
+            ),
     [orders, manifestByOrder, batchQuery, filterMode]
   );
   const printedInBatch = eligible.filter((o) => o.invoice_printed_at).length;
@@ -211,6 +221,18 @@ export default function InvoicesPage() {
   );
 
   const listed = onlyDuplicates ? eligible.filter((o) => duplicates.has(o.id)) : eligible;
+  // Print history groups by print run: one confirmation stamps the whole batch
+  // with the same instant, so equal stamps = one stack of paper.
+  const listGroups = useMemo(() => {
+    if (filterMode !== "history") return [{ key: "all", printedAt: null as string | null, orders: listed }];
+    const groups: Array<{ key: string; printedAt: string | null; orders: Order[] }> = [];
+    for (const o of listed) {
+      const last = groups[groups.length - 1];
+      if (last && last.key === o.invoice_printed_at) last.orders.push(o);
+      else groups.push({ key: o.invoice_printed_at ?? "", printedAt: o.invoice_printed_at ?? null, orders: [o] });
+    }
+    return groups;
+  }, [filterMode, listed]);
   const selected = useMemo(() => eligible.filter((o) => !excluded.has(o.id)), [eligible, excluded]);
   const sheets = useMemo(() => chunk(selected, 8), [selected]);
 
@@ -220,6 +242,12 @@ export default function InvoicesPage() {
       for (const o of laterDuplicates) next.add(o.id);
       return next;
     });
+
+  // Tick exactly this print run (and nothing else) for a reprint.
+  const selectOnly = (ids: string[]) => {
+    const keep = new Set(ids);
+    setExcluded(new Set(eligible.filter((o) => !keep.has(o.id)).map((o) => o.id)));
+  };
 
   const toggle = (id: string) =>
     setExcluded((prev) => {
@@ -268,10 +296,12 @@ export default function InvoicesPage() {
 
   // Snapshot the batch when printing starts (button or Ctrl+P) and ask once the
   // dialog closes — the browser can't tell us whether paper actually came out.
+  // A reprint from history is already recorded, and re-stamping would break its
+  // print run apart — so history never asks.
   const selectedIdsRef = useRef<string[]>([]);
   useEffect(() => {
-    selectedIdsRef.current = selected.map((o) => o.id);
-  }, [selected]);
+    selectedIdsRef.current = filterMode === "history" ? [] : selected.map((o) => o.id);
+  }, [selected, filterMode]);
   useEffect(() => {
     let snapshot: string[] = [];
     const onBefore = () => {
@@ -298,6 +328,8 @@ export default function InvoicesPage() {
     const span =
       filterMode === "unprinted"
         ? today
+        : filterMode === "history"
+        ? `reprint ${today}`
         : filterMode === "all"
         ? "all dates"
         : filterMode === "single"
@@ -374,6 +406,7 @@ export default function InvoicesPage() {
                 ["single", "Single day"],
                 ["range", "Date range"],
                 ["all", "All days"],
+                ["history", "🕘 Print history"],
               ] as const).map(([mode, label]) => (
                 <label
                   key={mode}
@@ -446,8 +479,8 @@ export default function InvoicesPage() {
           <span className="rounded-xl bg-pond/70 px-3 py-2 font-display text-sm font-bold text-ink sm:bg-transparent sm:px-0 sm:py-0">
             {selected.length} of {eligible.length} shipments selected · {sheets.length}{" "}
             {sheets.length === 1 ? "sheet" : "sheets"}
-            {filterMode === "all" && orders.length >= 300 && " · latest 300 only"}
-            {printedInBatch > 0 && ` · ${printedInBatch} already printed`}
+            {(filterMode === "all" || filterMode === "history") && orders.length >= 300 && " · latest 300 only"}
+            {printedInBatch > 0 && filterMode !== "history" && ` · ${printedInBatch} already printed`}
           </span>
           <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex">
             <Button tone="sky" className="sm:hidden" disabled={selected.length === 0} onClick={() => setPreviewOpen(true)}>
@@ -456,15 +489,17 @@ export default function InvoicesPage() {
             <Button tone="frog" disabled={selected.length === 0} onClick={() => window.print()}>
               🖨️ <span className="sm:hidden">Print</span><span className="hidden sm:inline">Print / Save PDF</span>
             </Button>
-            <Button
-              tone="ghost"
-              className="col-span-2 !text-sm sm:col-span-1"
-              disabled={selected.length === 0 || marking}
-              onClick={() => void markPrinted(selected.map((o) => o.id), true)}
-              title="Already printed these some other way? Record them without printing again."
-            >
-              ✓ Mark selected as printed
-            </Button>
+            {filterMode !== "history" && (
+              <Button
+                tone="ghost"
+                className="col-span-2 !text-sm sm:col-span-1"
+                disabled={selected.length === 0 || marking}
+                onClick={() => void markPrinted(selected.map((o) => o.id), true)}
+                title="Already printed these some other way? Record them without printing again."
+              >
+                ✓ Mark selected as printed
+              </Button>
+            )}
           </div>
           {selected.length > 0 && (
             <p className="mt-2 text-xs font-semibold text-ink-soft">
@@ -479,6 +514,8 @@ export default function InvoicesPage() {
             <p className="font-display text-lg font-extrabold text-ink">
               {filterMode === "unprinted"
                 ? "Everything is printed 🎉"
+                : filterMode === "history"
+                ? "Nothing printed yet"
                 : filterMode === "all"
                 ? "No shipped orders yet"
                 : filterMode === "range"
@@ -490,6 +527,8 @@ export default function InvoicesPage() {
             <p className="font-display text-sm font-bold text-ink-soft">
               {filterMode === "unprinted"
                 ? "New dispatches show up here until you confirm their invoices printed."
+                : filterMode === "history"
+                ? "Once you confirm a batch printed, it shows up here so you can reprint it."
                 : "Invoices appear here once orders are dispatched with a tracking ID."}
             </p>
           </Card>
@@ -526,15 +565,34 @@ export default function InvoicesPage() {
         {eligible.length > 0 && (
           <Card className="p-4">
             <p className="mb-2 font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
-              Include / exclude
+              {filterMode === "history" ? "Pick invoices to reprint" : "Include / exclude"}
               {cancelledInBatch > 0 && (
                 <span className="ml-2 normal-case tracking-normal">
                   · {cancelledInBatch} cancelled shipment{cancelledInBatch === 1 ? "" : "s"} hidden
                 </span>
               )}
             </p>
+            {listGroups.map((group) => (
+            <div key={group.key} className="mt-3 first-of-type:mt-0">
+            {group.printedAt && (
+              <div className="mb-2 flex flex-wrap items-center gap-2 border-t-2 border-cardline pt-3">
+                <p className="font-display text-sm font-extrabold text-ink">
+                  🖨️ Printed {printedLabel(group.printedAt)}
+                  <span className="ml-1 font-bold text-ink-soft">
+                    · {group.orders.length} invoice{group.orders.length === 1 ? "" : "s"}
+                  </span>
+                </p>
+                <Button
+                  tone="ghost"
+                  className="!px-3 !py-1.5 !text-xs sm:ml-auto"
+                  onClick={() => selectOnly(group.orders.map((o) => o.id))}
+                >
+                  Select this batch
+                </Button>
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {listed.map((o) => {
+              {group.orders.map((o) => {
                 const dups = duplicates.get(o.id);
                 const manifest = manifestByOrder.get(o.id);
                 return (
@@ -600,6 +658,8 @@ export default function InvoicesPage() {
                 );
               })}
             </div>
+            </div>
+            ))}
           </Card>
         )}
 

@@ -270,6 +270,10 @@ async function ensureOrderSafetySchema(db: Queryable): Promise<void> {
   await db.query(
     "create index if not exists idx_orders_unprinted on orders(created_at) where invoice_printed_at is null and order_status = 'booked'"
   );
+  // Print history reads the latest printed batches newest-first.
+  await db.query(
+    "create index if not exists idx_orders_printed on orders(invoice_printed_at desc) where invoice_printed_at is not null"
+  );
   // The invoice printer reads one day/range at a time; without this every
   // batch scans the whole table to find it.
   await db.query("create index if not exists idx_orders_created on orders(created_at desc)");
@@ -805,13 +809,15 @@ export async function listInvoiceBatch(input: {
   windowHours: number;
   limit?: number;
   unprinted?: boolean;
+  /** Print history: invoices already printed, latest print first, any day. */
+  printed?: boolean;
 }): Promise<{ orders: Order[]; manifests: ShippingManifest[]; related: DuplicateContextOrder[] }> {
   const limit = input.limit ?? 300;
   let orders: Order[];
   let manifests: ShippingManifest[];
   if (pool) {
     await ensureOrderNoSchema(pool);
-    const ranged = !input.unprinted && Boolean(input.from && input.to);
+    const ranged = !input.unprinted && !input.printed && Boolean(input.from && input.to);
     const { rows } = await pool.query(
       `select ${INVOICE_ORDER_COLUMNS},
               m.id as m_id, m.courier_name as m_courier_name, m.tracking_id as m_tracking_id,
@@ -821,7 +827,8 @@ export async function listInvoiceBatch(input: {
         where o.archived_at is null
           ${ranged ? "and o.created_at >= $1 and o.created_at < $2" : ""}
           ${input.unprinted ? "and o.order_status = 'booked' and o.invoice_printed_at is null" : ""}
-        order by o.created_at desc
+          ${input.printed ? "and o.invoice_printed_at is not null" : ""}
+        order by ${input.printed ? "o.invoice_printed_at desc, o.created_at" : "o.created_at"} desc
         limit ${ranged ? "$3" : "$1"}`,
       ranged ? [input.from, input.to, limit] : [limit]
     );
@@ -848,11 +855,17 @@ export async function listInvoiceBatch(input: {
       .filter((o) => !o.archived_at)
       .filter((o) => shipped.has(o.id))
       .filter((o) =>
-        input.unprinted
-          ? o.order_status === "booked" && !o.invoice_printed_at
-          : new Date(o.created_at).getTime() >= fromT && new Date(o.created_at).getTime() < toT
+        input.printed
+          ? Boolean(o.invoice_printed_at)
+          : input.unprinted
+            ? o.order_status === "booked" && !o.invoice_printed_at
+            : new Date(o.created_at).getTime() >= fromT && new Date(o.created_at).getTime() < toT
       )
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .sort((a, b) =>
+        input.printed
+          ? (b.invoice_printed_at ?? "").localeCompare(a.invoice_printed_at ?? "") || b.created_at.localeCompare(a.created_at)
+          : b.created_at.localeCompare(a.created_at)
+      )
       .slice(0, limit);
     const ids = new Set(orders.map((o) => o.id));
     manifests = [...memManifests.values()].filter((m) => ids.has(m.order_id));

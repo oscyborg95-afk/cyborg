@@ -56,3 +56,28 @@ test("'not printed yet' holds every booked order until it is marked printed", as
   await db.updateOrderStatus(ids[3], "delivered");
   assert.ok(!(await unprinted()).includes(ids[3]));
 });
+
+test("print history lists printed invoices, latest print run first", async () => {
+  const ids = [];
+  for (let i = 11; i <= 13; i++) {
+    const o = await db.createOrder(order(i));
+    await db.bookOrderOnce(o.id, async () => ({ courier_name: "Mock", tracking_id: `PH-${o.id}`, pdf_label_url: null }));
+    ids.push(o.id);
+  }
+  await db.markInvoicesPrinted([ids[0], ids[1]], true);
+  await new Promise((r) => setTimeout(r, 5));
+  await db.markInvoicesPrinted([ids[2]], true);
+
+  const history = (await db.listInvoiceBatch({ from: null, to: null, printed: true, windowHours: 72 })).orders;
+  assert.ok(history.every((o) => o.invoice_printed_at), "only printed invoices");
+  const pos = ids.map((id) => history.findIndex((o) => o.id === id));
+  assert.ok(pos.every((p) => p >= 0));
+  assert.ok(pos[2] < pos[0] && pos[2] < pos[1], "the later print run comes first");
+  const first = history.find((o) => o.id === ids[0]);
+  const second = history.find((o) => o.id === ids[1]);
+  assert.equal(first.invoice_printed_at, second.invoice_printed_at, "one run shares one stamp");
+
+  await db.markInvoicesPrinted([ids[0]], false);
+  const after = (await db.listInvoiceBatch({ from: null, to: null, printed: true, windowHours: 72 })).orders;
+  assert.ok(!after.some((o) => o.id === ids[0]), "undone prints leave the history");
+});

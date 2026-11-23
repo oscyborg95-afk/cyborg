@@ -9,11 +9,13 @@ import { DUP_WINDOW_HOURS } from "@/lib/risk";
 //
 // `from` / `to` are ISO instants (the browser sends its own local midnights, so
 // "a day" matches the operator's calendar). Omit both for the latest batch.
-// `?unprinted=1` instead returns every booked order not printed yet, any day.
+// `?unprinted=1` instead returns every booked order not printed yet, any day;
+// `?printed=1` the print history — already-printed invoices, latest print first.
 export async function GET(req: NextRequest) {
   const from = req.nextUrl.searchParams.get("from");
   const to = req.nextUrl.searchParams.get("to");
   const unprinted = req.nextUrl.searchParams.get("unprinted") === "1";
+  const printed = req.nextUrl.searchParams.get("printed") === "1";
   const valid = (v: string | null) => v === null || !Number.isNaN(Date.parse(v));
   if (!valid(from) || !valid(to) || Boolean(from) !== Boolean(to)) {
     return NextResponse.json({ error: "from and to must both be ISO dates" }, { status: 400 });
@@ -22,7 +24,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "from must be before to" }, { status: 400 });
   }
   try {
-    const batch = await listInvoiceBatch({ from, to, unprinted, windowHours: DUP_WINDOW_HOURS });
+    const batch = await listInvoiceBatch({ from, to, unprinted, printed, windowHours: DUP_WINDOW_HOURS });
     return NextResponse.json(batch);
   } catch (err) {
     console.error("Invoice batch load failed", err);

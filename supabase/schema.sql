@@ -439,6 +439,7 @@ alter table orders add column if not exists cancelled_at timestamptz; -- cancell
 alter table orders add column if not exists cancel_reason varchar not null default '';
 alter table orders add column if not exists invoice_printed_at timestamptz; -- invoice confirmed printed
 create index if not exists idx_orders_unprinted on orders(created_at) where invoice_printed_at is null and order_status = 'booked';
+create index if not exists idx_orders_printed on orders(invoice_printed_at desc) where invoice_printed_at is not null;
 alter table orders add column if not exists sales_account_id uuid references sales_accounts(id);
 update orders set sales_account_id = '00000000-0000-4000-8000-000000000001' where sales_account_id is null;
 alter table orders alter column sales_account_id set default '00000000-0000-4000-8000-000000000001';
