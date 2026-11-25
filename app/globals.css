@@ -335,10 +335,13 @@ body {
 }
 
 /* ============================================================
-   Invoice sheets — 8-up on A4 (2 cols × 4 rows), print-exact.
+   Invoice sheets — print-exact. Default 8-up on A4 (2 cols × 4 rows);
+   data-layout picks a bigger cell, and --s scales the type, spacing and
+   barcode to fill it (every size below is written as base × --s).
    ============================================================ */
 
 .invoice-sheet {
+  --s: 1;
   width: 210mm;
   height: 297mm;
   padding: 5mm;
@@ -348,16 +351,41 @@ body {
   grid-template-rows: repeat(4, 1fr);
   box-shadow: 0 2px 14px rgba(63, 58, 52, 0.12);
 }
+/* 4 per A4 — each invoice a quarter sheet (≈ A6, 105 × 148 mm). */
+.invoice-sheet[data-layout="a4x4"] {
+  --s: 1.55;
+  grid-template-rows: repeat(2, 1fr);
+}
+/* 2 per A4 — each invoice half a sheet (A5, 210 × 148 mm). */
+.invoice-sheet[data-layout="a4x2"] {
+  --s: 1.8;
+  grid-template-columns: 1fr;
+  grid-template-rows: repeat(2, 1fr);
+}
+/* 6 × 4 inch shipping label (101.6 × 152.4 mm), one per page — the standard
+   thermal-label size. No cut lines: the label is already its own piece. */
+.invoice-sheet[data-layout="label6x4"] {
+  --s: 1.55;
+  width: 4in;
+  height: 6in;
+  padding: 0;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+.invoice-sheet[data-layout="label6x4"] .invoice-cell {
+  border: none;
+  padding: 5mm;
+}
 
 .invoice-cell {
   border: 0.4mm dashed #b8b0a2; /* cut lines */
-  padding: 3.5mm 4mm;
+  padding: calc(3.5mm * var(--s)) calc(4mm * var(--s));
   display: flex;
   flex-direction: column;
   overflow: hidden;
   color: #111;
   font-family: var(--font-body);
-  font-size: 8pt;
+  font-size: calc(8pt * var(--s));
   line-height: 1.25;
 }
 .invoice-cell-empty {
@@ -394,29 +422,29 @@ body {
 .inv-head {
   display: flex;
   justify-content: space-between;
-  gap: 3mm;
+  gap: calc(3mm * var(--s));
 }
 .inv-biz {
   font-family: var(--font-display);
   font-weight: 800;
-  font-size: 10.5pt;
+  font-size: calc(10.5pt * var(--s));
 }
 .inv-small {
-  font-size: 7pt;
+  font-size: calc(7pt * var(--s));
   color: #444;
 }
 .inv-date {
   text-align: right;
-  font-size: 7pt;
+  font-size: calc(7pt * var(--s));
   color: #444;
   white-space: nowrap;
 }
 .inv-rule {
-  border-top: 0.3mm solid #111;
-  margin: 1.6mm 0;
+  border-top: calc(0.3mm * var(--s)) solid #111;
+  margin: calc(1.6mm * var(--s)) 0;
 }
 .inv-to {
-  font-size: 6.5pt;
+  font-size: calc(6.5pt * var(--s));
   letter-spacing: 0.12em;
   color: #666;
   font-weight: 700;
@@ -424,63 +452,65 @@ body {
 .inv-cust {
   font-family: var(--font-display);
   font-weight: 800;
-  font-size: 11pt;
+  font-size: calc(11pt * var(--s));
 }
 .inv-addr {
-  font-size: 8.5pt;
+  font-size: calc(8.5pt * var(--s));
 }
 .inv-phone {
-  font-size: 9pt;
+  font-size: calc(9pt * var(--s));
   font-weight: 700;
 }
 .inv-money {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
-  gap: 3mm;
+  gap: calc(3mm * var(--s));
   margin-top: auto;
 }
 .inv-item {
-  font-size: 8pt;
+  font-size: calc(8pt * var(--s));
   font-weight: 700;
-  max-width: 40mm;
+  max-width: calc(40mm * var(--s));
 }
 .inv-table {
-  font-size: 7.5pt;
+  font-size: calc(7.5pt * var(--s));
   border-collapse: collapse;
 }
 .inv-table td {
-  padding: 0 0 0.4mm 0;
+  padding: 0 0 calc(0.4mm * var(--s)) 0;
 }
 .inv-table td:last-child {
   text-align: right;
-  padding-left: 4mm;
+  padding-left: calc(4mm * var(--s));
 }
 .inv-total td {
   font-family: var(--font-display);
   font-weight: 800;
-  font-size: 10pt;
-  border-top: 0.3mm solid #111;
-  padding-top: 0.8mm;
+  font-size: calc(10pt * var(--s));
+  border-top: calc(0.3mm * var(--s)) solid #111;
+  padding-top: calc(0.8mm * var(--s));
 }
 .inv-barcode {
-  margin-top: 1.6mm;
+  margin-top: calc(1.6mm * var(--s));
   text-align: center;
 }
 .inv-barcode-svg {
-  width: 52mm;
-  height: 9mm;
+  width: calc(52mm * var(--s));
+  max-width: 100%;
+  height: calc(9mm * var(--s));
   display: inline-block;
 }
 .inv-tracking {
   font-family: var(--font-mono, monospace);
-  font-size: 8pt;
+  font-size: calc(8pt * var(--s));
   letter-spacing: 0.08em;
 }
 
 @media print {
+  /* Page size comes from the invoice printer's chosen layout (A4 or 6×4),
+     injected next to the sheets. */
   @page {
-    size: A4;
     margin: 0;
   }
   html,

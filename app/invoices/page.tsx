@@ -1,15 +1,15 @@
 "use client";
 
-// Batch invoice printing: pick a day or range, get every booked order as 8-up A4 sheets
-// (2 × 4 per page), each with the business block, customer block, item, COD
-// breakdown and a scannable Code-128 barcode of the courier tracking ID.
+// Batch invoice printing: pick a day or range, get every booked order as printable
+// sheets — 8, 4 or 2 per A4, or one per 6×4" thermal label — each with the
+// business block, customer block, item, COD breakdown and a scannable Code-128 barcode of the courier tracking ID.
 // Browser print → save the whole batch as one PDF or send straight to paper.
 //
 // Data comes from /api/invoices, which reads only the chosen day/range (plus the
 // few neighbouring orders needed to spot duplicates), so changing the date is a
 // small query instead of the whole Orders feed.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { BusinessSettings, Order, ShippingManifest } from "@/lib/types";
 import { findDuplicates, type DuplicateCandidate, type DuplicateMatch } from "@/lib/risk";
 import { Barcode } from "../components/barcode";
@@ -26,6 +26,40 @@ const localMidnight = (day: string, addDays = 0) => {
   d.setDate(d.getDate() + addDays);
   return d.toISOString();
 };
+
+// Paper layouts. Each invoice gets one grid cell; globals.css scales its type
+// and barcode (--s) to fill that cell, keyed by data-layout.
+const LAYOUTS = {
+  a4x8: { label: "8 per A4", hint: "Small · ≈ 105×74 mm each", perSheet: 8, paper: "A4", page: "A4", unit: "sheet" },
+  a4x4: { label: "4 per A4", hint: "Quarter A4 · ≈ A6", perSheet: 4, paper: "A4", page: "A4", unit: "sheet" },
+  a4x2: { label: "2 per A4", hint: "Half A4 · A5", perSheet: 2, paper: "A4", page: "A4", unit: "sheet" },
+  label6x4: { label: "6×4 label", hint: "4×6 in · thermal printer", perSheet: 1, paper: "6×4 inch", page: "4in 6in", unit: "label" },
+} as const;
+type LayoutKey = keyof typeof LAYOUTS;
+const LAYOUT_STORAGE_KEY = "invoice-layout";
+const DEFAULT_LAYOUT: LayoutKey = "a4x8";
+const layoutListeners = new Set<() => void>();
+function readLayout(): LayoutKey {
+  try {
+    const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (saved && saved in LAYOUTS) return saved as LayoutKey;
+  } catch {
+    // Storage blocked — fall back to the default.
+  }
+  return DEFAULT_LAYOUT;
+}
+function subscribeLayout(cb: () => void) {
+  layoutListeners.add(cb);
+  return () => void layoutListeners.delete(cb);
+}
+function saveLayout(key: LayoutKey) {
+  try {
+    localStorage.setItem(LAYOUT_STORAGE_KEY, key);
+  } catch {
+    // Can't remember it in this browser; nothing more to do.
+  }
+  layoutListeners.forEach((cb) => cb());
+}
 
 type RelatedOrder = DuplicateCandidate & Pick<Order, "order_no" | "customer_name" | "total_cod">;
 
@@ -73,6 +107,10 @@ export default function InvoicesPage() {
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [loaded, setLoaded] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  // Paper layout is a per-device choice (it follows the printer plugged in),
+  // so it lives in this browser; the server render uses the default.
+  const layoutKey = useSyncExternalStore(subscribeLayout, readLayout, () => DEFAULT_LAYOUT);
+  const layout = LAYOUTS[layoutKey];
   const previewRef = useRef<HTMLDivElement>(null);
   const previewCloseRef = useRef<HTMLButtonElement>(null);
 
@@ -234,7 +272,8 @@ export default function InvoicesPage() {
     return groups;
   }, [filterMode, listed]);
   const selected = useMemo(() => eligible.filter((o) => !excluded.has(o.id)), [eligible, excluded]);
-  const sheets = useMemo(() => chunk(selected, 8), [selected]);
+  const sheets = useMemo(() => chunk(selected, layout.perSheet), [selected, layout.perSheet]);
+  const sheetWord = (n: number) => `${layout.unit}${n === 1 ? "" : "s"}`;
 
   const excludeLaterDuplicates = () =>
     setExcluded((prev) => {
@@ -371,7 +410,7 @@ export default function InvoicesPage() {
           <div>
             <h1 className="font-display text-2xl font-extrabold text-ink">Invoice printer</h1>
             <p className="font-display text-sm font-bold text-ink-soft">
-              8 invoices per A4 sheet · print or save the selected batch as one PDF
+              {layout.perSheet === 1 ? `One invoice per ${layout.paper} label` : `${layout.perSheet} invoices per A4 sheet`} · print or save the selected batch as one PDF
             </p>
           </div>
         </div>
@@ -476,9 +515,42 @@ export default function InvoicesPage() {
             </div>
           )}
 
+          <fieldset className="min-w-0 space-y-3">
+            <legend className="font-display text-xs font-extrabold uppercase tracking-wide text-ink-soft">
+              Paper size
+            </legend>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+              {(Object.keys(LAYOUTS) as LayoutKey[]).map((key) => (
+                <label
+                  key={key}
+                  className={`flex min-h-11 cursor-pointer flex-col items-center justify-center rounded-xl border-2 px-2 py-1.5 text-center leading-tight transition-colors focus-within:ring-2 focus-within:ring-frog focus-within:ring-offset-2 sm:px-3 ${
+                    layoutKey === key
+                      ? "border-frog bg-pond text-ink"
+                      : "border-cardline bg-cream/60 text-ink-soft hover:border-frog/60"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="invoice-layout"
+                    value={key}
+                    checked={layoutKey === key}
+                    onChange={() => saveLayout(key)}
+                    className="sr-only"
+                  />
+                  <span className="font-display text-sm font-extrabold">{LAYOUTS[key].label}</span>
+                  <span className="text-[11px] font-semibold opacity-80">{LAYOUTS[key].hint}</span>
+                </label>
+              ))}
+            </div>
+            {layoutKey === "label6x4" && (
+              <p className="max-w-md text-xs font-semibold text-ink-soft">
+                For a thermal label printer: pick its 4×6 in / 100×150 mm paper in the print dialog and set scale to 100%.
+              </p>
+            )}
+          </fieldset>
+
           <span className="rounded-xl bg-pond/70 px-3 py-2 font-display text-sm font-bold text-ink sm:bg-transparent sm:px-0 sm:py-0">
-            {selected.length} of {eligible.length} shipments selected · {sheets.length}{" "}
-            {sheets.length === 1 ? "sheet" : "sheets"}
+            {selected.length} of {eligible.length} shipments selected · {sheets.length} {sheetWord(sheets.length)}
             {(filterMode === "all" || filterMode === "history") && orders.length >= 300 && " · latest 300 only"}
             {printedInBatch > 0 && filterMode !== "history" && ` · ${printedInBatch} already printed`}
           </span>
@@ -665,13 +737,15 @@ export default function InvoicesPage() {
 
         {selected.length > 0 && (
           <p className="font-display text-sm font-bold text-ink-soft sm:text-xs">
-            <span className="sm:hidden">Tap Preview to inspect the exact A4 output before printing.</span>
+            <span className="sm:hidden">Tap Preview to inspect the exact {layout.paper} output before printing.</span>
             <span className="hidden sm:inline">👇 Print preview below — exactly what comes out of the printer.</span>
           </p>
         )}
       </div>
 
-      {/* ── A4 sheets (the only thing that prints) ─────────────────── */}
+      {/* ── Sheets (the only thing that prints) ────────────────────── */}
+      {/* The page size follows the chosen layout; globals.css sets margin 0. */}
+      <style>{`@media print { @page { size: ${layout.page}; } }`}</style>
       <div
         ref={previewRef}
         className={`${previewOpen ? "fixed inset-0 z-50 flex" : "hidden"} print-area flex-col bg-cream pb-[env(safe-area-inset-bottom)] sm:static sm:mx-auto sm:flex sm:w-full sm:items-center sm:gap-6 sm:bg-transparent sm:px-0 sm:pb-10 print:static print:flex print:bg-white print:pb-0`}
@@ -682,21 +756,30 @@ export default function InvoicesPage() {
         <div className="print-hide sticky top-0 z-10 flex w-full items-center justify-between border-b-2 border-cardline bg-surface px-4 py-3 sm:hidden">
           <div>
             <h2 className="font-display text-lg font-extrabold text-ink">Print preview</h2>
-            <p className="text-sm font-semibold text-ink-soft">{selected.length} invoices · {sheets.length} {sheets.length === 1 ? "sheet" : "sheets"}</p>
+            <p className="text-sm font-semibold text-ink-soft">{selected.length} {selected.length === 1 ? "invoice" : "invoices"} · {sheets.length} {sheetWord(sheets.length)}</p>
           </div>
           <button ref={previewCloseRef} type="button" onClick={() => setPreviewOpen(false)} aria-label="Close invoice preview" className="flex h-11 w-11 items-center justify-center rounded-xl border-2 border-cardline bg-surface-soft font-display text-lg font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-frog">✕</button>
         </div>
         <div className="print-hide flex w-full items-center justify-between border-b border-cardline bg-sky-tint px-4 py-2 sm:hidden">
-          <p className="text-sm font-semibold text-sky-dark">Preview scaled to fit. Printing uses exact A4 size.</p>
+          <p className="text-sm font-semibold text-sky-dark">Preview scaled to fit. Printing uses exact {layout.paper} size.</p>
           <Button tone="frog" onClick={() => window.print()} className="!px-3 !py-2 !text-sm">🖨️ Print</Button>
         </div>
         <div className="min-h-0 w-full flex-1 overflow-auto px-4 py-4 sm:contents print:contents">
           {settings &&
             sheets.map((sheet, i) => (
-              <div key={i} className="invoice-sheet mx-auto [zoom:.35] min-[350px]:[zoom:.4] min-[390px]:[zoom:.44] min-[430px]:[zoom:.48] sm:[zoom:1] print:[zoom:1]">
+              <div
+                key={i}
+                data-layout={layoutKey}
+                className={`invoice-sheet mx-auto sm:[zoom:1] print:[zoom:1] ${
+                  layoutKey === "label6x4"
+                    ? "[zoom:.72] min-[350px]:[zoom:.82] min-[390px]:[zoom:.9]"
+                    : "[zoom:.35] min-[350px]:[zoom:.4] min-[390px]:[zoom:.44] min-[430px]:[zoom:.48]"
+                }`}
+              >
               {sheet.map((order) => (
                 <InvoiceCell
                   key={order.id}
+                  layoutKey={layoutKey}
                   order={order}
                   manifest={manifestByOrder.get(order.id)!}
                   settings={settings}
@@ -704,7 +787,7 @@ export default function InvoicesPage() {
                 />
               ))}
               {/* pad the last sheet so the grid keeps its shape */}
-              {Array.from({ length: 8 - sheet.length }).map((_, j) => (
+              {Array.from({ length: layout.perSheet - sheet.length }).map((_, j) => (
                 <div key={`pad-${j}`} className="invoice-cell invoice-cell-empty" />
               ))}
               </div>
@@ -755,11 +838,13 @@ export default function InvoicesPage() {
 }
 
 function InvoiceCell({
+  layoutKey,
   order,
   manifest,
   settings,
   duplicate = false,
 }: {
+  layoutKey: LayoutKey;
   order: Order;
   manifest: ShippingManifest;
   settings: BusinessSettings;
@@ -768,8 +853,30 @@ function InvoiceCell({
   const phones = [settings.business_phone_1, settings.business_phone_2]
     .filter(Boolean)
     .join(" / ");
+  // A long address or many items can outgrow the cell, and overflow is clipped
+  // from the bottom — where the barcode is. Shrink this one invoice's scale
+  // (--s, set per layout in globals.css) until it fits. Re-fit on resize too,
+  // which covers the mobile preview going from hidden to shown.
+  const cellRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = cellRef.current;
+    if (!el) return;
+    const fit = () => {
+      el.style.removeProperty("--s");
+      if (el.clientHeight === 0) return; // hidden — fit once it is shown
+      let scale = parseFloat(getComputedStyle(el).getPropertyValue("--s")) || 1;
+      while (el.scrollHeight > el.clientHeight + 1 && scale > 0.6) {
+        scale = Math.round(scale * 94) / 100;
+        el.style.setProperty("--s", String(scale));
+      }
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [layoutKey, order, manifest, settings]);
   return (
-    <div className={`invoice-cell${duplicate ? " invoice-cell-dup" : ""}`}>
+    <div ref={cellRef} className={`invoice-cell${duplicate ? " invoice-cell-dup" : ""}`}>
       {/* On-screen only: the printed label must never carry the warning. */}
       {duplicate && <div className="inv-dup-badge print-hide">⚠️ Possible duplicate</div>}
       {/* Sender */}
