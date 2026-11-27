@@ -5,6 +5,7 @@
 node_modules/
 # worker WhatsApp session (file-based fallback) — contains login credentials
 wa-session/
+media-cache/
 /.pnp
 .pnp.*
 .yarn/*

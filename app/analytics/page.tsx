@@ -13,8 +13,10 @@ import type {
 } from "@/lib/metrics";
 import type { AdSpend, BusinessSettings, Product, TemplateKey } from "@/lib/types";
 import { DISTRICTS } from "@/lib/districts";
-import { DEFAULT_TEMPLATES, TEMPLATE_META } from "@/lib/templates";
+import { DEFAULT_TEMPLATES, TEMPLATE_META, WELCOME_KEYS } from "@/lib/templates";
+import { WELCOME_DAILY_CAP, WELCOME_HOURLY_CAP, hasLink, splitVariants } from "@/lib/welcome-policy";
 import { Froggy, type FroggyMood } from "../components/froggy";
+import { WelcomePhotoPicker, useWelcomePhotos } from "../components/welcome-photos";
 import {
   ActivityChart,
   Button,
@@ -36,6 +38,7 @@ export default function QuestPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [saving, setSaving] = useState(false);
   const [celebrate, setCelebrate] = useState(false);
+  const welcomePhotos = useWelcomePhotos();
   const { levelUp, newBadges, dismissLevelUp, dismissBadges } = useCelebrations(metrics);
   const countdown = useColomboCountdown();
 
@@ -637,6 +640,73 @@ export default function QuestPage() {
         </Button>
       </Card>
 
+      {/* ── AUTOMATIC WELCOME FOR NEW CUSTOMERS ───────────────────── */}
+      <Card className="p-4 sm:p-6">
+        <h2 className="mb-1 font-display text-lg font-extrabold text-ink">
+          👋 Automatic welcome for new customers
+        </h2>
+        <p className="mb-4 font-display text-xs font-bold text-ink-soft">
+          When someone messages you for the very first time, these go out on their own, day or
+          night: their message is read, then each box is sent after a short &ldquo;typing…&rdquo;
+          pause. Customers who already chatted with you or ordered before never get them. A blank
+          box is skipped, and leaving every box blank turns the welcome off.
+        </p>
+        <p className="mb-4 font-display text-xs font-bold text-ink-soft">
+          🛡️ To keep your number safe: write a second version of a message under a line with just{" "}
+          <code className="rounded bg-cream px-1">---</code> so customers don&rsquo;t all get the exact
+          same text. Links are never sent automatically. At most {WELCOME_HOURLY_CAP} welcomes an hour
+          and {WELCOME_DAILY_CAP} a day; after that, you reply by hand.
+        </p>
+        <div className="space-y-4">
+          {WELCOME_KEYS.map((key, slot) => {
+            const meta = TEMPLATE_META[key];
+            return (
+              <div key={key} className="rounded-xl border-2 border-cardline bg-cream/50 p-3">
+                <p className="mb-1 font-display text-sm font-extrabold text-ink">{meta.label}</p>
+                <p className="mb-2 font-display text-[11px] font-bold text-ink-soft">{meta.hint}</p>
+                {(() => {
+                  const versions = splitVariants(settings.templates?.[key] ?? "");
+                  const linked = versions.filter(hasLink).length;
+                  if (versions.length === 0) return null;
+                  return (
+                    <p className="mb-2 font-display text-[11px] font-extrabold text-ink-soft">
+                      {versions.length} version{versions.length === 1 ? "" : "s"}
+                      {linked > 0 && (
+                        <span className="ml-2 text-flame-dark">
+                          ⚠️ {linked === versions.length ? "Has a link — this box won't be sent" : `${linked} with a link won't be sent`}
+                        </span>
+                      )}
+                    </p>
+                  );
+                })()}
+                <textarea
+                  rows={key === "welcomeGreeting" ? 2 : 4}
+                  placeholder="Blank — not sent"
+                  className="w-full rounded-xl border-2 border-cardline bg-surface px-3 py-2 text-base font-semibold text-ink outline-none focus:border-frog sm:text-sm"
+                  value={settings.templates?.[key] ?? ""}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      templates: { ...settings.templates, [key]: e.target.value },
+                    })
+                  }
+                />
+                <WelcomePhotoPicker slot={slot} state={welcomePhotos} />
+              </div>
+            );
+          })}
+        </div>
+        {welcomePhotos.error && (
+          <p className="mt-3 font-display text-xs font-extrabold text-flame-dark">⚠️ {welcomePhotos.error}</p>
+        )}
+        <p className="mt-3 font-display text-[11px] font-bold text-ink-soft">
+          Photos save as soon as you pick them; the texts save with the button below.
+        </p>
+        <Button tone="frog" onClick={saveSettings} disabled={saving} className="mt-4 w-full sm:w-auto">
+          {saving ? "Saving…" : "💾 Save welcome"}
+        </Button>
+      </Card>
+
       {/* ── WHATSAPP MESSAGE TEMPLATES ────────────────────────────── */}
       <Card className="p-4 sm:p-6">
         <h2 className="mb-1 font-display text-lg font-extrabold text-ink">
@@ -649,7 +719,9 @@ export default function QuestPage() {
           automatically — a line with a missing placeholder is dropped from the message.
         </p>
         <div className="space-y-4">
-          {(Object.keys(TEMPLATE_META) as TemplateKey[]).map((key) => {
+          {(Object.keys(TEMPLATE_META) as TemplateKey[])
+            .filter((key) => !(WELCOME_KEYS as readonly TemplateKey[]).includes(key))
+            .map((key) => {
             const meta = TEMPLATE_META[key];
             const overridden = Boolean(settings.templates?.[key]);
             return (

@@ -22,7 +22,7 @@
 //   POST /read { chatId }            → { ok } — mark chat read on the phone (blue ticks)
 //   POST /typing { chatId, state }   → { ok } — "composing" | "paused" presence
 //   POST /logout                     → { ok } — unlink this device and generate a fresh QR
-//   POST /mock/incoming { chatId, body }   (mock mode only)
+//   POST /mock/incoming { chatId, body, name? }  (mock mode only; unknown chatId = new customer)
 // Socket.io events: "wa:message", "wa:update" ({ id, chatId, status }),
 //                   "wa:status" ({ ready }), "wa:qr" ({ qr })
 
@@ -135,6 +135,72 @@ function releaseSendKey(key, delivered) {
   else sendLedger.set(key, { at: Date.now(), done: true });
 }
 
+// Photos the app hands over as a short-lived Supabase Storage link
+// ({ url, key, mime }) are downloaded once and kept on this machine's disk,
+// keyed by `key` (a new key per uploaded photo). Every later send reads the
+// local copy, so the shared Supabase egress quota is spent once per photo,
+// not once per customer. Nothing is written to the database.
+const MEDIA_REF_MAX_BYTES = 6 * 1024 * 1024;
+const MEDIA_CACHE_DIR = process.env.WA_MEDIA_CACHE_DIR || path.join(__dirname, "media-cache");
+const MEDIA_CACHE_MAX_FILES = 50;
+
+function mediaHostAllowed(url) {
+  let host;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+    host = parsed.hostname;
+  } catch {
+    return false;
+  }
+  if (host.endsWith(".supabase.co")) return true;
+  const extra = (process.env.WA_MEDIA_HOSTS || "").split(",").map((h) => h.trim()).filter(Boolean);
+  return extra.includes(host);
+}
+
+async function loadMediaRef(ref) {
+  if (!ref || typeof ref.url !== "string" || typeof ref.key !== "string" || !ref.key || ref.key.length > 300) {
+    throw new Error("invalid mediaRef");
+  }
+  const mime = /^image\/(jpeg|png|webp)$/.test(ref.mime) ? ref.mime : "image/jpeg";
+  const file = path.join(
+    MEDIA_CACHE_DIR,
+    `${require("crypto").createHash("sha256").update(ref.key).digest("hex")}.bin`
+  );
+  try {
+    const cached = await fs.promises.readFile(file);
+    const now = new Date();
+    fs.promises.utimes(file, now, now).catch(() => {});
+    return { buffer: cached, mime };
+  } catch {
+    // Not cached yet — download below.
+  }
+  if (!mediaHostAllowed(ref.url)) throw new Error("media host not allowed");
+  const res = await fetch(ref.url, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`media download failed (${res.status})`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length === 0 || buffer.length > MEDIA_REF_MAX_BYTES) throw new Error("media too large (6 MB max)");
+  await fs.promises.mkdir(MEDIA_CACHE_DIR, { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  await fs.promises.writeFile(tmp, buffer);
+  await fs.promises.rename(tmp, file);
+  pruneMediaCache().catch(() => {});
+  return { buffer, mime };
+}
+
+// Replaced photos leave old copies behind; keep only the most recently used.
+async function pruneMediaCache() {
+  const names = (await fs.promises.readdir(MEDIA_CACHE_DIR)).filter((n) => n.endsWith(".bin"));
+  if (names.length <= MEDIA_CACHE_MAX_FILES) return;
+  const stats = await Promise.all(
+    names.map(async (n) => ({ n, t: (await fs.promises.stat(path.join(MEDIA_CACHE_DIR, n))).mtimeMs }))
+  );
+  stats.sort((a, b) => a.t - b.t);
+  for (const { n } of stats.slice(0, stats.length - MEDIA_CACHE_MAX_FILES)) {
+    await fs.promises.unlink(path.join(MEDIA_CACHE_DIR, n)).catch(() => {});
+  }
+}
+
 function startTrackingFallbackScheduler() {
   const url = process.env.APP_TRACKING_CRON_URL;
   const secret = process.env.CRON_SECRET;
@@ -200,6 +266,51 @@ function startFollowUpScheduler() {
 
 function emitMessage(msg) {
   io.emit("wa:message", msg);
+}
+
+// Tell the app a customer wrote, once their burst of bubbles settles ("hi",
+// "price?", a photo → one call). The app stops any follow-up chasing them and
+// decides whether this is a brand-new customer who gets the automatic welcome.
+// The wait is randomised (20–45s by default): an instant reply at 3 AM is
+// what a bot looks like. Fire-and-forget: a failure here must never affect
+// storing or showing the message.
+const inboundTimers = new Map();
+function notifyInbound(msg) {
+  if (msg.fromMe) return;
+  const base = process.env.APP_URL;
+  const secret = process.env.CRON_SECRET;
+  if (!base || !secret || !TENANT_ID) return;
+  const minDelay = Math.max(1_000, Number(process.env.INBOUND_DEBOUNCE_MS || 20_000));
+  const jitter = Math.max(0, Number(process.env.INBOUND_JITTER_MS ?? 25_000));
+  const pending = inboundTimers.get(msg.chatId);
+  if (pending) clearTimeout(pending.timer);
+  // Keep the burst's first timestamp: it is what "first contact" is measured from.
+  const firstTs = pending ? Math.min(pending.firstTs, msg.timestamp) : msg.timestamp;
+  const bodies = [...(pending?.bodies ?? []), msg.body].slice(-10);
+  const timer = setTimeout(async () => {
+    inboundTimers.delete(msg.chatId);
+    try {
+      const res = await fetch(new URL("/api/whatsapp/inbound", base), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${secret}`,
+          "x-tenant-id": TENANT_ID,
+        },
+        body: JSON.stringify({ chatId: msg.chatId, timestamp: firstTs, body: bodies.join("\n") }),
+        signal: AbortSignal.timeout(65_000),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        console.error(`[cyborg-wa-worker] inbound hook failed (${res.status}): ${JSON.stringify(data).slice(0, 180)}`);
+      } else if (data?.welcome?.sent) {
+        console.log(`[cyborg-wa-worker] welcome sent to new customer (${data.welcome.sent} messages)`);
+      }
+    } catch (err) {
+      console.error("[cyborg-wa-worker] inbound hook offline:", err.message);
+    }
+  }, minDelay + Math.round(Math.random() * jitter));
+  inboundTimers.set(msg.chatId, { timer, firstTs, bodies });
 }
 
 function setReady(value) {
@@ -330,10 +441,20 @@ if (MOCK) {
     });
   });
 
-  app.post("/send", (req, res) => {
-    const { chatId, text, media, expectedLatestMessageId, idempotencyKey } = req.body;
+  app.post("/send", async (req, res) => {
+    const { chatId, text, mediaRef, expectedLatestMessageId, idempotencyKey } = req.body;
+    let { media } = req.body;
     if (claimSendKey(idempotencyKey)) {
       return res.json({ ok: true, deduped: true });
+    }
+    if (mediaRef && !media?.data) {
+      try {
+        const loaded = await loadMediaRef(mediaRef);
+        media = { mime: loaded.mime, data: loaded.buffer.toString("base64") };
+      } catch (err) {
+        releaseSendKey(idempotencyKey, false);
+        return res.status(400).json({ error: String(err.message || err) });
+      }
     }
     // Live WhatsApp JIDs end in @s.whatsapp.net; the mock seeds use @c.us.
     // Match by phone digits so server-side sends (alerts, broadcast) work here.
@@ -403,9 +524,11 @@ if (MOCK) {
   );
 
   app.post("/mock/incoming", (req, res) => {
-    const { chatId, body } = req.body;
+    const { chatId, body, name } = req.body;
+    if (!chatId || !body) return res.status(400).json({ error: "chatId and body required" });
+    // An unknown chatId is a brand-new customer writing for the first time.
+    if (!chats.has(chatId)) chats.set(chatId, { id: chatId, name: name || chatId.split("@")[0], messages: [] });
     const chat = chats.get(chatId);
-    if (!chat || !body) return res.status(400).json({ error: "unknown chatId or empty body" });
     const msg = {
       id: `${chatId}-${chat.messages.length}`,
       chatId,
@@ -418,6 +541,7 @@ if (MOCK) {
     };
     chat.messages.push(msg);
     emitMessage(msg);
+    notifyInbound(msg);
     res.json({ ok: true });
   });
 
@@ -956,13 +1080,17 @@ async function connectToWhatsApp() {
 
   // Baileys also emits `append` upserts while restoring history after a
   // reconnect; both kinds are persisted for the inbox.
-  sock.ev.on("messages.upsert", async ({ messages }) => {
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
     for (const m of messages) {
       const msg = normalize(m);
       if (!msg) continue;
       try {
         const isNew = await saveMessage(msg);
-        if (isNew) emitMessage(msg);
+        if (isNew) {
+          emitMessage(msg);
+          // Only `notify` is a live message; `append` is history being restored.
+          if (type === "notify") notifyInbound(msg);
+        }
       } catch (err) {
         console.error("[cyborg-wa-worker] failed to store message:", err.message);
       }
@@ -1126,8 +1254,8 @@ app.post("/send", async (req, res) => {
   if (!ready || !sock) {
     return res.status(503).json({ error: "WhatsApp not linked yet — scan the QR at /qr" });
   }
-  const { chatId, text, media, expectedLatestMessageId, idempotencyKey } = req.body;
-  if (!chatId || (!text && !media?.data)) {
+  const { chatId, text, media, mediaRef, expectedLatestMessageId, idempotencyKey } = req.body;
+  if (!chatId || (!text && !media?.data && !mediaRef)) {
     return res.status(400).json({ error: "chatId and text (or media) required" });
   }
   if (claimSendKey(idempotencyKey)) {
@@ -1144,15 +1272,27 @@ app.post("/send", async (req, res) => {
     }
     let sent;
     let mediaBuffer = null;
+    let mediaMime = media?.mime || "image/jpeg";
     if (media?.data) {
       mediaBuffer = Buffer.from(media.data, "base64");
       if (mediaBuffer.length > MAX_MEDIA_BYTES) {
         releaseSendKey(idempotencyKey, false);
         return res.status(400).json({ error: "media too large (6 MB max)" });
       }
+    } else if (mediaRef) {
+      try {
+        const loaded = await loadMediaRef(mediaRef);
+        mediaBuffer = loaded.buffer;
+        mediaMime = loaded.mime;
+      } catch (err) {
+        releaseSendKey(idempotencyKey, false);
+        return res.status(400).json({ error: String(err.message || err) });
+      }
+    }
+    if (mediaBuffer) {
       sent = await sock.sendMessage(chatId, {
         image: mediaBuffer,
-        mimetype: media.mime || "image/jpeg",
+        mimetype: mediaMime,
         caption: text || undefined,
       });
     } else {

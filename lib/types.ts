@@ -344,7 +344,11 @@ export type TemplateKey =
   | "outForDelivery"
   | "rescheduledDelivery"
   | "deliveredThanks"
-  | "returnedApology";
+  | "returnedApology"
+  | "welcomeGreeting"
+  | "welcome1"
+  | "welcome2"
+  | "welcome3";
 
 export type MessageTemplates = Partial<Record<TemplateKey, string>>;
 

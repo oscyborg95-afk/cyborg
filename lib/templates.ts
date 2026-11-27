@@ -76,7 +76,32 @@ export const TEMPLATE_META: Record<
     hint: "Auto-sent when a parcel comes back — asks the customer if they want a redelivery.",
     placeholders: [],
   },
+  welcomeGreeting: {
+    label: "👋 Greeting",
+    hint: "The first thing a brand-new customer receives, e.g. “Hi dear 😊”.",
+    placeholders: [],
+  },
+  welcome1: {
+    label: "1️⃣ Welcome message 1",
+    hint: "Sent right after the greeting.",
+    placeholders: ["{{business}}"],
+  },
+  welcome2: {
+    label: "2️⃣ Welcome message 2",
+    hint: "Sent after message 1.",
+    placeholders: ["{{business}}"],
+  },
+  welcome3: {
+    label: "3️⃣ Welcome message 3",
+    hint: "Sent last.",
+    placeholders: ["{{business}}"],
+  },
 };
+
+// The automatic welcome a brand-new customer gets, in send order. These ship
+// blank on purpose: a blank box is never sent, so the welcome stays off until
+// the owner types their own words in, and clearing every box turns it off.
+export const WELCOME_KEYS = ["welcomeGreeting", "welcome1", "welcome2", "welcome3"] as const satisfies readonly TemplateKey[];
 
 export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
   askAddress: `ස්තූතියි! 🙏 Order එක process කරන්න මේ විස්තර එවන්න:\n\n1. නම\n2. Address එක (district එකත් එක්ක)\n3. Phone number`,
@@ -118,6 +143,11 @@ export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
   deliveredThanks: `ඔබගේ පැකේජය ලැබුණා! 🎉\n{{business}} එක්ක order කළාට බොහෝම ස්තූතියි 💚\nමොනවා හරි ප්‍රශ්නයක් තියෙනවා නම් මේ chat එකට reply කරන්න.`,
 
   returnedApology: `ඔබගේ පැකේජය deliver කරන්න බැරි වුණා 😔\nතවමත් ඕන නම් නැවත යවන්න පුළුවන් — *OK* කියලා reply කරන්න, අපි redeliver කරන්නම්! 🚚`,
+
+  welcomeGreeting: "",
+  welcome1: "",
+  welcome2: "",
+  welcome3: "",
 };
 
 type Vars = { business?: string; total?: number; tracking?: string };
@@ -160,6 +190,12 @@ export function makeTemplates(overrides: MessageTemplates = {}, businessName = "
       renderTemplate(src("rescheduledDelivery"), vars({ tracking: trackingId })),
     deliveredThanks: () => renderTemplate(src("deliveredThanks"), vars()),
     returnedApology: () => renderTemplate(src("returnedApology"), vars()),
+    // Every welcome box in send order, "" for a blank one (its photo, if any,
+    // can still go out on its own).
+    welcomeBoxes: () => WELCOME_KEYS.map((key) => renderTemplate(src(key), vars()).trim()),
+    // Only the boxes the owner filled in, in order.
+    welcomeMessages: () =>
+      WELCOME_KEYS.map((key) => renderTemplate(src(key), vars()).trim()).filter(Boolean),
   };
 }
 
