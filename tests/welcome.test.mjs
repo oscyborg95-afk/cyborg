@@ -119,16 +119,29 @@ test("welcome flood caps", () => {
   assert.equal(welcomeCapReached(WELCOME_HOURLY_CAP - 1, WELCOME_DAILY_CAP - 1), false);
 });
 
-import { WELCOME_SLOTS, welcomeSendPlan } from "../lib/welcome-policy.ts";
+import {
+  WELCOME_PHOTOS_PER_BOX,
+  WELCOME_PHOTOS_TOTAL,
+  WELCOME_SLOTS,
+  welcomeSendPlan,
+} from "../lib/welcome-policy.ts";
 
-test("a box goes out when it has text or a photo, in box order", () => {
+test("a box goes out when it has text or photos, in box order", () => {
   assert.equal(WELCOME_SLOTS, 4);
-  assert.deepEqual(welcomeSendPlan(["Hi dear", "", "Price list", ""], new Set([1, 2])), [
-    { slot: 0, text: "Hi dear", photo: false },
-    { slot: 1, text: "", photo: true },
-    { slot: 2, text: "Price list", photo: true },
+  assert.deepEqual(welcomeSendPlan(["Hi dear", "", "Price list", ""], [0, 3, 2, 0]), [
+    { slot: 0, text: "Hi dear", photos: 0 },
+    { slot: 1, text: "", photos: 3 },
+    { slot: 2, text: "Price list", photos: 2 },
   ]);
-  assert.deepEqual(welcomeSendPlan(["", "", "", ""], new Set()), []);
+  assert.deepEqual(welcomeSendPlan(["", "", "", ""], [0, 0, 0, 0]), []);
+});
+
+test("albums are clipped per box and across the whole welcome", () => {
+  const plan = welcomeSendPlan(["a", "b", "c", "d"], [15, 10, 10, 10]);
+  assert.equal(plan[0].photos, WELCOME_PHOTOS_PER_BOX);
+  assert.equal(plan.reduce((n, p) => n + p.photos, 0), WELCOME_PHOTOS_TOTAL);
+  // Boxes past the photo budget still send their text.
+  assert.deepEqual(plan[3], { slot: 3, text: "d", photos: 0 });
 });
 
 test("welcomeBoxes keeps blank boxes so photos stay on the right box", () => {

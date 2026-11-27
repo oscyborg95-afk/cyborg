@@ -82,28 +82,18 @@ export interface WaOutboundMedia {
 // HTTP response we never saw (worker slower than WA_WORKER_TIMEOUT_MS) is
 // retried by the notification queue; the worker recognises the key and answers
 // without sending the customer a second copy.
-// A photo the worker downloads itself (from a short-lived Storage link) and
-// caches on its own disk by `key`, so the same photo is fetched once, not on
-// every send.
-export interface WaOutboundMediaRef {
-  url: string;
-  key: string;
-  mime: string;
-}
-
 export function sendWhatsAppMessage(
   chatId: string,
   text: string,
   media?: WaOutboundMedia,
   expectedLatestMessageId?: string,
   signal?: AbortSignal,
-  idempotencyKey?: string,
-  mediaRef?: WaOutboundMediaRef
+  idempotencyKey?: string
 ) {
   return workerFetch<{ ok: boolean; deduped?: boolean }>("/send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chatId, text, media, mediaRef, expectedLatestMessageId, idempotencyKey }),
+    body: JSON.stringify({ chatId, text, media, expectedLatestMessageId, idempotencyKey }),
     signal,
   });
 }
@@ -125,21 +115,6 @@ export async function sendTypingState(
     });
   } catch {
     // Ignored on purpose — see above.
-  }
-}
-
-// Blue ticks on the customer's phone, like opening the chat in WhatsApp.
-// Cosmetic like typing: a failure never stops the reply that follows.
-export async function markChatRead(chatId: string, signal?: AbortSignal): Promise<void> {
-  try {
-    await workerFetch("/read", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chatId }),
-      signal,
-    });
-  } catch {
-    // Ignored on purpose.
   }
 }
 

@@ -2,9 +2,10 @@
 //
 // The WhatsApp worker calls /api/whatsapp/inbound after a customer's message
 // (debounced so a burst of bubbles is one call). If this is the customer's very
-// first contact, the owner's greeting and saved welcome messages go out in
-// order, each after a short "typing…" pause — the same thing the owner used to
-// do by hand with WhatsApp quick replies.
+// first contact, the app answers with a send plan — the owner's greeting and
+// saved welcome messages, with their photo albums — and the worker sends it,
+// pacing it like a person: read first, "typing…" before each message. The
+// worker does the sending because a long welcome outlasts a Vercel function.
 //
 // It never touches the parcel notifications (shipped / out for delivery /
 // rescheduled / delivered); those keep their own templates and queue.
@@ -16,15 +17,16 @@ import { chatIdToPhone } from "./phone";
 import { phoneKey } from "./risk";
 import { markSchemaCurrent, schemaIsCurrent } from "./schema-once";
 import { requireTenantSession } from "./tenant-context";
-import { signedObjectUrl, storageConfigured } from "./storage";
+import { objectUrl, storageConfigured } from "./storage";
 import { makeTemplates } from "./templates";
-import { markChatRead, sendTypingState, sendWhatsAppMessage, workerFetch } from "./wa";
+import { workerFetch } from "./wa";
 import {
   chooseWelcomeText,
   isFirstContact,
   isFreshInbound,
   isPersonChat,
-  typingPauseMs,
+  WELCOME_PHOTOS_PER_BOX,
+  WELCOME_SLOTS,
   welcomeCapReached,
   welcomeSendPlan,
   type WelcomeHistoryMessage,
@@ -36,7 +38,14 @@ export interface WelcomeInbound {
   timestamp: number;
 }
 
-export type WelcomeResult = { sent: number } | { skipped: WelcomeSkipReason };
+// One WhatsApp step for the worker: a text message, or an album whose first
+// photo carries the text as its caption.
+export interface WelcomeStep {
+  text: string;
+  media: { url: string; key: string; mime: string }[];
+}
+
+export type WelcomeResult = { send: WelcomeStep[] } | { skipped: WelcomeSkipReason };
 
 const g = globalThis as unknown as {
   __welcomeSchemaReady?: Set<string>;
@@ -62,14 +71,19 @@ async function ensureWelcomeSchema(): Promise<void> {
       created_at timestamptz not null default now()
     );
     create index if not exists idx_welcome_sends_at on welcome_sends(created_at desc);
-    -- Which photo goes with which welcome box. Only the Storage file name lives
-    -- here; the photo itself is in Supabase Storage, never in the database.
-    create table if not exists welcome_photos (
-      slot int primary key,
-      path varchar not null,
+    -- The photos of each welcome box, in album order. Only the Oracle Object
+    -- Storage file name lives here; the photo itself never enters the database.
+    create table if not exists welcome_media (
+      id uuid primary key default gen_random_uuid(),
+      slot int not null,
+      position int not null default 0,
+      object_name varchar not null,
       mime varchar not null default 'image/jpeg',
-      updated_at timestamptz not null default now()
+      created_at timestamptz not null default now()
     );
+    create index if not exists idx_welcome_media_slot on welcome_media(slot, position);
+    -- Superseded single-photo table (never held a photo: its Storage was blocked).
+    drop table if exists welcome_photos;
   `);
   await markSchemaCurrent(schemaDb, "welcome", ensureWelcomeSchema);
   ready.add(tenantId);
@@ -131,63 +145,111 @@ async function hasOrder(key: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-// ── Welcome photos (one optional photo per box) ────────────────────────────
+// ── Welcome photos (an album per box) ─────────────────────────────────────
 
-export const WELCOME_MEDIA_BUCKET = "welcome-media";
-
-export interface WelcomePhoto {
+export interface WelcomeMedia {
+  id: string;
   slot: number;
-  path: string;
+  position: number;
+  object_name: string;
   mime: string;
 }
 
-const g2 = globalThis as unknown as { __welcomePhotos?: Map<number, WelcomePhoto> };
-const memPhotos: Map<number, WelcomePhoto> = (g2.__welcomePhotos ??= new Map());
+const g2 = globalThis as unknown as { __welcomeMedia?: Map<string, WelcomeMedia> };
+const memMedia: Map<string, WelcomeMedia> = (g2.__welcomeMedia ??= new Map());
 
-export async function listWelcomePhotos(): Promise<WelcomePhoto[]> {
-  if (!usingSupabase) return [...memPhotos.values()].sort((a, b) => a.slot - b.slot);
+export async function listWelcomeMedia(): Promise<WelcomeMedia[]> {
+  if (!usingSupabase) {
+    return [...memMedia.values()].sort((a, b) => a.slot - b.slot || a.position - b.position);
+  }
   await ensureWelcomeSchema();
-  const { rows } = await queryDatabase<{ slot: number; path: string; mime: string }>(
-    "select slot, path, mime from welcome_photos order by slot"
-  );
+  const { rows } = await queryDatabase<{
+    id: string;
+    slot: number;
+    position: number;
+    object_name: string;
+    mime: string;
+  }>("select id, slot, position, object_name, mime from welcome_media order by slot, position, created_at");
   return rows;
 }
 
-// Returns the photo it replaced, so the caller can delete the old file.
-export async function setWelcomePhoto(photo: WelcomePhoto): Promise<WelcomePhoto | null> {
-  if (!usingSupabase) {
-    const old = memPhotos.get(photo.slot) ?? null;
-    memPhotos.set(photo.slot, photo);
-    return old;
-  }
-  await ensureWelcomeSchema();
-  const { rows: old } = await queryDatabase<{ slot: number; path: string; mime: string }>(
-    "select slot, path, mime from welcome_photos where slot = $1",
-    [photo.slot]
-  );
-  await queryDatabase(
-    `insert into welcome_photos (slot, path, mime) values ($1, $2, $3)
-     on conflict (slot) do update set path = excluded.path, mime = excluded.mime, updated_at = now()`,
-    [photo.slot, photo.path, photo.mime]
-  );
-  return old[0] ?? null;
+export async function getWelcomeMedia(id: string): Promise<WelcomeMedia | null> {
+  return (await listWelcomeMedia()).find((m) => m.id === id) ?? null;
 }
 
-export async function clearWelcomePhoto(slot: number): Promise<WelcomePhoto | null> {
+// Appends to the end of the box's album. Null when the box is already full.
+export async function addWelcomeMedia(input: {
+  slot: number;
+  object_name: string;
+  mime: string;
+}): Promise<WelcomeMedia | null> {
+  if (input.slot < 0 || input.slot >= WELCOME_SLOTS) return null;
+  const current = (await listWelcomeMedia()).filter((m) => m.slot === input.slot);
+  if (current.length >= WELCOME_PHOTOS_PER_BOX) return null;
+  const position = current.reduce((max, m) => Math.max(max, m.position + 1), 0);
   if (!usingSupabase) {
-    const old = memPhotos.get(slot) ?? null;
-    memPhotos.delete(slot);
-    return old;
+    const media = { id: crypto.randomUUID(), position, ...input };
+    memMedia.set(media.id, media);
+    return media;
   }
-  await ensureWelcomeSchema();
-  const { rows } = await queryDatabase<{ slot: number; path: string; mime: string }>(
-    "delete from welcome_photos where slot = $1 returning slot, path, mime",
-    [slot]
+  const { rows } = await queryDatabase<{
+    id: string;
+    slot: number;
+    position: number;
+    object_name: string;
+    mime: string;
+  }>(
+    `insert into welcome_media (slot, position, object_name, mime) values ($1, $2, $3, $4)
+     returning id, slot, position, object_name, mime`,
+    [input.slot, position, input.object_name, input.mime]
   );
   return rows[0] ?? null;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+export async function removeWelcomeMedia(id: string): Promise<WelcomeMedia | null> {
+  if (!usingSupabase) {
+    const old = memMedia.get(id) ?? null;
+    memMedia.delete(id);
+    return old;
+  }
+  await ensureWelcomeSchema();
+  const { rows } = await queryDatabase<{
+    id: string;
+    slot: number;
+    position: number;
+    object_name: string;
+    mime: string;
+  }>("delete from welcome_media where id = $1 returning id, slot, position, object_name, mime", [id]);
+  return rows[0] ?? null;
+}
+
+// Moves a photo one place earlier (-1) or later (+1) within its box's album.
+export async function moveWelcomeMedia(id: string, direction: -1 | 1): Promise<void> {
+  const all = await listWelcomeMedia();
+  const target = all.find((m) => m.id === id);
+  if (!target) return;
+  const album = all.filter((m) => m.slot === target.slot);
+  const index = album.findIndex((m) => m.id === id);
+  const other = album[index + direction];
+  if (!other) return;
+  // Renumber the album densely with the two swapped, so equal or gapped
+  // positions can never make the order ambiguous.
+  const order = album.map((m) => m.id);
+  [order[index], order[index + direction]] = [order[index + direction], order[index]];
+  if (!usingSupabase) {
+    order.forEach((mid, position) => {
+      const m = memMedia.get(mid);
+      if (m) memMedia.set(mid, { ...m, position });
+    });
+    return;
+  }
+  await queryDatabase(
+    `update welcome_media w set position = o.position
+       from unnest($1::uuid[]) with ordinality as o(id, position)
+      where w.id = o.id`,
+    [order]
+  );
+}
 
 export async function handleWelcomeInbound(inbound: WelcomeInbound): Promise<WelcomeResult> {
   const { chatId, timestamp } = inbound;
@@ -197,8 +259,8 @@ export async function handleWelcomeInbound(inbound: WelcomeInbound): Promise<Wel
   const settings = await getSettings();
   const boxes = makeTemplates(settings.templates, settings.business_name).welcomeBoxes();
   // Photos only when Storage is set up; otherwise the text still goes out.
-  const photos = storageConfigured() ? await listWelcomePhotos() : [];
-  if (boxes.every((box) => !box) && photos.length === 0) return { skipped: "no_messages" };
+  const media = storageConfigured() ? await listWelcomeMedia() : [];
+  if (boxes.every((box) => !box) && media.length === 0) return { skipped: "no_messages" };
 
   // A real phone number lets us recognise returning customers; a privacy
   // (@lid) chat has none, so only its message history can tell.
@@ -222,8 +284,8 @@ export async function handleWelcomeInbound(inbound: WelcomeInbound): Promise<Wel
 
   // This customer's version of each box; versions with links are never sent.
   const texts = boxes.map((box, slot) => (box ? chooseWelcomeText(box, key || chatId, slot) : ""));
-  const photoBySlot = new Map(photos.map((p) => [p.slot, p]));
-  const plan = welcomeSendPlan(texts, new Set(photoBySlot.keys()));
+  const albums = Array.from({ length: WELCOME_SLOTS }, (_, slot) => media.filter((m) => m.slot === slot));
+  const plan = welcomeSendPlan(texts, albums.map((album) => album.length));
   if (plan.length === 0) return { skipped: "no_messages" };
 
   const recent = await recentWelcomes();
@@ -231,40 +293,18 @@ export async function handleWelcomeInbound(inbound: WelcomeInbound): Promise<Wel
 
   if (!(await claimWelcome(chatId, key))) return { skipped: "already_welcomed" };
 
-  let sent = 0;
-  try {
-    // Blue ticks first, then a moment of "reading" — the order a person does it.
-    await markChatRead(chatId);
-    await sleep(1_000 + Math.round(Math.random() * 2_000));
-    for (const item of plan) {
-      const photo = item.photo ? photoBySlot.get(item.slot) : undefined;
-      await sendTypingState(chatId, "composing");
-      await sleep(typingPauseMs(item.text) + (photo ? 1_500 : 0));
-      // A 5-minute link is all the worker needs; it keeps its own copy.
-      const mediaRef = photo
-        ? {
-            url: await signedObjectUrl(WELCOME_MEDIA_BUCKET, photo.path, 300),
-            key: photo.path,
-            mime: photo.mime,
-          }
-        : undefined;
-      // The key makes a retried HTTP call safe: the worker answers a repeat
-      // without sending the customer a second copy.
-      await sendWhatsAppMessage(
-        chatId,
-        item.text,
-        undefined,
-        undefined,
-        undefined,
-        `welcome:${chatId}:${item.slot}`,
-        mediaRef
-      );
-      sent++;
-    }
-  } finally {
-    await sendTypingState(chatId, "paused");
-    await recordWelcomeCount(chatId, sent).catch(() => null);
-  }
+  const send: WelcomeStep[] = plan.map((item) => ({
+    text: item.text,
+    media: albums[item.slot].slice(0, item.photos).map((m) => ({
+      url: objectUrl(m.object_name),
+      // A new name per upload, so the worker's disk cache can never serve a
+      // replaced photo.
+      key: m.object_name,
+      mime: m.mime,
+    })),
+  }));
+  const messages = send.reduce((n, step) => n + Math.max(1, step.media.length), 0);
+  await recordWelcomeCount(chatId, messages).catch(() => null);
 
   if (key.length === 9) {
     await recordCustomerEvent({
@@ -272,8 +312,8 @@ export async function handleWelcomeInbound(inbound: WelcomeInbound): Promise<Wel
       chat_id: chatId,
       kind: "message_out",
       source: "system",
-      payload: { welcome: true, messages: sent },
+      payload: { welcome: true, messages },
     }).catch(() => null);
   }
-  return { sent };
+  return { send };
 }

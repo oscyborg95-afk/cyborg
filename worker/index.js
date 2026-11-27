@@ -135,11 +135,10 @@ function releaseSendKey(key, delivered) {
   else sendLedger.set(key, { at: Date.now(), done: true });
 }
 
-// Photos the app hands over as a short-lived Supabase Storage link
-// ({ url, key, mime }) are downloaded once and kept on this machine's disk,
-// keyed by `key` (a new key per uploaded photo). Every later send reads the
-// local copy, so the shared Supabase egress quota is spent once per photo,
-// not once per customer. Nothing is written to the database.
+// Welcome photos arrive as Oracle Object Storage links ({ url, key, mime }).
+// Each is downloaded once and kept on this machine's disk, keyed by `key` (a
+// new key per uploaded photo); every later send reads the local copy. Nothing
+// is written to the database.
 const MEDIA_REF_MAX_BYTES = 6 * 1024 * 1024;
 const MEDIA_CACHE_DIR = process.env.WA_MEDIA_CACHE_DIR || path.join(__dirname, "media-cache");
 const MEDIA_CACHE_MAX_FILES = 50;
@@ -153,7 +152,8 @@ function mediaHostAllowed(url) {
   } catch {
     return false;
   }
-  if (host.endsWith(".supabase.co")) return true;
+  // Oracle Object Storage, where the app keeps welcome photos.
+  if (/^objectstorage\.[a-z0-9-]+\.oraclecloud\.com$/.test(host)) return true;
   const extra = (process.env.WA_MEDIA_HOSTS || "").split(",").map((h) => h.trim()).filter(Boolean);
   return extra.includes(host);
 }
@@ -268,6 +268,53 @@ function emitMessage(msg) {
   io.emit("wa:message", msg);
 }
 
+// What "read", "typing" and "send" mean differs between live WhatsApp and the
+// mock; each mode fills these in. The welcome runner only uses these.
+const waOps = { read: null, typing: null, send: null };
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Mirrors typingPauseMs in lib/welcome-policy.ts: longer text, longer typing.
+const typingPause = (text) => 1_500 + Math.min(String(text || "").length, 300) * 12 + Math.random() * 1_500;
+
+// Sends a welcome the app planned (see lib/welcome.ts), paced like a person:
+// read first, a moment's pause, "typing…" before each message, and an album's
+// photos one after another so WhatsApp groups them into a single grid. Runs
+// here rather than in the app because a long welcome outlasts a Vercel
+// function. A photo that fails is skipped; its caption moves to the next.
+async function runWelcome(chatId, steps) {
+  if (!Array.isArray(steps) || steps.length === 0 || !waOps.send) return 0;
+  let sent = 0;
+  try {
+    await waOps.read(chatId).catch(() => {});
+    await pause(1_000 + Math.random() * 2_000);
+    for (const step of steps.slice(0, 4)) {
+      const text = typeof step?.text === "string" ? step.text : "";
+      const media = Array.isArray(step?.media) ? step.media.slice(0, 10) : [];
+      await waOps.typing(chatId, "composing").catch(() => {});
+      await pause(typingPause(text) + (media.length ? 1_500 : 0));
+      let caption = text;
+      for (const [i, ref] of media.entries()) {
+        try {
+          const photo = await loadMediaRef(ref);
+          await waOps.send(chatId, { text: caption, image: photo.buffer, mime: photo.mime });
+          caption = "";
+          sent++;
+        } catch (err) {
+          console.error("[cyborg-wa-worker] welcome photo skipped:", err.message);
+        }
+        if (i < media.length - 1) await pause(700 + Math.random() * 900);
+      }
+      if (caption) {
+        await waOps.send(chatId, { text: caption });
+        sent++;
+      }
+    }
+  } finally {
+    await waOps.typing(chatId, "paused").catch(() => {});
+  }
+  return sent;
+}
+
 // Tell the app a customer wrote, once their burst of bubbles settles ("hi",
 // "price?", a photo → one call). The app stops any follow-up chasing them and
 // decides whether this is a brand-new customer who gets the automatic welcome.
@@ -298,13 +345,18 @@ function notifyInbound(msg) {
           "x-tenant-id": TENANT_ID,
         },
         body: JSON.stringify({ chatId: msg.chatId, timestamp: firstTs, body: bodies.join("\n") }),
-        signal: AbortSignal.timeout(65_000),
+        signal: AbortSignal.timeout(55_000),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         console.error(`[cyborg-wa-worker] inbound hook failed (${res.status}): ${JSON.stringify(data).slice(0, 180)}`);
-      } else if (data?.welcome?.sent) {
-        console.log(`[cyborg-wa-worker] welcome sent to new customer (${data.welcome.sent} messages)`);
+      } else if (data?.welcome?.send) {
+        try {
+          const sent = await runWelcome(msg.chatId, data.welcome.send);
+          console.log(`[cyborg-wa-worker] welcome sent to new customer (${sent} messages)`);
+        } catch (err) {
+          console.error("[cyborg-wa-worker] welcome send failed:", err.message);
+        }
       }
     } catch (err) {
       console.error("[cyborg-wa-worker] inbound hook offline:", err.message);
@@ -367,6 +419,30 @@ if (MOCK) {
   const now = Date.now();
   const chats = new Map(); // chatId -> { id, name, messages: [] }
   const mockMedia = new Map(); // msgId -> { mime, data }
+
+  // The welcome runner's view of the mock: read ticks, no-op typing, and a
+  // send that lands in the fake chat exactly like /send does.
+  waOps.read = async (chatId) => {
+    for (const m of chats.get(chatId)?.messages ?? []) if (!m.fromMe) m.status = 4;
+  };
+  waOps.typing = async () => {};
+  waOps.send = async (chatId, { text, image, mime }) => {
+    const chat = chats.get(chatId);
+    if (!chat) throw new Error("unknown chat");
+    const msg = {
+      id: `${chat.id}-${chat.messages.length}`,
+      chatId: chat.id,
+      body: text || "[photo]",
+      fromMe: true,
+      timestamp: Date.now(),
+      senderName: "You",
+      status: 1,
+      media: image ? "image" : "",
+    };
+    if (image) mockMedia.set(msg.id, { mime: mime || "image/jpeg", data: image.toString("base64") });
+    chat.messages.push(msg);
+    emitMessage(msg);
+  };
 
   function seedChat(id, name, messages) {
     chats.set(id, {
@@ -441,20 +517,10 @@ if (MOCK) {
     });
   });
 
-  app.post("/send", async (req, res) => {
-    const { chatId, text, mediaRef, expectedLatestMessageId, idempotencyKey } = req.body;
-    let { media } = req.body;
+  app.post("/send", (req, res) => {
+    const { chatId, text, media, expectedLatestMessageId, idempotencyKey } = req.body;
     if (claimSendKey(idempotencyKey)) {
       return res.json({ ok: true, deduped: true });
-    }
-    if (mediaRef && !media?.data) {
-      try {
-        const loaded = await loadMediaRef(mediaRef);
-        media = { mime: loaded.mime, data: loaded.buffer.toString("base64") };
-      } catch (err) {
-        releaseSendKey(idempotencyKey, false);
-        return res.status(400).json({ error: String(err.message || err) });
-      }
     }
     // Live WhatsApp JIDs end in @s.whatsapp.net; the mock seeds use @c.us.
     // Match by phone digits so server-side sends (alerts, broadcast) work here.
@@ -1192,31 +1258,37 @@ app.post("/read", async (req, res) => {
   const { chatId } = req.body;
   if (!chatId) return res.status(400).json({ error: "chatId required" });
   try {
-    let ids = [];
-    if (pool) {
-      const { rows } = await pool.query(
-        "select id from wa_messages where jid = $1 and from_me = false order by ts desc limit 20",
-        [chatId]
-      );
-      ids = rows.map((r) => r.id);
-    } else {
-      const chatMsgs = memMessages.get(chatId);
-      if (chatMsgs) {
-        ids = [...chatMsgs.values()]
-          .filter((m) => !m.fromMe)
-          .slice(-20)
-          .map((m) => m.id);
-      }
-    }
-    if (ids.length > 0) {
-      await sock.readMessages(ids.map((id) => ({ remoteJid: chatId, id, fromMe: false })));
-    }
-    await resetUnread(chatId);
+    await markChatReadLive(chatId);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
 });
+
+// Blue ticks on the customer's phone for their latest messages, and the
+// dashboard's unread badge cleared — like opening the chat in WhatsApp.
+async function markChatReadLive(chatId) {
+  let ids = [];
+  if (pool) {
+    const { rows } = await pool.query(
+      "select id from wa_messages where jid = $1 and from_me = false order by ts desc limit 20",
+      [chatId]
+    );
+    ids = rows.map((r) => r.id);
+  } else {
+    const chatMsgs = memMessages.get(chatId);
+    if (chatMsgs) {
+      ids = [...chatMsgs.values()]
+        .filter((m) => !m.fromMe)
+        .slice(-20)
+        .map((m) => m.id);
+    }
+  }
+  if (ids.length > 0) {
+    await sock.readMessages(ids.map((id) => ({ remoteJid: chatId, id, fromMe: false })));
+  }
+  await resetUnread(chatId);
+}
 
 // Profile pictures, cached for 6h — WhatsApp rate-limits this lookup, and
 // most avatars barely change. null = no picture / hidden by privacy settings.
@@ -1254,8 +1326,8 @@ app.post("/send", async (req, res) => {
   if (!ready || !sock) {
     return res.status(503).json({ error: "WhatsApp not linked yet — scan the QR at /qr" });
   }
-  const { chatId, text, media, mediaRef, expectedLatestMessageId, idempotencyKey } = req.body;
-  if (!chatId || (!text && !media?.data && !mediaRef)) {
+  const { chatId, text, media, expectedLatestMessageId, idempotencyKey } = req.body;
+  if (!chatId || (!text && !media?.data)) {
     return res.status(400).json({ error: "chatId and text (or media) required" });
   }
   if (claimSendKey(idempotencyKey)) {
@@ -1272,27 +1344,15 @@ app.post("/send", async (req, res) => {
     }
     let sent;
     let mediaBuffer = null;
-    let mediaMime = media?.mime || "image/jpeg";
     if (media?.data) {
       mediaBuffer = Buffer.from(media.data, "base64");
       if (mediaBuffer.length > MAX_MEDIA_BYTES) {
         releaseSendKey(idempotencyKey, false);
         return res.status(400).json({ error: "media too large (6 MB max)" });
       }
-    } else if (mediaRef) {
-      try {
-        const loaded = await loadMediaRef(mediaRef);
-        mediaBuffer = loaded.buffer;
-        mediaMime = loaded.mime;
-      } catch (err) {
-        releaseSendKey(idempotencyKey, false);
-        return res.status(400).json({ error: String(err.message || err) });
-      }
-    }
-    if (mediaBuffer) {
       sent = await sock.sendMessage(chatId, {
         image: mediaBuffer,
-        mimetype: mediaMime,
+        mimetype: media.mime || "image/jpeg",
         caption: text || undefined,
       });
     } else {
@@ -1316,6 +1376,31 @@ app.post("/send", async (req, res) => {
     res.status(500).json({ error: String(err) });
   }
 });
+
+// The welcome runner's view of live WhatsApp.
+waOps.read = async (chatId) => {
+  if (!ready || !sock) throw new Error("WhatsApp not linked");
+  await markChatReadLive(chatId);
+};
+waOps.typing = async (chatId, state) => {
+  if (!ready || !sock) return;
+  await sock.sendPresenceUpdate(state, chatId);
+};
+waOps.send = async (chatId, { text, image, mime }) => {
+  if (!ready || !sock) throw new Error("WhatsApp not linked");
+  const sent = await sock.sendMessage(
+    chatId,
+    image ? { image, mimetype: mime || "image/jpeg", caption: text || undefined } : { text }
+  );
+  const msg = normalize(sent);
+  if (msg) {
+    saveMessage(msg)
+      .then((isNew) => {
+        if (isNew) emitMessage(msg);
+      })
+      .catch((err) => console.error("[cyborg-wa-worker] failed to store sent message:", err.message));
+  }
+};
 
 // Listen immediately — /qr and /health must be reachable before the scan.
 server.listen(PORT, LISTEN_HOST, () => {

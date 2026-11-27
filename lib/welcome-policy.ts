@@ -85,22 +85,33 @@ export function chooseWelcomeText(box: string, customerKey: string, index: numbe
   return usable[hash % usable.length];
 }
 
-// Greeting + 3 messages; each can carry one optional photo.
+// Greeting + 3 messages; each box can carry a set of photos, which WhatsApp
+// shows the customer as one album (a swipeable grid).
 export const WELCOME_SLOTS = 4;
+export const WELCOME_PHOTOS_PER_BOX = 10;
+// Across the whole welcome. A first-time customer who asked one question does
+// not need 40 photos, and a big burst of media is what spam looks like.
+export const WELCOME_PHOTOS_TOTAL = 20;
 // The editor shrinks photos to well under this before uploading.
 export const WELCOME_PHOTO_MAX_BYTES = 2 * 1024 * 1024;
 
-// Which boxes actually go out: a box is sent when it has text (after the
-// link guard) or a photo. The photo rides with the text as its caption.
-export function welcomeSendPlan(
-  texts: string[],
-  photoSlots: Set<number>
-): { slot: number; text: string; photo: boolean }[] {
-  const plan = [];
+export interface WelcomePlanItem {
+  slot: number;
+  text: string;
+  photos: number;
+}
+
+// Which boxes actually go out, in order, and how many of each box's photos.
+// A box goes out when it has text (after the link guard) or photos; photo
+// counts are clipped to the per-box and whole-welcome limits.
+export function welcomeSendPlan(texts: string[], photoCounts: number[]): WelcomePlanItem[] {
+  const plan: WelcomePlanItem[] = [];
+  let photoBudget = WELCOME_PHOTOS_TOTAL;
   for (let slot = 0; slot < WELCOME_SLOTS; slot++) {
     const text = texts[slot] ?? "";
-    const photo = photoSlots.has(slot);
-    if (text || photo) plan.push({ slot, text, photo });
+    const photos = Math.max(0, Math.min(photoCounts[slot] ?? 0, WELCOME_PHOTOS_PER_BOX, photoBudget));
+    photoBudget -= photos;
+    if (text || photos > 0) plan.push({ slot, text, photos });
   }
   return plan;
 }
