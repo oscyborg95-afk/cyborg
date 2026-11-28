@@ -18,6 +18,14 @@ const SECRET = process.env.WORKER_API_SECRET || "";
 const MAX_TENANTS = Math.max(1, Number(process.env.WA_MAX_TENANTS || 10));
 const POLL_MS = Math.max(2_000, Number(process.env.WA_TENANT_POLL_MS || 10_000));
 const FIRST_CHILD_PORT = Number(process.env.WA_CHILD_PORT_START || PORT + 100);
+// Same origin rule as the tenant workers (index.js): only the dashboard.
+const APP_ORIGIN = (() => {
+  try {
+    return new URL(process.env.APP_URL || "http://localhost:3000").origin;
+  } catch {
+    return "http://localhost:3000";
+  }
+})();
 
 if (!DATABASE_URL) {
   console.error("[wa-manager] DATABASE_URL is required in multi-tenant mode");
@@ -123,11 +131,29 @@ function targetFor(tenantId) {
   return state ? `http://127.0.0.1:${state.port}` : null;
 }
 
+function answerPreflight(req, res) {
+  const headers = { vary: "Origin, Access-Control-Request-Headers" };
+  if (req.headers.origin === APP_ORIGIN) {
+    headers["access-control-allow-origin"] = APP_ORIGIN;
+    headers["access-control-allow-methods"] = "GET,HEAD,PUT,PATCH,POST,DELETE";
+    headers["access-control-allow-headers"] =
+      req.headers["access-control-request-headers"] || "authorization,content-type";
+    headers["access-control-max-age"] = "600";
+  }
+  // Any other origin gets an empty 204: no allow headers, so the browser blocks it.
+  res.writeHead(204, headers);
+  res.end();
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify({ ok: true, tenants: children.size, capacity: MAX_TENANTS }));
   }
+  // Browsers never attach the Authorization header to a CORS preflight, so it
+  // cannot be routed to a tenant. Answer it here; the real request that follows
+  // still needs a valid token and gets its CORS headers from the tenant worker.
+  if (req.method === "OPTIONS") return answerPreflight(req, res);
   const tenantId = tenantForHttp(req);
   const target = targetFor(tenantId);
   if (!target) {
