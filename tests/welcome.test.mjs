@@ -148,3 +148,13 @@ test("welcomeBoxes keeps blank boxes so photos stay on the right box", () => {
   const boxes = makeTemplates({ welcome2: "two" }).welcomeBoxes();
   assert.deepEqual(boxes, ["", "", "two", ""]);
 });
+
+import { validPhoneChatId } from "../lib/welcome-policy.ts";
+
+test("only a plain phone chat id is accepted as the number behind a privacy ID", () => {
+  assert.equal(validPhoneChatId("94771234567@s.whatsapp.net"), "94771234567@s.whatsapp.net");
+  assert.equal(validPhoneChatId("94771234567:3@s.whatsapp.net"), null);
+  assert.equal(validPhoneChatId("123456789012@lid"), null);
+  assert.equal(validPhoneChatId(null), null);
+  assert.equal(validPhoneChatId("x@s.whatsapp.net"), null);
+});

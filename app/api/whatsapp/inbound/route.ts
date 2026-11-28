@@ -4,6 +4,7 @@ import { handleFollowUpInbound } from "@/lib/followups";
 import { withTenant } from "@/lib/tenant-context";
 import { tenantSchemaForId } from "@/lib/tenants";
 import { handleWelcomeInbound } from "@/lib/welcome";
+import { validPhoneChatId } from "@/lib/welcome-policy";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -35,6 +36,8 @@ export async function POST(req: NextRequest) {
   const chatId = typeof body?.chatId === "string" ? body.chatId : "";
   const timestamp = Number(body?.timestamp);
   const text = typeof body?.body === "string" ? body.body.slice(0, 2_000) : "";
+  // For a privacy-ID (@lid) chat, the same person's phone chat (from the worker).
+  const phoneChatId = validPhoneChatId(body?.phoneChatId);
   if (!chatId || body?.fromMe) return NextResponse.json({ skipped: "not_inbound" });
 
   const session = {
@@ -46,11 +49,12 @@ export async function POST(req: NextRequest) {
   // Runs first and on its own: chasing someone who already answered (or said
   // stop) is exactly what gets a number reported, so this must not wait on,
   // or fail with, the welcome.
-  const followUps = await withTenant(session, () => handleFollowUpInbound(chatId, text))
+  // Follow-ups are filed under the phone number, so use it when we have it.
+  const followUps = await withTenant(session, () => handleFollowUpInbound(phoneChatId ?? chatId, text))
     .then(() => "checked")
     .catch((error) => (error instanceof Error ? error.message : "failed"));
   try {
-    const welcome = await withTenant(session, () => handleWelcomeInbound({ chatId, timestamp }));
+    const welcome = await withTenant(session, () => handleWelcomeInbound({ chatId, timestamp, phoneChatId }));
     return NextResponse.json({ ok: true, followUps, welcome });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Inbound handling failed";

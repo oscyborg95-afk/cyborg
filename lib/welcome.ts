@@ -36,6 +36,9 @@ import {
 export interface WelcomeInbound {
   chatId: string;
   timestamp: number;
+  // For a privacy-ID (@lid) chat: the same person's phone chat, resolved by
+  // the worker. Orders, parcel messages and customer records live under it.
+  phoneChatId?: string | null;
 }
 
 // One WhatsApp step for the worker: a text message, or an album whose first
@@ -90,14 +93,22 @@ async function ensureWelcomeSchema(): Promise<void> {
 }
 
 // One welcome per chat, ever — enforced by the primary key, so two worker
-// calls racing for the same burst cannot both send.
+// calls racing for the same burst cannot both send — and one per phone
+// number, so the same person writing from their privacy-ID chat and their
+// phone chat is welcomed once.
+const memClaimKeys = new Set<string>();
 async function claimWelcome(chatId: string, key: string): Promise<boolean> {
   if (!usingSupabase) {
-    if (memClaims.has(chatId)) return false;
+    if (memClaims.has(chatId) || (key && memClaimKeys.has(key))) return false;
     memClaims.set(chatId, Date.now());
+    if (key) memClaimKeys.add(key);
     return true;
   }
   await ensureWelcomeSchema();
+  if (key) {
+    const { rows } = await queryDatabase("select 1 from welcome_sends where phone_key = $1 limit 1", [key]);
+    if (rows.length > 0) return false;
+  }
   const { rowCount } = await queryDatabase(
     `insert into welcome_sends (chat_id, phone_key) values ($1, $2)
      on conflict (chat_id) do nothing`,
@@ -253,6 +264,7 @@ export async function moveWelcomeMedia(id: string, direction: -1 | 1): Promise<v
 
 export async function handleWelcomeInbound(inbound: WelcomeInbound): Promise<WelcomeResult> {
   const { chatId, timestamp } = inbound;
+  const phoneChatId = inbound.phoneChatId ?? null;
   if (!isPersonChat(chatId)) return { skipped: "not_a_person" };
   if (!isFreshInbound(timestamp, Date.now())) return { skipped: "stale" };
 
@@ -262,9 +274,14 @@ export async function handleWelcomeInbound(inbound: WelcomeInbound): Promise<Wel
   const media = storageConfigured() ? await listWelcomeMedia() : [];
   if (boxes.every((box) => !box) && media.length === 0) return { skipped: "no_messages" };
 
-  // A real phone number lets us recognise returning customers; a privacy
-  // (@lid) chat has none, so only its message history can tell.
-  const key = chatId.endsWith("@lid") ? "" : phoneKey(chatIdToPhone(chatId));
+  // The phone number is how returning customers are recognised: their orders
+  // (on either number), customer record and parcel-message chat are all filed
+  // under it. A privacy-ID (@lid) chat needs the worker's lookup; without a
+  // number we cannot tell, and a wrong welcome to a customer is worse than a
+  // missed one, so no welcome.
+  const phoneSource = chatId.endsWith("@lid") ? phoneChatId : chatId;
+  if (!phoneSource) return { skipped: "unknown_number" };
+  const key = phoneKey(chatIdToPhone(phoneSource));
   if (key.length === 9) {
     const [profile, state, ordered] = await Promise.all([
       getCustomerProfile(key),
@@ -277,10 +294,14 @@ export async function handleWelcomeInbound(inbound: WelcomeInbound): Promise<Wel
     }
   }
 
-  const history = await workerFetch<WelcomeHistoryMessage[]>(
-    `/messages/${encodeURIComponent(chatId)}?peek=1`
-  );
-  if (!isFirstContact(history, timestamp)) return { skipped: "existing_conversation" };
+  // Both chats must be empty apart from this first message: the one they wrote
+  // in, and their phone-number chat, where parcel messages and anything we
+  // sent before the privacy ID appeared would be.
+  const chats = phoneChatId && phoneChatId !== chatId ? [chatId, phoneChatId] : [chatId];
+  for (const id of chats) {
+    const history = await workerFetch<WelcomeHistoryMessage[]>(`/messages/${encodeURIComponent(id)}?peek=1`);
+    if (!isFirstContact(history, timestamp)) return { skipped: "existing_conversation" };
+  }
 
   // This customer's version of each box; versions with links are never sent.
   const texts = boxes.map((box, slot) => (box ? chooseWelcomeText(box, key || chatId, slot) : ""));

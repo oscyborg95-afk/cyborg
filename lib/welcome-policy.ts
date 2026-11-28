@@ -24,10 +24,16 @@ export type WelcomeSkipReason =
   | "existing_customer"
   | "opted_out"
   | "already_welcomed"
-  | "capped";
+  | "capped"
+  | "unknown_number";
 
 export function isFreshInbound(timestamp: number, now: number): boolean {
   return Number.isFinite(timestamp) && now - timestamp <= MAX_INBOUND_AGE_MS;
+}
+
+// The phone chat id the worker sends for a privacy-ID (@lid) chat.
+export function validPhoneChatId(value: unknown): string | null {
+  return typeof value === "string" && /^\d{8,15}@s\.whatsapp\.net$/.test(value) ? value : null;
 }
 
 // Only one-to-one chats with a real phone number get a welcome. Groups,

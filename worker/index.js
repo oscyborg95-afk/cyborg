@@ -22,7 +22,7 @@
 //   POST /read { chatId }            → { ok } — mark chat read on the phone (blue ticks)
 //   POST /typing { chatId, state }   → { ok } — "composing" | "paused" presence
 //   POST /logout                     → { ok } — unlink this device and generate a fresh QR
-//   POST /mock/incoming { chatId, body, name? }  (mock mode only; unknown chatId = new customer)
+//   POST /mock/incoming { chatId, body, name?, altJid? }  (mock mode only; unknown chatId = new customer)
 // Socket.io events: "wa:message", "wa:update" ({ id, chatId, status }),
 //                   "wa:status" ({ ready }), "wa:qr" ({ qr })
 
@@ -315,6 +315,23 @@ async function runWelcome(chatId, steps) {
   return sent;
 }
 
+// WhatsApp increasingly identifies customers by a privacy ID (…@lid) instead
+// of their number, but orders, parcel messages and customer records are filed
+// under the number. Without it a returning customer looks brand new (Nov 28:
+// two existing customers got the new-customer welcome). Null when unknown.
+// "94771234567:12@s.whatsapp.net" (one device) → "94771234567@s.whatsapp.net".
+const phoneJid = (jid) => (String(jid).endsWith("@s.whatsapp.net") ? String(jid).replace(/:\d+@/, "@") : null);
+
+async function phoneJidFor(chatId, altJid) {
+  if (!String(chatId).endsWith("@lid")) return null;
+  if (altJid && phoneJid(altJid)) return phoneJid(altJid);
+  try {
+    return phoneJid(await sock.signalRepository.lidMapping.getPNForLID(chatId));
+  } catch {
+    return null;
+  }
+}
+
 // Tell the app a customer wrote, once their burst of bubbles settles ("hi",
 // "price?", a photo → one call). The app stops any follow-up chasing them and
 // decides whether this is a brand-new customer who gets the automatic welcome.
@@ -334,9 +351,11 @@ function notifyInbound(msg) {
   // Keep the burst's first timestamp: it is what "first contact" is measured from.
   const firstTs = pending ? Math.min(pending.firstTs, msg.timestamp) : msg.timestamp;
   const bodies = [...(pending?.bodies ?? []), msg.body].slice(-10);
+  const altJid = msg.altJid || pending?.altJid || "";
   const timer = setTimeout(async () => {
     inboundTimers.delete(msg.chatId);
     try {
+      const phoneChatId = await phoneJidFor(msg.chatId, altJid);
       const res = await fetch(new URL("/api/whatsapp/inbound", base), {
         method: "POST",
         headers: {
@@ -344,7 +363,7 @@ function notifyInbound(msg) {
           Authorization: `Bearer ${secret}`,
           "x-tenant-id": TENANT_ID,
         },
-        body: JSON.stringify({ chatId: msg.chatId, timestamp: firstTs, body: bodies.join("\n") }),
+        body: JSON.stringify({ chatId: msg.chatId, phoneChatId, timestamp: firstTs, body: bodies.join("\n") }),
         signal: AbortSignal.timeout(55_000),
       });
       const data = await res.json().catch(() => null);
@@ -362,7 +381,7 @@ function notifyInbound(msg) {
       console.error("[cyborg-wa-worker] inbound hook offline:", err.message);
     }
   }, minDelay + Math.round(Math.random() * jitter));
-  inboundTimers.set(msg.chatId, { timer, firstTs, bodies });
+  inboundTimers.set(msg.chatId, { timer, firstTs, bodies, altJid });
 }
 
 function setReady(value) {
@@ -590,7 +609,7 @@ if (MOCK) {
   );
 
   app.post("/mock/incoming", (req, res) => {
-    const { chatId, body, name } = req.body;
+    const { chatId, body, name, altJid } = req.body;
     if (!chatId || !body) return res.status(400).json({ error: "chatId and body required" });
     // An unknown chatId is a brand-new customer writing for the first time.
     if (!chats.has(chatId)) chats.set(chatId, { id: chatId, name: name || chatId.split("@")[0], messages: [] });
@@ -604,6 +623,7 @@ if (MOCK) {
       senderName: chat.name,
       status: 0,
       media: "",
+      altJid: altJid || "",
     };
     chat.messages.push(msg);
     emitMessage(msg);
@@ -1015,6 +1035,8 @@ function normalize(m) {
     senderName: m.pushName || "",
     status: Number(m.status ?? 0),
     media,
+    // For a privacy-ID (@lid) chat, WhatsApp often sends the phone JID too.
+    altJid: m.key.remoteJidAlt || "",
   };
 }
 
