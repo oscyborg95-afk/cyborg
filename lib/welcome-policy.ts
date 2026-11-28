@@ -58,7 +58,8 @@ export function typingPauseMs(text: string, random: () => number = Math.random):
 // Ban safety: a bug, or a viral ad, must never turn the welcome into a flood.
 // Past these, new customers simply wait for the owner to reply by hand.
 export const WELCOME_HOURLY_CAP = 20;
-export const WELCOME_DAILY_CAP = 100;
+// Raised from 100 on 2026-11-28: launch day hit 100 by 21:37 at a peak of 13 an hour.
+export const WELCOME_DAILY_CAP = 150;
 
 export function welcomeCapReached(lastHour: number, lastDay: number): boolean {
   return lastHour >= WELCOME_HOURLY_CAP || lastDay >= WELCOME_DAILY_CAP;
